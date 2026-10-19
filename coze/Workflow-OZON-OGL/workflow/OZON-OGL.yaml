@@ -18,7 +18,6 @@ nodes:
             input:
                 type: string
                 value: null
-                description: "JSON字符串，包含商品名、售价、采购价、费率、重量和尺寸"
     - id: "199918"
       type: code
       title: OGL利润与定价计算

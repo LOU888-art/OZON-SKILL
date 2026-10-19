@@ -1,0 +1,364 @@
+schema_version: 1.0.0
+name: OZON-OGL定价助手-v2
+id: 7698340407848322099
+description: "严格按OGL定价工具表计算OZON rFBS利润、保本价、建议价并生成商品卡草稿"
+mode: workflow
+icon: plugin_icon/workflow.png
+nodes:
+    - id: "100001"
+      type: start
+      title: 开始
+      icon: https://lf3-static.bytednsdoc.com/obj/eden-cn/dvsmryvd_avi_dvsm/ljhwZthlaukjlkulzlp/icon/icon-Start-v2.jpg
+      description: "输入单个商品的OGL定价参数，支持百分数写9或0.09"
+      position:
+        x: 0
+        y: 0
+      parameters:
+        node_outputs:
+            input:
+                type: string
+                value: null
+    - id: "199918"
+      type: code
+      title: OGL利润与定价计算
+      icon: https://lf3-static.bytednsdoc.com/obj/eden-cn/dvsmryvd_avi_dvsm/ljhwZthlaukjlkulzlp/icon/icon-Code-v2.jpg
+      description: "严格复刻OGL定价工具表的物流分档、利润、保本价和建议价公式"
+      version: v2
+      position:
+        x: 420
+        y: 0
+      parameters:
+        code: |
+            async function main({ params }: Args): Promise<Output> {
+                function fail(message) {
+                    return { result: JSON.stringify({ ok: false, error: message }, null, 2) };
+                }
+                function num(value, name, fallback) {
+                    if (value === undefined || value === null || value === "") {
+                        if (fallback !== undefined) return fallback;
+                        throw new Error(`缺少字段：${name}`);
+                    }
+                    const parsed = Number(value);
+                    if (!Number.isFinite(parsed) || parsed < 0) {
+                        throw new Error(`${name} 必须是非负数字`);
+                    }
+                    return parsed;
+                }
+                function rate(value, name, fallback) {
+                    if (typeof value === "string" && value.trim().endsWith("%")) {
+                        const percentValue = Number(value.trim().slice(0, -1));
+                        if (!Number.isFinite(percentValue) || percentValue < 0 || percentValue > 100) {
+                            throw new Error(`${name} 必须是0%到100%之间的数字`);
+                        }
+                        return percentValue / 100;
+                    }
+                    const parsed = num(value, name, fallback);
+                    const normalized = parsed >= 1 ? parsed / 100 : parsed;
+                    if (normalized > 1) throw new Error(`${name} 不能超过100%`);
+                    return normalized;
+                }
+                function round(value, digits = 2) {
+                    const factor = 10 ** digits;
+                    return Math.round((value + Number.EPSILON) * factor) / factor;
+                }
+                function parseInput(raw) {
+                    if (typeof raw === "object" && raw !== null) return raw;
+                    if (typeof raw !== "string" || !raw.trim()) throw new Error("input 必须是JSON字符串");
+                    const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+                    return JSON.parse(cleaned);
+                }
+
+                try {
+                    const data = parseInput(params.input);
+                    const productName = String(data.product_name || data.商品名称 || "未命名商品");
+                    const salePrice = num(data.sale_price_cny ?? data.售价元, "sale_price_cny");
+                    const purchaseCost = num(data.purchase_cost_cny ?? data.采购元, "purchase_cost_cny");
+                    const domesticMisc = num(data.domestic_misc_cny ?? data.杂费元, "domestic_misc_cny", 0);
+                    const commissionRate = rate(data.commission_rate_pct ?? data.佣金率, "commission_rate_pct", 10);
+                    const returnRate = rate(data.return_rate_pct ?? data.退货率, "return_rate_pct", 3);
+                    const withdrawalRate = rate(data.withdrawal_rate_pct ?? data.提现率, "withdrawal_rate_pct", 1.2);
+                    const adsRate = rate(data.ads_rate_pct ?? data.广告率, "ads_rate_pct", 5);
+                    const lastMileRate = rate(data.last_mile_rate_pct ?? data.尾程率, "last_mile_rate_pct", 2);
+                    const weight = num(data.weight_g ?? data.实重克, "weight_g");
+                    const length = num(data.length_cm ?? data.长厘米, "length_cm", 0);
+                    const width = num(data.width_cm ?? data.宽厘米, "width_cm", 0);
+                    const height = num(data.height_cm ?? data.高厘米, "height_cm", 0);
+                    const exchangeRate = num(data.exchange_rate_rub_per_cny ?? data.汇率, "exchange_rate_rub_per_cny", 12.6);
+                    const targetMargin = rate(data.target_margin_pct ?? data.目标利润率, "target_margin_pct", 30);
+
+                    if (salePrice <= 0) return fail("sale_price_cny 必须大于0");
+                    if (weight <= 0) return fail("weight_g 必须大于0");
+                    if (exchangeRate <= 0) return fail("exchange_rate_rub_per_cny 必须大于0");
+                    if (weight > 35000) return fail("实重超过OGL上限35kg");
+
+                    const valueRub = salePrice * exchangeRate;
+                    let channel;
+                    if (weight <= 500 && valueRub <= 1500) channel = "Extra Small";
+                    else if (valueRub <= 1500) channel = "Budget";
+                    else if (weight <= 2000) channel = valueRub <= 7000 ? "Small" : "Premium Small";
+                    else if (valueRub <= 7000) channel = "Big";
+                    else channel = weight <= 5000 ? "Premium Small" : "Premium Big";
+
+                    const rates = {
+                        "Extra Small": { fixed: 2.90, perGram: 0.0247, volumetric: false },
+                        "Budget": { fixed: 22.25, perGram: 0.0164, volumetric: false },
+                        "Small": { fixed: 15.48, perGram: 0.0242, volumetric: false },
+                        "Big": { fixed: 34.82, perGram: 0.0164, volumetric: true },
+                        "Premium Small": { fixed: 21.28, perGram: 0.0242, volumetric: false },
+                        "Premium Big": { fixed: 59.97, perGram: 0.0222, volumetric: true }
+                    };
+                    const selected = rates[channel];
+                    const dimensionsComplete = length > 0 && width > 0 && height > 0;
+                    const volumetricWeight = dimensionsComplete ? length * width * height / 12000 * 1000 : weight;
+                    const billableWeight = selected.volumetric ? Math.max(weight, volumetricWeight) : weight;
+                    const firstMile = selected.fixed + selected.perGram * billableWeight;
+
+                    const commission = salePrice * commissionRate;
+                    const returnLoss = salePrice * returnRate;
+                    const withdrawalFee = salePrice * withdrawalRate;
+                    const adsFee = salePrice * adsRate;
+                    const lastMile = Math.min(Math.max(salePrice * exchangeRate * lastMileRate, 15), 200) / exchangeRate;
+                    const totalCost = purchaseCost + domesticMisc + firstMile + commission + returnLoss + withdrawalFee + adsFee + lastMile;
+                    const profit = salePrice - totalCost;
+                    const salesMargin = profit / salePrice;
+                    const costRoi = totalCost === 0 ? null : profit / totalCost;
+
+                    const variableRates = commissionRate + returnRate + withdrawalRate + adsRate + lastMileRate;
+                    const breakEvenDenominator = 1 - variableRates;
+                    const targetDenominator = 1 - variableRates - targetMargin;
+                    if (breakEvenDenominator <= 0) return fail("佣金与各项费率合计必须低于100%");
+                    if (targetDenominator <= 0) return fail("佣金、各项费率与目标利润率合计必须低于100%");
+                    const fixedCost = purchaseCost + domesticMisc + firstMile;
+                    const breakEvenPrice = fixedCost / breakEvenDenominator;
+                    const suggestedPrice = fixedCost / targetDenominator;
+
+                    const warnings = [];
+                    if (selected.volumetric && !dimensionsComplete) warnings.push("当前为计抛档，请补充长宽高；本次暂按实重计费");
+                    if (salesMargin < targetMargin) warnings.push("销售毛利率低于目标，请提价或降本");
+                    const currentBand = valueRub <= 1500 ? 1 : valueRub <= 7000 ? 2 : 3;
+                    const suggestedRub = suggestedPrice * exchangeRate;
+                    const suggestedBand = suggestedRub <= 1500 ? 1 : suggestedRub <= 7000 ? 2 : 3;
+                    if (currentBand !== suggestedBand) warnings.push("建议售价跨越OGL货值档，请用建议售价重新运行以复核物流档和最终建议价");
+                    if (length > 200 || width > 80 || height > 80) warnings.push("包装尺寸可能超过OGL限制200×80×80cm");
+                    if (dimensionsComplete && length * width * height > 500000) warnings.push("包装体积可能超过OGL限制500L");
+
+                    const result = {
+                        ok: true,
+                        pricing_basis: "OGL定价工具表.xlsx",
+                        currency: "CNY",
+                        product_name: productName,
+                        inputs: {
+                            sale_price_cny: salePrice,
+                            purchase_cost_cny: purchaseCost,
+                            domestic_misc_cny: domesticMisc,
+                            commission_rate_pct: round(commissionRate * 100, 3),
+                            return_rate_pct: round(returnRate * 100, 3),
+                            withdrawal_rate_pct: round(withdrawalRate * 100, 3),
+                            ads_rate_pct: round(adsRate * 100, 3),
+                            last_mile_rate_pct: round(lastMileRate * 100, 3),
+                            exchange_rate_rub_per_cny: exchangeRate,
+                            target_margin_pct: round(targetMargin * 100, 3),
+                            weight_g: weight,
+                            length_cm: length,
+                            width_cm: width,
+                            height_cm: height
+                        },
+                        logistics: {
+                            product_value_rub: round(valueRub),
+                            ogl_channel: channel,
+                            volumetric_weight_g: round(volumetricWeight),
+                            billable_weight_g: round(billableWeight),
+                            first_mile_cny: round(firstMile),
+                            last_mile_cny: round(lastMile)
+                        },
+                        costs: {
+                            purchase_cny: round(purchaseCost),
+                            domestic_misc_cny: round(domesticMisc),
+                            commission_cny: round(commission),
+                            return_loss_cny: round(returnLoss),
+                            withdrawal_fee_cny: round(withdrawalFee),
+                            ads_cny: round(adsFee),
+                            total_cost_cny: round(totalCost)
+                        },
+                        decision: {
+                            profit_cny: round(profit),
+                            sales_margin_pct: round(salesMargin * 100),
+                            cost_roi_pct: costRoi === null ? null : round(costRoi * 100),
+                            break_even_price_cny: round(breakEvenPrice),
+                            suggested_price_cny: round(suggestedPrice),
+                            target_met: salesMargin >= targetMargin,
+                            warnings
+                        }
+                    };
+                    return { result: JSON.stringify(result, null, 2) };
+                } catch (error) {
+                    return fail(`输入解析或计算失败：${error.message}`);
+                }
+            }
+        language: 5
+        node_inputs:
+            - name: input
+              input:
+                type: string
+                value:
+                    path: input
+                    ref_node: "100001"
+        node_outputs:
+            result:
+                type: string
+                value: null
+        settingOnError:
+            processType: 1
+            retryTimes: 0
+            timeoutMs: 60000
+    - id: "105959"
+      type: llm
+      title: 生成定价报告与俄语商品卡
+      icon: https://lf3-static.bytednsdoc.com/obj/eden-cn/dvsmryvd_avi_dvsm/ljhwZthlaukjlkulzlp/icon/icon-LLM-v2.jpg
+      description: "使用确定性计算结果生成中文决策报告和俄语商品卡草稿"
+      version: "3"
+      position:
+        x: 830
+        y: 0
+      parameters:
+        fcParamVar:
+            knowledgeFCParam: {}
+        node_inputs:
+            - name: pricing_result
+              input:
+                type: string
+                value:
+                    path: result
+                    ref_node: "199918"
+            - name: user_input
+              input:
+                type: string
+                value:
+                    path: input
+                    ref_node: "100001"
+        llmParam:
+            - name: modelType
+              input:
+                type: integer
+                value: "1772700462"
+            - name: modelName
+              input:
+                type: string
+                value: 豆包·2.0·pro
+            - name: generationDiversity
+              input:
+                type: string
+                value: balance
+            - name: frequencyPenalty
+              input:
+                type: float
+                value: "0"
+            - name: maxTokens
+              input:
+                type: integer
+                value: "4096"
+            - name: spCurrentTime
+              input:
+                type: boolean
+                value: false
+            - name: spAntiLeak
+              input:
+                type: boolean
+                value: false
+            - name: responseFormat
+              input:
+                type: integer
+                value: "2"
+            - name: parameters
+              input:
+                type: object
+                properties:
+                    max_completion_tokens:
+                        type: integer
+                        value: "0"
+                value: null
+            - name: prompt
+              input:
+                type: string
+                value: |
+                    用户原始商品资料：
+                    {{user_input}}
+
+                    OGL定价工具表的确定性计算结果：
+                    {{pricing_result}}
+
+                    请按系统要求输出最终报告。
+            - name: enableChatHistory
+              input:
+                type: boolean
+                value: false
+            - name: chatHistoryRound
+              input:
+                type: integer
+                value: "3"
+            - name: systemPrompt
+              input:
+                type: string
+                value: |
+                    你是OZON中国跨境卖家的定价与商品卡助手。代码节点已经严格按用户提供的《OGL定价工具表.xlsx》完成计算。
+
+                    规则：
+                    1. 计算结果是唯一数值口径，不得自行重算、修改或编造费率。
+                    2. 如果结果ok=false，先用中文说明缺少或错误字段，再给出一个可复制的JSON输入模板，不生成商品卡。
+                    3. 如果ok=true，依次输出：输入摘要、物流档位、成本明细、利润与毛利率、保本价、建议售价、是否达到目标、风险提示。
+                    4. 若建议售价跨越OGL货值档，明确要求用户用建议售价再次运行；不得把未复核价格称为最终价。
+                    5. 只有用户输入提供了商品材质、规格、用途等事实时，才生成俄语商品卡草稿；不得虚构认证、功效、品牌、产地或参数。
+                    6. 俄语商品卡包含：标题、5条卖点、描述、搜索关键词，并附中文回译供审核。
+                    7. 所有金额标明CNY；商品上架、改价、投放广告必须由用户人工确认。
+            - name: stableSystemPrompt
+              input:
+                type: string
+                value: ""
+            - name: canContinue
+              input:
+                type: boolean
+                value: false
+            - name: loopPromptVersion
+              input:
+                type: string
+                value: ""
+            - name: loopPromptName
+              input:
+                type: string
+                value: ""
+            - name: loopPromptId
+              input:
+                type: string
+                value: ""
+        node_outputs:
+            output:
+                type: string
+                value: null
+        settingOnError:
+            processType: 1
+            retryTimes: 0
+            timeoutMs: 180000
+    - id: "900001"
+      type: end
+      title: 结束
+      icon: https://lf3-static.bytednsdoc.com/obj/eden-cn/dvsmryvd_avi_dvsm/ljhwZthlaukjlkulzlp/icon/icon-End-v2.jpg
+      description: "返回OGL定价报告与俄语商品卡草稿"
+      position:
+        x: 1250
+        y: 0
+      parameters:
+        node_inputs:
+            - name: output
+              input:
+                type: string
+                value:
+                    path: output
+                    ref_node: "105959"
+        terminatePlan: returnVariables
+edges:
+    - source_node: "100001"
+      target_node: "199918"
+    - source_node: "199918"
+      target_node: "105959"
+    - source_node: "105959"
+      target_node: "900001"
