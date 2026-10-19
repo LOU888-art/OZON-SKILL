@@ -1,0 +1,11 @@
+type: Workflow
+version: 1.0.0
+main:
+    id: 7698340407848321064
+    name: OZON-OGL智能定价与上品
+    desc: 严格按OGL定价工具表计算OZON rFBS利润、保本价、建议价并生成商品卡草稿
+    icon: plugin_icon/workflow.png
+    version: ""
+    flowMode: 0
+    commitId: ""
+sub: []

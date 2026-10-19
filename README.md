@@ -1,2 +1,5 @@
 # OZON-SKILL
-OZON的SKILL
+
+扣子 OZON 跨境电商工作流，使用 OGL 定价工具表的利润与定价口径。
+
+可导入文件和使用说明位于 `coze/` 目录。
