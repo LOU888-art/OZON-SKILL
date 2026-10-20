@@ -125,9 +125,33 @@ def _translated_image_url(payload: Mapping[str, Any]) -> str | None:
     def is_url(value: Any) -> bool:
         return isinstance(value, str) and value.strip().startswith(("https://", "http://"))
 
+    def visit_scalar(value: str) -> str | None:
+        """Unwrap gateways which serialize ``result`` as JSON or escaped text."""
+
+        text = value.strip()
+        if is_url(text):
+            return text
+
+        # AlphaShop gateway variants sometimes put an object, a quoted URL, or
+        # an escaped URL inside the top-level ``result`` string.
+        try:
+            decoded = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            decoded = None
+        if decoded is not None and decoded != value:
+            found = visit(decoded, scalar_allowed=True)
+            if found:
+                return found
+
+        unescaped = text.replace("\\/", "/")
+        if is_url(unescaped):
+            return unescaped
+        match = re.search(r"https?://[^\\s\\\"'<>\\\\]+", unescaped)
+        return match.group(0) if match else None
+
     def visit(value: Any, *, scalar_allowed: bool = False) -> str | None:
-        if is_url(value) and scalar_allowed:
-            return str(value).strip()
+        if isinstance(value, str) and scalar_allowed:
+            return visit_scalar(value)
         if isinstance(value, Mapping):
             for key, nested in value.items():
                 normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
@@ -164,7 +188,12 @@ def _image_response_shape(payload: Mapping[str, Any]) -> str:
                 visit(nested)
 
     visit(payload)
-    return f"response_keys={sorted(keys)[:30]}"
+    result = payload.get("result")
+    result_length = len(result) if isinstance(result, (str, list, tuple, dict)) else None
+    return (
+        f"response_keys={sorted(keys)[:30]}; "
+        f"result_type={type(result).__name__}; result_length={result_length}"
+    )
 
 
 def extract_external_category_pair(payload: Mapping[str, Any]) -> tuple[int, int]:
