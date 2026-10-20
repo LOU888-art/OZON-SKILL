@@ -136,7 +136,13 @@ systemctl daemon-reload
 systemctl enable ozon-erp
 systemctl restart ozon-erp
 nginx -t
-systemctl reload nginx
+systemctl enable nginx
+systemctl restart nginx
+
+if systemctl is-active --quiet firewalld; then
+  firewall-cmd --permanent --add-port=8443/tcp >/dev/null
+  firewall-cmd --reload >/dev/null
+fi
 
 for attempt in 1 2 3 4 5; do
   if curl --fail --silent http://127.0.0.1:18080/api/health >/dev/null; then
