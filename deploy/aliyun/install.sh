@@ -77,16 +77,21 @@ PrivateTmp=true
 WantedBy=multi-user.target
 EOF
 
-admin_password=$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-20)
-printf 'admin:%s\n' "$(openssl passwd -apr1 "$admin_password")" >"$nginx_secret_dir/htpasswd"
+admin_password=
+if [ ! -s "$nginx_secret_dir/htpasswd" ]; then
+  admin_password=$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-20)
+  printf 'admin:%s\n' "$(openssl passwd -apr1 "$admin_password")" >"$nginx_secret_dir/htpasswd"
+fi
 chown root:nginx "$nginx_secret_dir/htpasswd"
 chmod 640 "$nginx_secret_dir/htpasswd"
 
-openssl req -x509 -nodes -newkey rsa:2048 -days 30 \
-  -keyout "$nginx_secret_dir/server.key" \
-  -out "$nginx_secret_dir/server.crt" \
-  -subj '/CN=8.217.125.205' \
-  -addext 'subjectAltName=IP:8.217.125.205' >/dev/null 2>&1
+if [ ! -s "$nginx_secret_dir/server.key" ] || [ ! -s "$nginx_secret_dir/server.crt" ]; then
+  openssl req -x509 -nodes -newkey rsa:2048 -days 30 \
+    -keyout "$nginx_secret_dir/server.key" \
+    -out "$nginx_secret_dir/server.crt" \
+    -subj '/CN=8.217.125.205' \
+    -addext 'subjectAltName=IP:8.217.125.205' >/dev/null 2>&1
+fi
 chmod 600 "$nginx_secret_dir/server.key"
 if command -v restorecon >/dev/null 2>&1; then
   restorecon -RF "$nginx_secret_dir"
@@ -147,6 +152,10 @@ echo
 echo "OZON ERP 部署完成"
 echo "网址：https://8.217.125.205:8443"
 echo "用户名：admin"
-echo "临时密码：$admin_password"
+if [ -n "$admin_password" ]; then
+  echo "临时密码：$admin_password"
+else
+  echo "登录密码：保持现有密码不变"
+fi
 echo "浏览器会提示自签名证书警告；确认 IP 正确后可继续访问。"
 echo "系统保持 DRY_RUN=true，未配置 OZON 凭证前不会执行真实上架。"

@@ -12,6 +12,7 @@
   <header class="topbar">
     <a class="brand" href="#"><span class="brand-mark">N</span><span>Northstar</span></a>
     <div class="top-actions">
+      <button id="storesBtn" class="store-btn"><span id="storeCount">0</span> OZON 店铺</button>
       <span id="modeBadge" class="badge safe">DRY RUN</span>
       <button id="refreshBtn" class="icon-btn" title="刷新">↻</button>
     </div>
@@ -77,6 +78,26 @@
       <div id="dialogFields"></div>
       <div class="dialog-actions"><button value="cancel" class="ghost">取消</button><button id="runStageBtn" value="default" class="primary">运行阶段</button></div>
     </form>
+  </dialog>
+
+  <dialog id="storesDialog">
+    <div class="dialog-card stores-dialog">
+      <div class="dialog-head"><div><span class="eyebrow">SELLER API</span><h3>OZON 店铺授权</h3></div><button id="closeStoresBtn" class="close" type="button">×</button></div>
+      <p class="dialog-note">使用 Seller API 的 Client-Id 与 Api-Key。保存前会调用 OZON 只读类目接口验证；Api-Key 保存后永不回显。</p>
+      <div id="storeList" class="store-list"></div>
+      <form id="storeForm" class="store-form">
+        <div class="field-grid">
+          <div class="field"><label for="storeId">店铺标识</label><input id="storeId" placeholder="例如 store_ru_1" required pattern="[A-Za-z0-9._-]{1,48}"></div>
+          <div class="field"><label for="storeName">店铺名称</label><input id="storeName" placeholder="例如 OZON 主店" required></div>
+        </div>
+        <div class="field-grid">
+          <div class="field"><label for="ozonClientId">Client-Id</label><input id="ozonClientId" autocomplete="off" required></div>
+          <div class="field"><label for="ozonCurrency">后台币种</label><select id="ozonCurrency"><option value="RUB">RUB</option><option value="CNY">CNY</option></select></div>
+        </div>
+        <div class="field"><label for="ozonApiKey">Api-Key</label><input id="ozonApiKey" type="password" autocomplete="new-password" required></div>
+        <div class="dialog-actions"><button type="submit" class="primary">验证并保存授权</button></div>
+      </form>
+    </div>
   </dialog>
 
   <div id="toast" class="toast"></div>

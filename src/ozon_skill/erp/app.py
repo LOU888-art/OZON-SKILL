@@ -18,6 +18,8 @@ _PIPELINE_ROUTE = re.compile(r"^/api/pipelines/([^/]+)$")
 _STAGE_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/stages/([1-5])$")
 _ARTIFACT_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/artifacts/([1-5])$")
 _AUDIT_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/audit$")
+_STORE_ROUTE = re.compile(r"^/api/stores/([^/]+)$")
+_STORE_VERIFY_ROUTE = re.compile(r"^/api/stores/([^/]+)/verify$")
 _STATIC_ROOT = Path(__file__).with_name("static")
 
 
@@ -98,6 +100,8 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._json(self.service.config_status())
             elif path == "/api/pipelines":
                 self._json({"pipelines": self.service.list_pipelines()})
+            elif path == "/api/stores":
+                self._json({"stores": self.service.list_stores()})
             elif match := _PIPELINE_ROUTE.fullmatch(path):
                 self._json(self.service.get_pipeline(unquote(match.group(1))))
             elif match := _ARTIFACT_ROUTE.fullmatch(path):
@@ -119,6 +123,14 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             body = self._body()
+            if path == "/api/stores":
+                self._json({"store": self.service.authorize_store(body)}, 201)
+                return
+            if store_match := _STORE_VERIFY_ROUTE.fullmatch(path):
+                self._json(
+                    {"store": self.service.verify_store(unquote(store_match.group(1)))}
+                )
+                return
             if path == "/api/pipelines":
                 self._json(self.service.run_stage_1(body.get("offer_id")), 201)
                 return
@@ -132,7 +144,9 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 result = self.service.run_stage_1(pipeline_id)
             elif stage == 2:
                 result = self.service.run_stage_2(
-                    pipeline_id, confidence_threshold=body.get("confidence_threshold", 0.70)
+                    pipeline_id,
+                    confidence_threshold=body.get("confidence_threshold", 0.70),
+                    store_id=body.get("store_id"),
                 )
             elif stage == 3:
                 result = self.service.run_stage_3(
@@ -153,6 +167,20 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
             self._error(str(exc), 400)
         except Exception as exc:
             self._error(f"阶段执行失败：{exc}", 500)
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        path = urlparse(self.path).path
+        try:
+            match = _STORE_ROUTE.fullmatch(path)
+            if not match:
+                self._error("Not found", 404)
+                return
+            self.service.delete_store(unquote(match.group(1)))
+            self._json({"status": "deleted"})
+        except PipelineError as exc:
+            self._error(str(exc), exc.status)
+        except Exception as exc:
+            self._error(f"服务器处理失败：{exc}", 500)
 
 
 class ERPServer(ThreadingHTTPServer):

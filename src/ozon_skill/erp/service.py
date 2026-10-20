@@ -38,6 +38,8 @@ from ozon_skill.upload.config import load_store_configs
 from ozon_skill.upload.log import UploadLog
 from ozon_skill.upload.workflow import run_upload_workflow
 
+from .stores import StoreAuthorizationError, StoreRegistry
+
 
 STAGE_FILES = {
     1: "01_raw.json",
@@ -233,6 +235,64 @@ class PipelineService:
         self.work_root = work_root.resolve()
         self.work_root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self.stores = StoreRegistry(self.work_root / ".ozon-stores.json")
+
+    def list_stores(self) -> list[dict[str, Any]]:
+        return self.stores.list_public()
+
+    def authorize_store(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            return self.stores.authorize(value)
+        except StoreAuthorizationError as exc:
+            raise PipelineError(str(exc), status=422) from exc
+
+    def verify_store(self, store_id: str) -> dict[str, Any]:
+        try:
+            return self.stores.verify(store_id)
+        except StoreAuthorizationError as exc:
+            raise PipelineError(str(exc), status=422) from exc
+
+    def delete_store(self, store_id: str) -> None:
+        try:
+            self.stores.delete(store_id)
+        except StoreAuthorizationError as exc:
+            raise PipelineError(str(exc), status=404) from exc
+
+    def _selected_store(
+        self, pipeline_id: str, requested_store_id: Any = None
+    ) -> dict[str, Any]:
+        selected = str(requested_store_id or "").strip()
+        state_path = self._state_path(pipeline_id)
+        if not selected and state_path.exists():
+            selected = str(_read_object(state_path).get("store_id") or "").strip()
+        public_stores = self.stores.list_public()
+        if not selected and len(public_stores) == 1:
+            selected = str(public_stores[0]["store_id"])
+        if selected:
+            try:
+                return self.stores.credentials(selected)
+            except StoreAuthorizationError as exc:
+                raise PipelineError(str(exc), status=409) from exc
+        if os.environ.get("OZON_CLIENT_ID") and os.environ.get("OZON_API_KEY"):
+            currency = str(os.environ.get("OZON_CURRENCY") or "").strip().upper()
+            if currency not in {"RUB", "CNY"}:
+                raise PipelineError("OZON_CURRENCY 仅支持 RUB 或 CNY", status=409)
+            return {
+                "store_id": "ENV_DEFAULT",
+                "name": "环境变量店铺",
+                "client_id": os.environ["OZON_CLIENT_ID"],
+                "api_key": os.environ["OZON_API_KEY"],
+                "currency_code": currency,
+                "credential_source": "environment",
+            }
+        raise PipelineError("请先在“店铺授权”中添加并验证 OZON 店铺", status=409)
+
+    def _assign_store(self, pipeline_id: str, store_id: str) -> None:
+        path = self._state_path(pipeline_id)
+        state = _read_object(path)
+        state["store_id"] = store_id
+        state["updated_at"] = _now()
+        _atomic_json(path, state)
 
     def directory(self, pipeline_id: Any) -> Path:
         return self.work_root / _safe_pipeline_id(pipeline_id)
@@ -355,12 +415,16 @@ class PipelineService:
                 },
             }
 
-    def run_stage_2(self, pipeline_id: Any, *, confidence_threshold: Any = CONFIDENCE_THRESHOLD) -> dict[str, Any]:
+    def run_stage_2(
+        self,
+        pipeline_id: Any,
+        *,
+        confidence_threshold: Any = CONFIDENCE_THRESHOLD,
+        store_id: Any = None,
+    ) -> dict[str, Any]:
         pipeline_id = _safe_pipeline_id(pipeline_id)
         self._require_previous(pipeline_id, 2)
-        missing = _required_env("OZON_CLIENT_ID", "OZON_API_KEY")
-        if missing:
-            raise PipelineError(f"缺少环境变量：{', '.join(missing)}", status=409)
+        authorized_store = self._selected_store(pipeline_id, store_id)
         try:
             threshold = float(confidence_threshold)
         except (TypeError, ValueError) as exc:
@@ -380,7 +444,9 @@ class PipelineService:
             except (AlphaShopApiError, ValueError) as exc:
                 raise PipelineError(f"AlphaShop 类目映射失败：{exc}", status=502) from exc
             provider = LiveMetadataProvider(
-                OzonDescriptionCategoryClient(os.environ["OZON_CLIENT_ID"], os.environ["OZON_API_KEY"])
+                OzonDescriptionCategoryClient(
+                    authorized_store["client_id"], authorized_store["api_key"]
+                )
             )
             mapped = map_listing(
                 _source_for_mapper(raw),
@@ -411,6 +477,7 @@ class PipelineService:
             failures = gate_stage_2(mapped)
             _atomic_json(self.path(pipeline_id, 2), mapped)
             self._record(pipeline_id, 2, not failures, failures)
+            self._assign_store(pipeline_id, str(authorized_store["store_id"]))
             return {"stage": 2, "status": "PASS" if not failures else "FAIL", "failures": failures, "artifact": STAGE_FILES[2]}
 
     def run_stage_3(self, pipeline_id: Any, *, media_manifest: Any = None) -> dict[str, Any]:
@@ -444,19 +511,17 @@ class PipelineService:
         self._require_previous(pipeline_id, 4)
         if not isinstance(store_config, Mapping):
             raise PipelineError("店铺配置必须是 JSON 对象")
-        ozon_currency = os.environ.get("OZON_CURRENCY")
-        if not ozon_currency:
-            raise PipelineError(
-                "缺少环境变量：OZON_CURRENCY；该值必须与 OZON 卖家后台币种一致",
-                status=409,
-            )
-        ozon_currency = ozon_currency.strip().upper()
-        if ozon_currency not in {"RUB", "CNY"}:
-            raise PipelineError("OZON_CURRENCY 仅支持 RUB 或 CNY")
+        authorized_store = self._selected_store(pipeline_id, store_config.get("store_id"))
+        ozon_currency = str(authorized_store["currency_code"]).strip().upper()
         with self._lock:
             raw = self.read_artifact(pipeline_id, 1)
             final = self.read_artifact(pipeline_id, 3)
-            effective_store_config = {**dict(store_config), "currency_code": ozon_currency}
+            effective_store_config = {
+                **dict(store_config),
+                "store_id": authorized_store["store_id"],
+                "credential_prefix": authorized_store["store_id"],
+                "currency_code": ozon_currency,
+            }
             stores = load_store_configs({"stores": [effective_store_config]})
             assembly = assemble_import_payload(final, _source_for_mapper(raw), stores[0])
             failures = list(assembly.validation_errors) + gate_stage_4(assembly.payload)
@@ -469,6 +534,9 @@ class PipelineService:
             _atomic_json(self.path(pipeline_id, 4), assembly.payload)
             _atomic_json(self.directory(pipeline_id) / "04_context.json", {
                 "store_config": effective_store_config,
+                "credential_source": "environment"
+                if authorized_store.get("credential_source") == "environment"
+                else "registry",
                 "offer_ids": assembly.offer_ids,
                 "required_attribute_ids": assembly.required_attribute_ids,
                 "dimension_source": assembly.dimension_source,
@@ -476,6 +544,7 @@ class PipelineService:
                 "validation_errors": assembly.validation_errors,
             })
             self._record(pipeline_id, 4, not failures, failures)
+            self._assign_store(pipeline_id, str(authorized_store["store_id"]))
             return {"stage": 4, "status": "PASS" if not failures else "FAIL", "failures": failures, "warnings": assembly.warnings, "artifact": STAGE_FILES[4]}
 
     def _assembly_from_files(self, pipeline_id: str) -> tuple[AssemblyResult, Any]:
@@ -501,11 +570,10 @@ class PipelineService:
             assembly, store = self._assembly_from_files(pipeline_id)
             client = None
             if execute:
-                names = (f"OZON_{store.credential_prefix}_CLIENT_ID", f"OZON_{store.credential_prefix}_API_KEY")
-                missing = _required_env(*names)
-                if missing:
-                    raise PipelineError(f"缺少环境变量：{', '.join(missing)}", status=409)
-                client = OzonUploadClient(os.environ[names[0]], os.environ[names[1]])
+                authorized_store = self._selected_store(pipeline_id, store.store_id)
+                client = OzonUploadClient(
+                    authorized_store["client_id"], authorized_store["api_key"]
+                )
             upload_log = UploadLog(self.path(pipeline_id, 5))
             result = run_upload_workflow(
                 store=store,
@@ -625,10 +693,12 @@ class PipelineService:
         variables = {
             "ALPHASHOP_ACCESS_KEY": bool(os.environ.get("ALPHASHOP_ACCESS_KEY")),
             "ALPHASHOP_SECRET_KEY": bool(os.environ.get("ALPHASHOP_SECRET_KEY")),
+            "DRY_RUN": bool(os.environ.get("DRY_RUN")),
         }
-        names = ["OZON_CLIENT_ID", "OZON_API_KEY", "OZON_CURRENCY", "DRY_RUN"]
-        variables.update({name: bool(os.environ.get(name)) for name in names})
+        stores = self.stores.list_public()
         return {
             "variables": variables,
             "dry_run": os.environ.get("DRY_RUN", "true").strip().lower() != "false",
+            "ozon_stores": len(stores),
+            "ozon_authorized": bool(stores),
         }

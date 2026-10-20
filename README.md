@@ -14,14 +14,12 @@ python3 -m venv --system-site-packages /workspace/.venv
 /workspace/.venv/bin/ozon-erp --host 127.0.0.1 --port 8080
 ```
 
-浏览器打开 `http://127.0.0.1:8080`。密钥不会通过网页录入，必须在进程环境中配置。页面仅显示变量是否存在，不显示变量值。
+浏览器打开 `http://127.0.0.1:8080`。AlphaShop 密钥必须在进程环境中配置。OZON Seller API 店铺可在网页的“店铺授权”中添加：ERP 会先通过只读类目树接口验证 Client-Id 与 Api-Key，再将凭证保存到权限为 `0600` 的服务端文件；Api-Key 不会通过网页或列表 API 回显。
 
 常用环境变量：
 
 - AlphaShop 商品详情、类目映射和图片翻译：`ALPHASHOP_ACCESS_KEY`、`ALPHASHOP_SECRET_KEY`。
-- OZON 类目元数据：`OZON_CLIENT_ID`、`OZON_API_KEY`。
-- OZON 店铺币种：`OZON_CURRENCY`，必须与卖家后台一致，只接受 `RUB` 或 `CNY`。
-- 店铺上传：`OZON_<店铺凭证前缀>_CLIENT_ID` 与 `OZON_<店铺凭证前缀>_API_KEY`。
+- OZON 店铺凭证与币种：优先通过网页“店铺授权”管理，支持多店铺；原有 `OZON_CLIENT_ID`、`OZON_API_KEY`、`OZON_CURRENCY` 仅保留为兼容回退。
 - 安全开关：缺省视为 `DRY_RUN=true`。只有进程环境明确设置 `DRY_RUN=false`，且操作者在网页再次勾选执行，才允许调用 `/v3/product/import`。
 
 每个商品页面都可以运行七项全链路一致性审查。ERP 不提供 mock 执行入口，生产工作区中的数据只能来自官方 API；测试 fixture 只供自动测试使用。
@@ -64,10 +62,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 这一阶段先调用 AlphaShop 类目映射获得候选 category/type，再要求该候选真实存在于本次 OZON 类目树。属性定义和字典值仍由 OZON 实时接口获取。所有 `attribute_id` 和 `dictionary_value_id` 都来自当前调用结果，不允许生成或手写。
 
-真实元数据请求需要：
-
-- `OZON_CLIENT_ID`
-- `OZON_API_KEY`
+网页版 ERP 的真实元数据请求使用当前流水线选择的已验证 OZON 店铺授权。独立命令行仍可使用 `OZON_CLIENT_ID` 与 `OZON_API_KEY`。
 
 ```bash
 PYTHONPATH=src python3 -m ozon_skill.category_mapping.cli \
@@ -114,7 +109,7 @@ PYTHONPATH=src python3 -m ozon_skill.upload.cli \
   --upload-log upload_log.json
 ```
 
-上传配置按店铺保存非敏感参数：`store_id`、凭证环境变量前缀、CNY→目标币种汇率和缺少结构化尺寸时采用的显式估算值。`currency_code` 只从 `OZON_CURRENCY` 注入；该变量缺失或不是 `RUB/CNY` 时阶段 4 停止。
+网页版 ERP 的上传配置使用已授权店铺的 `store_id`、后台币种、CNY→目标币种汇率和缺少结构化尺寸时采用的显式估算值。店铺币种在授权时确认，只接受 `RUB` 或 `CNY`。
 
 执行模式需要同时满足：
 
