@@ -84,57 +84,101 @@ def _category_source_text(source: Mapping[str, Any]) -> tuple[str, str, str]:
 
 
 def _flatten_categories(response: Mapping[str, Any]) -> list[dict[str, Any]]:
-    roots = response.get("result", [])
-    if isinstance(roots, Mapping):
-        roots = roots.get("items") or roots.get("categories") or []
+    def sequence(value: Any) -> list[Mapping[str, Any]]:
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, Mapping)]
+        if isinstance(value, Mapping):
+            for key in ("items", "categories", "children", "result"):
+                nested = value.get(key)
+                if nested is not None:
+                    found = sequence(nested)
+                    if found:
+                        return found
+            if any(
+                key in value
+                for key in (
+                    "description_category_id",
+                    "descriptionCategoryId",
+                    "category_id",
+                    "categoryId",
+                    "type_id",
+                    "typeId",
+                )
+            ):
+                return [value]
+        return []
+
+    def field(node: Mapping[str, Any], *names: str) -> Any:
+        for name in names:
+            if node.get(name) is not None:
+                return node[name]
+        return None
+
+    def is_disabled(value: Any) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes"}
+        return bool(value)
+
+    roots = sequence(response.get("result", response))
     candidates: list[dict[str, Any]] = []
+    seen: set[tuple[int, int]] = set()
 
     def walk(node: Mapping[str, Any], parent_names: list[str]) -> None:
-        name = str(node.get("category_name") or node.get("name") or "").strip()
+        name = str(field(node, "category_name", "categoryName", "name") or "").strip()
         path = parent_names + ([name] if name else [])
-        category_id = _as_int(
-            node.get("description_category_id")
-            if node.get("description_category_id") is not None
-            else node.get("category_id")
-        )
-        type_id = _as_int(node.get("type_id"))
-        disabled = bool(node.get("disabled"))
-        if category_id is not None and type_id not in (None, 0) and not disabled:
+        category_id = _as_int(field(
+            node,
+            "description_category_id",
+            "descriptionCategoryId",
+            "category_id",
+            "categoryId",
+        ))
+        type_data = node.get("type") if isinstance(node.get("type"), Mapping) else {}
+        type_id = _as_int(field(node, "type_id", "typeId") or field(type_data, "id", "type_id", "typeId"))
+        disabled = is_disabled(field(node, "disabled", "is_disabled", "isDisabled"))
+        children = sequence(field(node, "children", "child_categories", "childCategories"))
+        if (
+            category_id is not None
+            and type_id not in (None, 0)
+            and not disabled
+            and not children
+            and (category_id, type_id) not in seen
+        ):
+            seen.add((category_id, type_id))
             candidates.append(
                 {
                     "ozon_category_id": category_id,
                     "ozon_type_id": type_id,
                     "category_name_ru": name,
                     "category_path_ru": path,
-                    "type_name_ru": node.get("type_name"),
+                    "type_name_ru": field(node, "type_name", "typeName") or field(type_data, "name", "type_name", "typeName"),
                 }
             )
-        types = node.get("types") or []
-        if isinstance(types, list) and category_id is not None and not disabled:
+        types = sequence(field(node, "types", "category_types", "categoryTypes"))
+        if category_id is not None and not disabled and not children:
             for item in types:
-                if not isinstance(item, Mapping):
-                    continue
-                nested_type_id = _as_int(item.get("type_id") or item.get("id"))
-                if nested_type_id not in (None, 0) and not item.get("disabled"):
+                nested_type_id = _as_int(field(item, "type_id", "typeId", "id"))
+                pair = (category_id, nested_type_id) if nested_type_id is not None else None
+                if (
+                    nested_type_id not in (None, 0)
+                    and not is_disabled(field(item, "disabled", "is_disabled", "isDisabled"))
+                    and pair not in seen
+                ):
+                    seen.add((category_id, nested_type_id))
                     candidates.append(
                         {
                             "ozon_category_id": category_id,
                             "ozon_type_id": nested_type_id,
                             "category_name_ru": name,
                             "category_path_ru": path,
-                            "type_name_ru": item.get("type_name") or item.get("name"),
+                            "type_name_ru": field(item, "type_name", "typeName", "name"),
                         }
                     )
-        children = node.get("children") or []
-        if isinstance(children, list):
-            for child in children:
-                if isinstance(child, Mapping):
-                    walk(child, path)
+        for child in children:
+            walk(child, path)
 
-    if isinstance(roots, list):
-        for root in roots:
-            if isinstance(root, Mapping):
-                walk(root, [])
+    for root in roots:
+        walk(root, [])
     return candidates
 
 
