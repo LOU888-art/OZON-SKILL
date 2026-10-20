@@ -138,16 +138,23 @@ def _flatten_categories(response: Mapping[str, Any]) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     seen: set[tuple[int, int]] = set()
 
-    def walk(node: Mapping[str, Any], parent_names: list[str]) -> None:
+    def walk(
+        node: Mapping[str, Any],
+        parent_names: list[str],
+        inherited_category_id: int | None = None,
+        inherited_category_name: str = "",
+    ) -> None:
         name = str(field(node, "category_name", "categoryName", "name") or "").strip()
         path = parent_names + ([name] if name else [])
-        category_id = _as_int(field(
+        own_category_id = _as_int(field(
             node,
             "description_category_id",
             "descriptionCategoryId",
             "category_id",
             "categoryId",
         ))
+        category_id = own_category_id if own_category_id is not None else inherited_category_id
+        category_name = name if own_category_id is not None and name else inherited_category_name
         type_data = node.get("type") if isinstance(node.get("type"), Mapping) else {}
         type_id = _as_int(field(node, "type_id", "typeId") or field(type_data, "id", "type_id", "typeId"))
         disabled = is_disabled(field(node, "disabled", "is_disabled", "isDisabled"))
@@ -171,7 +178,7 @@ def _flatten_categories(response: Mapping[str, Any]) -> list[dict[str, Any]]:
                 {
                     "ozon_category_id": category_id,
                     "ozon_type_id": type_id,
-                    "category_name_ru": name,
+                    "category_name_ru": category_name,
                     "category_path_ru": path,
                     "type_name_ru": field(node, "type_name", "typeName") or field(type_data, "name", "type_name", "typeName"),
                 }
@@ -191,13 +198,13 @@ def _flatten_categories(response: Mapping[str, Any]) -> list[dict[str, Any]]:
                         {
                             "ozon_category_id": category_id,
                             "ozon_type_id": nested_type_id,
-                            "category_name_ru": name,
+                            "category_name_ru": category_name,
                             "category_path_ru": path,
                             "type_name_ru": field(item, "type_name", "typeName", "name"),
                         }
                     )
         for child in children:
-            walk(child, path)
+            walk(child, path, category_id, category_name)
 
     for root in roots:
         walk(root, [])
@@ -265,7 +272,9 @@ def _category_tree_shape(response: Mapping[str, Any]) -> str:
             )
             if category_id is not None:
                 category_nodes += 1
-                type_id = _as_int(first(value, "type_id", "typeId"))
+            raw_type_id = first(value, "type_id", "typeId")
+            if raw_type_id is not None:
+                type_id = _as_int(raw_type_id)
                 state = disabled_state(
                     first(value, "disabled", "is_disabled", "isDisabled")
                 )
