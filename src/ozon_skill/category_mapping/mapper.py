@@ -88,12 +88,6 @@ def _flatten_categories(response: Mapping[str, Any]) -> list[dict[str, Any]]:
         if isinstance(value, list):
             return [item for item in value if isinstance(item, Mapping)]
         if isinstance(value, Mapping):
-            for key in ("items", "categories", "children", "result"):
-                nested = value.get(key)
-                if nested is not None:
-                    found = sequence(nested)
-                    if found:
-                        return found
             if any(
                 key in value
                 for key in (
@@ -106,6 +100,27 @@ def _flatten_categories(response: Mapping[str, Any]) -> list[dict[str, Any]]:
                 )
             ):
                 return [value]
+            for key in (
+                "items",
+                "categories",
+                "children",
+                "result",
+                "data",
+                "category_tree",
+                "categoryTree",
+            ):
+                nested = value.get(key)
+                if nested is not None:
+                    found = sequence(nested)
+                    if found:
+                        return found
+            # OZON has changed protobuf/JSON wrapper names before. Traverse an
+            # unknown wrapper without interpreting any scalar as an ID.
+            for nested in value.values():
+                if isinstance(nested, (list, Mapping)):
+                    found = sequence(nested)
+                    if found:
+                        return found
         return []
 
     def field(node: Mapping[str, Any], *names: str) -> Any:
@@ -136,7 +151,14 @@ def _flatten_categories(response: Mapping[str, Any]) -> list[dict[str, Any]]:
         type_data = node.get("type") if isinstance(node.get("type"), Mapping) else {}
         type_id = _as_int(field(node, "type_id", "typeId") or field(type_data, "id", "type_id", "typeId"))
         disabled = is_disabled(field(node, "disabled", "is_disabled", "isDisabled"))
-        children = sequence(field(node, "children", "child_categories", "childCategories"))
+        children = sequence(field(
+            node,
+            "children",
+            "child_categories",
+            "childCategories",
+            "subcategories",
+            "subCategories",
+        ))
         if (
             category_id is not None
             and type_id not in (None, 0)
@@ -180,6 +202,37 @@ def _flatten_categories(response: Mapping[str, Any]) -> list[dict[str, Any]]:
     for root in roots:
         walk(root, [])
     return candidates
+
+
+def _category_tree_shape(response: Mapping[str, Any]) -> str:
+    """Return a credential-free structural summary for actionable errors."""
+
+    mapping_count = 0
+    list_count = 0
+    relevant_keys: set[str] = set()
+    interesting = re.compile(r"category|type|child|disabled|result|item|data", re.I)
+
+    def visit(value: Any) -> None:
+        nonlocal mapping_count, list_count
+        if isinstance(value, Mapping):
+            mapping_count += 1
+            for key, nested in value.items():
+                key_text = str(key)
+                if interesting.search(key_text):
+                    relevant_keys.add(key_text)
+                visit(nested)
+        elif isinstance(value, list):
+            list_count += 1
+            for nested in value:
+                visit(nested)
+
+    visit(response)
+    root_keys = sorted(str(key) for key in response.keys())[:12]
+    observed = sorted(relevant_keys)[:24]
+    return (
+        f"root_keys={root_keys}; mappings={mapping_count}; lists={list_count}; "
+        f"observed_keys={observed}"
+    )
 
 
 def _score_category(
@@ -482,7 +535,10 @@ def map_listing(
         tree_response, source, preferred_category_type
     )
     if not candidates:
-        raise ValueError("OZON category tree contains no selectable category/type pairs")
+        raise ValueError(
+            "OZON 类目树没有可创建的末级 category/type；"
+            + _category_tree_shape(tree_response)
+        )
     selected = candidates[0]
     category_id = selected["ozon_category_id"]
     type_id = selected["ozon_type_id"]
