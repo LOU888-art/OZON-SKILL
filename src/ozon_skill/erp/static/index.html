@@ -120,6 +120,16 @@
     </div>
   </dialog>
 
+  <dialog id="imagesDialog" class="images-dialog-shell">
+    <div class="dialog-card images-dialog">
+      <div class="dialog-head"><div><span class="eyebrow">IMAGE SELECTION</span><h3>商品图片管理</h3></div><button id="closeImagesBtn" class="close" type="button">×</button></div>
+      <p class="dialog-note">移除的图片仍保留在原始采集产物中用于审计，但不会进入俄语翻译、AI 生图、Rich Content 或最终上传。至少保留一张主图。</p>
+      <div class="image-toolbar"><strong id="imageSelectionCount">正在读取…</strong><button id="selectMainImagesBtn" type="button" class="ghost">仅保留主图</button></div>
+      <div id="imageGallery" class="image-gallery"></div>
+      <div class="dialog-actions"><button id="cancelImagesBtn" type="button" class="ghost">取消</button><button id="saveImagesBtn" type="button" class="primary">保存图片清单</button></div>
+    </div>
+  </dialog>
+
   <div id="toast" class="toast"></div>
   <script src="/static/app.js" defer></script>
 </body>

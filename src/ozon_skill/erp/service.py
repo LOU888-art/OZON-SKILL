@@ -50,6 +50,7 @@ STAGE_FILES = {
     4: "04_payload.json",
     5: "05_upload_log.json",
 }
+IMAGE_SELECTION_FILE = "image-selection.json"
 _PIPELINE_ID = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 
 
@@ -368,6 +369,99 @@ class PipelineService:
     def _state_path(self, pipeline_id: Any) -> Path:
         return self.directory(pipeline_id) / "pipeline.json"
 
+    def _image_selection_path(self, pipeline_id: Any) -> Path:
+        return self.directory(pipeline_id) / IMAGE_SELECTION_FILE
+
+    def _selected_image_items(
+        self, pipeline_id: str, source: Mapping[str, Any]
+    ) -> list[Mapping[str, Any]]:
+        items = _image_items(source)
+        path = self._image_selection_path(pipeline_id)
+        if not path.exists():
+            return items
+        selection = _read_object(path)
+        selected_urls = selection.get("selected_urls")
+        if not isinstance(selected_urls, list):
+            raise PipelineError(f"{IMAGE_SELECTION_FILE} 的 selected_urls 必须是数组")
+        selected = {str(url) for url in selected_urls}
+        return [item for item in items if str(item.get("url")) in selected]
+
+    def list_images(self, pipeline_id: Any) -> dict[str, Any]:
+        pipeline_id = _safe_pipeline_id(pipeline_id)
+        raw = self.read_artifact(pipeline_id, 1)
+        items = _image_items(raw)
+        selected = {
+            str(item.get("url"))
+            for item in self._selected_image_items(pipeline_id, raw)
+        }
+        images = [
+            {
+                "url": str(item.get("url")),
+                "source_role": item.get("source_role"),
+                "width": item.get("width"),
+                "height": item.get("height"),
+                "selected": str(item.get("url")) in selected,
+            }
+            for item in items
+        ]
+        return {
+            "pipeline_id": pipeline_id,
+            "images": images,
+            "total_count": len(images),
+            "selected_count": sum(1 for item in images if item["selected"]),
+        }
+
+    def save_image_selection(
+        self, pipeline_id: Any, selected_urls: Any
+    ) -> dict[str, Any]:
+        pipeline_id = _safe_pipeline_id(pipeline_id)
+        if not isinstance(selected_urls, list) or any(
+            not isinstance(url, str) for url in selected_urls
+        ):
+            raise PipelineError("selected_urls 必须是图片 URL 数组")
+        with self._lock:
+            running = self._background_jobs.get((pipeline_id, 3))
+            if running is not None and running.is_alive():
+                raise PipelineError("阶段 3 正在处理图片，完成后才能修改清单", status=409)
+            raw = self.read_artifact(pipeline_id, 1)
+            items = _image_items(raw)
+            available = {str(item.get("url")) for item in items}
+            requested = list(dict.fromkeys(url.strip() for url in selected_urls))
+            if any(url not in available for url in requested):
+                raise PipelineError("图片清单包含不属于当前商品的 URL")
+            selected = set(requested)
+            if not any(
+                item.get("source_role") == "images"
+                and str(item.get("url")) in selected
+                for item in items
+            ):
+                raise PipelineError("至少需要保留一张商品主图")
+            ordered = [
+                str(item.get("url"))
+                for item in items
+                if str(item.get("url")) in selected
+            ]
+            _atomic_json(
+                self._image_selection_path(pipeline_id),
+                {
+                    "schema_version": "1.0",
+                    "source_offer_id": pipeline_id,
+                    "selected_urls": ordered,
+                    "updated_at": _now(),
+                },
+            )
+            state_path = self._state_path(pipeline_id)
+            state = _read_object(state_path)
+            for stage_number in range(3, 6):
+                stage = (state.get("stages") or {}).get(str(stage_number))
+                if isinstance(stage, dict):
+                    stage["status"] = "STALE"
+                    stage["stale_after_image_selection"] = True
+                    stage["checked_at"] = _now()
+            state["updated_at"] = _now()
+            _atomic_json(state_path, state)
+        return self.list_images(pipeline_id)
+
     def _record(self, pipeline_id: str, stage: int, passed: bool, failures: list[str]) -> None:
         path = self._state_path(pipeline_id)
         state = _read_object(path) if path.exists() else {
@@ -482,6 +576,7 @@ class PipelineService:
                 raise PipelineError(str(exc), status=502) from exc
             raw = normalize_alphashop_offer(exchange.payload, pipeline_id)
             failures = gate_stage_1(raw)
+            self._image_selection_path(pipeline_id).unlink(missing_ok=True)
             _atomic_json(self.path(pipeline_id, 1), raw)
             self._record(pipeline_id, 1, not failures, failures)
             return {
@@ -585,10 +680,13 @@ class PipelineService:
             try:
                 if media_mode == "ai_generate":
                     relay = self.ai_provider.client()
-                    inspection = generate_all_images(_image_items(raw), relay, raw)
+                    inspection = generate_all_images(
+                        self._selected_image_items(pipeline_id, raw), relay, raw
+                    )
                 else:
                     inspection = translate_all_images(
-                        _image_items(raw), AlphaShopClient.from_environment()
+                        self._selected_image_items(pipeline_id, raw),
+                        AlphaShopClient.from_environment(),
                     )
             except AlphaShopInsufficientPointsError as exc:
                 failures = [str(exc)]
