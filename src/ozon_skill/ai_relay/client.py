@@ -21,6 +21,32 @@ class AiRelayError(RuntimeError):
     """The relay returned an unusable or unsafe response."""
 
 
+def _safe_error_detail(raw: str) -> tuple[str | None, str | None]:
+    """Extract only upstream error metadata and redact credential-like text."""
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None, None
+    if not isinstance(payload, Mapping):
+        return None, None
+    error = payload.get("error")
+    source = error if isinstance(error, Mapping) else payload
+    code = source.get("code") or source.get("type") or payload.get("code")
+    message = source.get("message") or payload.get("message")
+    safe_code = str(code)[:80] if code is not None else None
+    if message is None:
+        return safe_code, None
+    safe_message = str(message)[:300]
+    safe_message = re.sub(r"sk-[A-Za-z0-9_-]+", "[REDACTED]", safe_message)
+    safe_message = re.sub(
+        r"(?i)(authorization|api[-_ ]?key|bearer)\s*[:=]?\s*\S+",
+        r"\1 [REDACTED]",
+        safe_message,
+    )
+    return safe_code, safe_message
+
+
 def _https_base_url(value: str) -> str:
     result = value.strip().rstrip("/")
     parsed = urlparse(result)
@@ -101,7 +127,15 @@ class AiRelayClient:
             ),
         )
 
-    def _post(self, path: str, api_key: str | None, body: Mapping[str, Any]) -> dict[str, Any]:
+    def _post(
+        self,
+        path: str,
+        api_key: str | None,
+        body: Mapping[str, Any],
+        *,
+        operation: str,
+        model: str,
+    ) -> dict[str, Any]:
         if not api_key:
             raise AiRelayError("AI 中转站对应的 API Key 尚未配置")
         request = Request(
@@ -120,12 +154,21 @@ class AiRelayClient:
                 raw = response.read().decode("utf-8", errors="replace")
                 status = response.status
         except HTTPError as exc:
-            # Do not return upstream response text: some gateways reflect tokens.
-            raise AiRelayError(f"AI 中转站 HTTP {exc.code}") from exc
+            raw = exc.read(16 * 1024).decode("utf-8", errors="replace")
+            code, message = _safe_error_detail(raw)
+            detail = f"；code={code}" if code else ""
+            detail += f"；message={message}" if message else ""
+            if exc.code == 503:
+                detail += "；上游暂无可用通道，请核对模型名称或稍后重试"
+            raise AiRelayError(
+                f"AI 中转站{operation}请求失败：HTTP {exc.code}；model={model}{detail}"
+            ) from exc
         except URLError as exc:
-            raise AiRelayError(f"AI 中转站连接失败：{exc.reason}") from exc
+            raise AiRelayError(f"AI 中转站{operation}连接失败：{exc.reason}") from exc
         if status != 200:
-            raise AiRelayError(f"AI 中转站 HTTP {status}")
+            raise AiRelayError(
+                f"AI 中转站{operation}请求失败：HTTP {status}；model={model}"
+            )
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -184,6 +227,8 @@ class AiRelayClient:
                 "temperature": 0.3,
                 "response_format": {"type": "json_object"},
             },
+            operation="文本生成",
+            model=self.text_model,
         )
         return _json_object(_message_text(response))
 
@@ -218,6 +263,8 @@ class AiRelayClient:
                 "quality": "high",
                 "response_format": "url",
             },
+            operation="图片生成",
+            model=self.image_model,
         )
         return _image_url(response)
 
