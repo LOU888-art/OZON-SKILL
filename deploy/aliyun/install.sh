@@ -44,7 +44,7 @@ mkdir -p "$app_dir" "$state_dir/work" "$config_dir" "$nginx_secret_dir"
 cp -a "$project_root"/. "$app_dir"/
 python3.11 -m venv "$venv_dir"
 "$venv_dir/bin/python" -m pip install --upgrade pip setuptools
-"$venv_dir/bin/python" -m pip install --no-build-isolation "$app_dir"
+"$venv_dir/bin/python" -m pip install --no-build-isolation --force-reinstall "$app_dir"
 
 cat >"$config_dir/erp.env" <<EOF
 ALPHASHOP_ACCESS_KEY=$access_key
