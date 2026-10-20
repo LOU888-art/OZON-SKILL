@@ -51,6 +51,7 @@ systemctl enable ozon-erp
 systemctl restart ozon-erp
 
 if systemctl is-active --quiet firewalld; then
+  firewall-cmd --permanent --add-service=https >/dev/null
   firewall-cmd --permanent --add-port=8443/tcp >/dev/null
   firewall-cmd --reload >/dev/null
 fi
@@ -67,6 +68,6 @@ for attempt in 1 2 3 4 5; do
 done
 
 echo "ERP 登录已重置"
-echo "网址：https://8.217.125.205:8443/"
+echo "网址：https://8.217.125.205/"
 echo "用户名：$username"
 echo "密码未输出，请使用刚才输入的密码。"

@@ -99,9 +99,11 @@ fi
 
 cat >/etc/nginx/conf.d/ozon-erp.conf <<'EOF'
 server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
     listen 8443 ssl;
     listen [::]:8443 ssl;
-    server_name _;
+    server_name 8.217.125.205;
 
     ssl_certificate /etc/nginx/ozon-erp/server.crt;
     ssl_certificate_key /etc/nginx/ozon-erp/server.key;
@@ -140,6 +142,7 @@ systemctl enable nginx
 systemctl restart nginx
 
 if systemctl is-active --quiet firewalld; then
+  firewall-cmd --permanent --add-service=https >/dev/null
   firewall-cmd --permanent --add-port=8443/tcp >/dev/null
   firewall-cmd --reload >/dev/null
 fi
@@ -157,7 +160,7 @@ done
 
 echo
 echo "OZON ERP 部署完成"
-echo "网址：https://8.217.125.205:8443"
+echo "网址：https://8.217.125.205/"
 echo "用户名：admin"
 if [ -n "$admin_password" ]; then
   echo "临时密码：$admin_password"
