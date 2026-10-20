@@ -148,7 +148,7 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
             if image_match := _IMAGES_ROUTE.fullmatch(path):
                 self._json(
                     self.service.save_image_selection(
-                        unquote(image_match.group(1)), body.get("selected_urls")
+                        unquote(image_match.group(1)), body.get("image_plan")
                     )
                 )
                 return

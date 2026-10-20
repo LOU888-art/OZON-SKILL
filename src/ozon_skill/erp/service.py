@@ -26,7 +26,11 @@ from ozon_skill.alphashop.normalizer import normalize_alphashop_offer
 from ozon_skill.category_mapping.mapper import CONFIDENCE_THRESHOLD, map_listing
 from ozon_skill.category_mapping.provider import LiveMetadataProvider
 from ozon_skill.content_generation.generator import build_final_listing
-from ozon_skill.content_generation.media import generate_all_images, translate_all_images
+from ozon_skill.content_generation.media import (
+    generate_all_images,
+    process_image_plan,
+    translate_all_images,
+)
 from ozon_skill.content_generation.rich_content import (
     BANNED_IMAGE_HOSTS,
     validate_public_image_url,
@@ -51,6 +55,7 @@ STAGE_FILES = {
     5: "05_upload_log.json",
 }
 IMAGE_SELECTION_FILE = "image-selection.json"
+IMAGE_ACTIONS = {"exclude", "translate", "reference_8", "sku_main"}
 _PIPELINE_ID = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 
 
@@ -141,7 +146,13 @@ def _image_items(source: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         if url in seen:
             continue
         seen.add(url)
-        result.append({"url": url, "source_role": "sku_image"})
+        result.append(
+            {
+                "url": url,
+                "source_role": "sku_image",
+                "sku_id": sku.get("sku_id"),
+            }
+        )
     return result
 
 
@@ -378,77 +389,134 @@ class PipelineService:
         items = _image_items(source)
         path = self._image_selection_path(pipeline_id)
         if not path.exists():
-            return items
+            return [{**item, "action": "translate"} for item in items]
         selection = _read_object(path)
+        image_plan = selection.get("image_plan")
+        if isinstance(image_plan, list):
+            actions = {
+                str(entry.get("url")): str(entry.get("action"))
+                for entry in image_plan
+                if isinstance(entry, Mapping)
+            }
+            return [
+                {**item, "action": actions.get(str(item.get("url")), "exclude")}
+                for item in items
+                if actions.get(str(item.get("url")), "exclude") != "exclude"
+            ]
         selected_urls = selection.get("selected_urls")
         if not isinstance(selected_urls, list):
             raise PipelineError(f"{IMAGE_SELECTION_FILE} 的 selected_urls 必须是数组")
         selected = {str(url) for url in selected_urls}
-        return [item for item in items if str(item.get("url")) in selected]
+        return [
+            {**item, "action": "translate"}
+            for item in items
+            if str(item.get("url")) in selected
+        ]
 
     def list_images(self, pipeline_id: Any) -> dict[str, Any]:
         pipeline_id = _safe_pipeline_id(pipeline_id)
         raw = self.read_artifact(pipeline_id, 1)
         items = _image_items(raw)
-        selected = {
-            str(item.get("url"))
-            for item in self._selected_image_items(pipeline_id, raw)
+        selected_items = self._selected_image_items(pipeline_id, raw)
+        actions = {
+            str(item.get("url")): str(item.get("action")) for item in selected_items
         }
         images = [
             {
                 "url": str(item.get("url")),
                 "source_role": item.get("source_role"),
+                "sku_id": item.get("sku_id"),
                 "width": item.get("width"),
                 "height": item.get("height"),
-                "selected": str(item.get("url")) in selected,
+                "action": actions.get(str(item.get("url")), "exclude"),
+                "selected": actions.get(str(item.get("url")), "exclude")
+                != "exclude",
             }
             for item in items
         ]
+        ai_calls = sum(
+            8 if item["action"] == "reference_8" else 1
+            for item in images
+            if item["action"] in {"reference_8", "sku_main"}
+        )
+        translation_calls = sum(
+            1 for item in images if item["action"] == "translate"
+        )
         return {
             "pipeline_id": pipeline_id,
             "images": images,
             "total_count": len(images),
             "selected_count": sum(1 for item in images if item["selected"]),
+            "estimated_ai_calls": ai_calls,
+            "estimated_translation_calls": translation_calls,
         }
 
     def save_image_selection(
-        self, pipeline_id: Any, selected_urls: Any
+        self, pipeline_id: Any, image_plan: Any
     ) -> dict[str, Any]:
         pipeline_id = _safe_pipeline_id(pipeline_id)
-        if not isinstance(selected_urls, list) or any(
-            not isinstance(url, str) for url in selected_urls
+        if not isinstance(image_plan, list) or any(
+            not isinstance(entry, Mapping) for entry in image_plan
         ):
-            raise PipelineError("selected_urls 必须是图片 URL 数组")
+            raise PipelineError("image_plan 必须是逐图处理方案数组")
         with self._lock:
             running = self._background_jobs.get((pipeline_id, 3))
             if running is not None and running.is_alive():
                 raise PipelineError("阶段 3 正在处理图片，完成后才能修改清单", status=409)
             raw = self.read_artifact(pipeline_id, 1)
             items = _image_items(raw)
-            available = {str(item.get("url")) for item in items}
-            requested = list(dict.fromkeys(url.strip() for url in selected_urls))
-            if any(url not in available for url in requested):
+            by_url = {str(item.get("url")): item for item in items}
+            requested: dict[str, str] = {}
+            for entry in image_plan:
+                url = str(entry.get("url") or "").strip()
+                action = str(entry.get("action") or "exclude").strip()
+                if url in requested:
+                    raise PipelineError("同一图片不能配置多次")
+                requested[url] = action
+            if any(url not in by_url for url in requested):
                 raise PipelineError("图片清单包含不属于当前商品的 URL")
-            selected = set(requested)
-            if not any(
-                item.get("source_role") == "images"
-                and str(item.get("url")) in selected
-                for item in items
+            if any(action not in IMAGE_ACTIONS for action in requested.values()):
+                raise PipelineError("图片处理方式无效")
+            if sum(1 for action in requested.values() if action == "reference_8") > 1:
+                raise PipelineError("只能选择一张图片作为共用八图参考")
+            if any(
+                action == "sku_main"
+                and by_url[url].get("source_role") != "sku_image"
+                for url, action in requested.items()
             ):
-                raise PipelineError("至少需要保留一张商品主图")
-            ordered = [
-                str(item.get("url"))
+                raise PipelineError("只有 SKU 图片可以选择生成 SKU 专属主图")
+            active_actions = {
+                action for action in requested.values() if action != "exclude"
+            }
+            if not active_actions:
+                raise PipelineError("至少需要选择一张图片进行处理")
+            if not active_actions.intersection({"reference_8", "sku_main"}):
+                raise PipelineError("至少选择一张八图参考或 SKU 主图，才能生成商品图库")
+            ordered_plan = [
+                {
+                    "url": str(item.get("url")),
+                    "action": requested.get(str(item.get("url")), "exclude"),
+                    "source_role": item.get("source_role"),
+                    "sku_id": item.get("sku_id"),
+                }
                 for item in items
-                if str(item.get("url")) in selected
             ]
             _atomic_json(
                 self._image_selection_path(pipeline_id),
                 {
                     "schema_version": "1.0",
                     "source_offer_id": pipeline_id,
-                    "selected_urls": ordered,
+                    "image_plan": ordered_plan,
+                    "selected_urls": [
+                        item["url"]
+                        for item in ordered_plan
+                        if item["action"] != "exclude"
+                    ],
                     "updated_at": _now(),
                 },
+            )
+            (self.directory(pipeline_id) / "03_media_progress.json").unlink(
+                missing_ok=True
             )
             state_path = self._state_path(pipeline_id)
             state = _read_object(state_path)
@@ -577,6 +645,9 @@ class PipelineService:
             raw = normalize_alphashop_offer(exchange.payload, pipeline_id)
             failures = gate_stage_1(raw)
             self._image_selection_path(pipeline_id).unlink(missing_ok=True)
+            (self.directory(pipeline_id) / "03_media_progress.json").unlink(
+                missing_ok=True
+            )
             _atomic_json(self.path(pipeline_id, 1), raw)
             self._record(pipeline_id, 1, not failures, failures)
             return {
@@ -670,15 +741,56 @@ class PipelineService:
             raise PipelineError("图片必须通过已配置的 API 处理，不接受人工清单绕过")
         media_mode = str(media_mode or "").strip().lower()
         text_mode = str(text_mode or "").strip().lower()
-        if media_mode not in {"alphashop_translate", "ai_generate"}:
-            raise PipelineError("图片模式必须是 AlphaShop 翻译或 AI 生图")
+        if media_mode not in {"alphashop_translate", "ai_generate", "image_plan"}:
+            raise PipelineError("图片模式必须是逐图方案、AlphaShop 翻译或 AI 生图")
         if text_mode not in {"built_in", "ai_generate"}:
             raise PipelineError("文本模式必须是内置规则或 AI 生成")
         with self._lock:
             raw = self.read_artifact(pipeline_id, 1)
             mapped = self.read_artifact(pipeline_id, 2)
+            progress_path = self.directory(pipeline_id) / "03_media_progress.json"
             try:
-                if media_mode == "ai_generate":
+                if media_mode == "image_plan":
+                    planned_items = self._selected_image_items(pipeline_id, raw)
+                    plan_sha256 = hashlib.sha256(
+                        json.dumps(
+                            planned_items,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest()
+                    existing_results: list[Mapping[str, Any]] = []
+                    if progress_path.exists():
+                        previous_progress = _read_object(progress_path)
+                        if previous_progress.get("plan_sha256") == plan_sha256:
+                            existing_results = [
+                                row
+                                for row in previous_progress.get("results") or []
+                                if isinstance(row, Mapping)
+                            ]
+
+                    def save_progress(rows: Any) -> None:
+                        _atomic_json(
+                            progress_path,
+                            {
+                                "schema_version": "1.0",
+                                "source_offer_id": pipeline_id,
+                                "updated_at": _now(),
+                                "plan_sha256": plan_sha256,
+                                "results": list(rows),
+                            },
+                        )
+
+                    inspection = process_image_plan(
+                        planned_items,
+                        self.ai_provider.client(),
+                        AlphaShopClient.from_environment(),
+                        raw,
+                        progress=save_progress,
+                        existing_results=existing_results,
+                    )
+                elif media_mode == "ai_generate":
                     relay = self.ai_provider.client()
                     inspection = generate_all_images(
                         self._selected_image_items(pipeline_id, raw), relay, raw
@@ -693,9 +805,22 @@ class PipelineService:
                 self._record(pipeline_id, 3, False, failures)
                 raise PipelineError(str(exc), status=402) from exc
             except (AiRelayError, AiProviderConfigurationError) as exc:
-                failures = [str(exc)]
+                progress_note = ""
+                if progress_path.exists():
+                    progress_value = _read_object(progress_path)
+                    progress_rows = progress_value.get("results") or []
+                    succeeded = sum(
+                        1
+                        for row in progress_rows
+                        if isinstance(row, Mapping) and row.get("final_public_url")
+                    )
+                    progress_note = (
+                        f"；本轮生图/翻译已成功 {succeeded} 张，"
+                        f"已记录 {len(progress_rows)} 条进度"
+                    )
+                failures = [f"{exc}{progress_note}"]
                 self._record(pipeline_id, 3, False, failures)
-                raise PipelineError(str(exc), status=502) from exc
+                raise PipelineError(failures[0], status=502) from exc
             generated_copy = None
             if text_mode == "ai_generate":
                 try:
@@ -723,6 +848,11 @@ class PipelineService:
                     "final_public_url": item.get("final_public_url"),
                     "contains_chinese": item.get("contains_chinese"),
                     "translation_status": item.get("translation_status"),
+                    "plan_action": item.get("plan_action"),
+                    "module_number": item.get("module_number"),
+                    "image_usage": item.get("image_usage"),
+                    "sku_id": item.get("sku_id"),
+                    "shared_across_skus": item.get("shared_across_skus"),
                     "error": item.get("error"),
                 }
                 for item in inspection
@@ -748,10 +878,18 @@ class PipelineService:
         normalized_text_mode = str(text_mode or "").strip().lower()
         if media_manifest is not None:
             raise PipelineError("图片必须通过已配置的 API 处理，不接受人工清单绕过")
-        if normalized_media_mode not in {"alphashop_translate", "ai_generate"}:
-            raise PipelineError("图片模式必须是 AlphaShop 翻译或 AI 生图")
+        if normalized_media_mode not in {
+            "alphashop_translate",
+            "ai_generate",
+            "image_plan",
+        }:
+            raise PipelineError("图片模式必须是逐图方案、AlphaShop 翻译或 AI 生图")
         if normalized_text_mode not in {"built_in", "ai_generate"}:
             raise PipelineError("文本模式必须是内置规则或 AI 生成")
+        if normalized_media_mode == "image_plan" and not self._image_selection_path(
+            pipeline_id
+        ).exists():
+            raise PipelineError("请先在阶段 1 的“图片”中保存逐图处理方案", status=409)
 
         key = (pipeline_id, 3)
         with self._lock:

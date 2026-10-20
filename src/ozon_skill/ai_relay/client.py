@@ -247,6 +247,8 @@ class AiRelayClient:
         source_image_url: str,
         source_role: str | None,
         source: Mapping[str, Any],
+        *,
+        prompt_override: str | None = None,
     ) -> str:
         facts = {
             "title_zh": source.get("title_zh"),
@@ -254,7 +256,7 @@ class AiRelayClient:
             "source_role": source_role,
             "reference_image_url": source_image_url,
         }
-        prompt = (
+        prompt = prompt_override or (
             "Создай реалистичное товарное изображение для OZON на основе фактов и "
             "референса ниже. Сохрани форму, цвет, комплектацию и конструкцию товара. "
             "Не добавляй логотипы и бренды. Удали китайский текст; если текст нужен, "
@@ -269,9 +271,10 @@ class AiRelayClient:
                 "model": self.image_model,
                 "prompt": prompt,
                 "n": 1,
-                "size": "1024x1024",
+                "size": "1024x1536",
                 "quality": "high",
                 "response_format": "url",
+                "reference_image_url": source_image_url,
             },
             operation="图片生成",
             model=self.image_model,

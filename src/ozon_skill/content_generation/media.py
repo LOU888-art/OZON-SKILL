@@ -8,8 +8,9 @@ import json
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -286,5 +287,213 @@ def generate_all_images(
         except ValueError as exc:
             record["error"] = str(exc)[:500]
         results.append(record)
+    return results
+
+
+_DETAIL_MODULES = (
+    "МОДУЛЬ: главное изображение. Композиция: товар крупно, насыщенная и выразительная "
+    "сцена, заголовок и 1–2 подтвержденных преимущества справа. Положение: главный "
+    "ракурс целиком. Фон: релевантная реальная среда применения. Свет: контрастный "
+    "профессиональный, без потери деталей. Цвет: эстетика российского маркетплейса, "
+    "согласованная с цветом товара. Текст: название и короткие преимущества по-русски.",
+    "МОДУЛЬ: параметры. Композиция: минималистичная информационная сетка, размерные "
+    "линии и карточки только с известными параметрами. Положение: товар вертикально "
+    "по центру, полностью виден спереди. Фон: чистый белый. Свет: ровный мягкий без "
+    "жестких теней. Цвет: белый и темно-серый. Текст: проверенные размеры и свойства.",
+    "МОДУЛЬ: промо. Композиция: крупный товар, слева краткое резюме, снизу округлая "
+    "кнопка. Положение: слегка под углом, объемно. Фон: светло-серый, деликатно "
+    "размытый интерьер. Свет: объемный коммерческий, яркий и комфортный. Цвет: серый "
+    "с одним акцентным цветом. Текст: подтвержденный итог и «Купить сейчас».",
+    "МОДУЛЬ: сравнение. Композиция: две колонки; слева типовая старая конструкция, "
+    "справа этот товар крупнее, снизу итог. Положение: симметрично, правый товар имеет "
+    "визуальный приоритет. Фон: единый светло-серый. Свет: симметричный мягкий, справа "
+    "чуть ярче. Цвет: малонасыщенный серый и акцентный цвет. Текст: только честные, "
+    "подтвержденные различия без унижения конкурента.",
+    "МОДУЛЬ: использование человеком. Композиция: взрослая российская женщина и товар "
+    "в естественном масштабе, при уместности небольшой фрагмент результата. Положение: "
+    "реалистичное безопасное действие, анатомически точные руки и контакт. Фон: "
+    "подходящее фактам место использования. Свет: естественный коммерческий. Цвет: "
+    "теплый нейтральный. Текст: короткая русская подсказка о применении.",
+    "МОДУЛЬ: преимущества. Композиция: один крупный главный ракурс, две функциональные "
+    "метки, простые иконки и один круглый макро-фрагмент. Положение: по центру или "
+    "слегка под углом. Фон: чистый нейтральный. Свет: направленный мягкий. Цвет: единая "
+    "палитра серии. Текст: ровно 1–2 подтвержденных ключевых преимущества.",
+    "МОДУЛЬ: сценарии. Композиция: коллаж из 2–3 реальных сценариев, совместимых именно "
+    "с этим товаром; не использовать несвязанные примеры. Положение: товар присутствует "
+    "в каждом секторе под разным углом. Фон: реальные места применения. Свет: "
+    "согласованный естественный. Цвет: единая рамка или цветовая полоса. Текст: "
+    "краткие русские названия сценариев.",
+    "МОДУЛЬ: детали. Композиция: локальная часть товара занимает более 50% кадра, "
+    "макросъемка материала, соединений и конструкции. Положение: самый информативный "
+    "крупный план. Фон: очень чистый светло-серый или бежевый. Свет: профессиональный "
+    "микроконтраст. Цвет: нейтральный премиальный. Текст: минимальные русские подписи "
+    "только рядом с показанными деталями.",
+)
+
+
+def _listing_image_prompt(
+    source: Mapping[str, Any], module_number: int, *, sku_main: bool = False
+) -> str:
+    facts = {
+        "product_name": source.get("title_zh"),
+        "attributes": source.get("attributes_zh"),
+        "category": source.get("category_path_zh"),
+    }
+    if sku_main:
+        module = _DETAIL_MODULES[0]
+        purpose = "Это отдельное главное изображение конкретного SKU."
+    else:
+        module = _DETAIL_MODULES[module_number - 1]
+        purpose = f"Это модуль {module_number} из единой серии из 8 изображений."
+    return (
+        "Создай вертикальное товарное изображение для российского OZON. "
+        "Композиция строго 3:4; файл создается в ближайшем поддерживаемом вертикальном "
+        "размере. Сохрани сам товар, его форму, цвет, конструкцию и комплектацию по "
+        "референсу без подмены модели. Единый коммерческий стиль серии, согласованные "
+        "цвета и визуальный язык без логотипа и выдуманного бренда. Весь видимый текст "
+        "только на естественном русском языке; короткий, грамотный и читаемый. Не "
+        "придумывай параметры, преимущества и способы применения, которых нет во "
+        "входных фактах. Обязательные аспекты: композиция, положение товара, фон или "
+        "сцена, профессиональный свет, цветовая гамма и русский текст. "
+        f"{purpose} {module} ФАКТЫ: "
+        + json.dumps(facts, ensure_ascii=False, separators=(",", ":"))
+    )
+
+
+def _generate_with_retry(
+    client: AiRelayClient,
+    source_url: str,
+    source_role: str | None,
+    source: Mapping[str, Any],
+    prompt: str,
+) -> str:
+    last_error: AiRelayError | None = None
+    for attempt, delay in enumerate((0, 3, 8), start=1):
+        if delay:
+            time.sleep(delay)
+        try:
+            return client.generate_product_image(
+                source_url,
+                source_role,
+                source,
+                prompt_override=prompt,
+            )
+        except AiRelayError as exc:
+            last_error = exc
+            message = str(exc)
+            if not any(f"HTTP {status}" in message for status in (500, 502, 503)):
+                raise
+            if attempt == 3:
+                raise
+    assert last_error is not None
+    raise last_error
+
+
+def process_image_plan(
+    image_items: Sequence[Mapping[str, Any]],
+    relay: AiRelayClient,
+    translator: AlphaShopClient,
+    source: Mapping[str, Any],
+    *,
+    progress: Callable[[Sequence[Mapping[str, Any]]], None] | None = None,
+    existing_results: Sequence[Mapping[str, Any]] = (),
+) -> list[dict[str, Any]]:
+    """Run per-image translate, shared-eight, and SKU-main actions."""
+
+    results: list[dict[str, Any]] = []
+    cached = {
+        (
+            str(row.get("source_url")),
+            str(row.get("plan_action")),
+            row.get("module_number"),
+            str(row.get("sku_id")),
+        ): dict(row)
+        for row in existing_results
+        if isinstance(row, Mapping) and row.get("final_public_url")
+    }
+
+    def checkpoint() -> None:
+        if progress is not None:
+            progress(results)
+
+    for item in image_items:
+        action = str(item.get("action") or "translate")
+        source_url = str(item.get("url") or "")
+        if action == "translate":
+            cached_row = cached.get((source_url, action, None, str(item.get("sku_id"))))
+            if cached_row is not None:
+                validate_public_image_url(str(cached_row["final_public_url"]))
+                results.append(cached_row)
+                checkpoint()
+                continue
+            translated = translate_all_images([item], translator)[0]
+            translated.update(
+                {
+                    "plan_action": action,
+                    "image_usage": "rich_content",
+                    "shared_across_skus": True,
+                }
+            )
+            results.append(translated)
+            checkpoint()
+            continue
+        module_numbers = range(1, 9) if action == "reference_8" else (1,)
+        for module_number in module_numbers:
+            cached_row = cached.get(
+                (source_url, action, module_number, str(item.get("sku_id")))
+            )
+            if cached_row is not None:
+                validate_public_image_url(str(cached_row["final_public_url"]))
+                results.append(cached_row)
+                checkpoint()
+                continue
+            record: dict[str, Any] = {
+                "source_url": source_url,
+                "source_role": item.get("source_role"),
+                "sku_id": item.get("sku_id"),
+                "plan_action": action,
+                "module_number": module_number,
+                "download_status": "NOT_REQUIRED_REMOTE_API",
+                "ocr_status": "REVIEWED",
+                "contains_chinese": False,
+                "translation_status": "FAILED",
+                "final_public_url": None,
+                "generation_provider": "AI_RELAY",
+                "generation_model": relay.image_model,
+                "image_usage": (
+                    "sku_main"
+                    if action == "sku_main"
+                    else "shared_main"
+                    if module_number == 1
+                    else "shared_gallery"
+                ),
+                "shared_across_skus": action == "reference_8",
+            }
+            try:
+                validate_public_image_url(source_url)
+                generated_url = _generate_with_retry(
+                    relay,
+                    source_url,
+                    str(item.get("source_role") or "") or None,
+                    source,
+                    _listing_image_prompt(
+                        source, module_number, sku_main=action == "sku_main"
+                    ),
+                )
+                validate_public_image_url(generated_url)
+                record.update(
+                    {
+                        "translation_status": "AI_GENERATED",
+                        "final_public_url": generated_url,
+                    }
+                )
+                results.append(record)
+                checkpoint()
+            except (AiRelayError, ValueError) as exc:
+                record["error"] = str(exc)[:500]
+                results.append(record)
+                checkpoint()
+                if isinstance(exc, AiRelayError):
+                    raise
     return results
 

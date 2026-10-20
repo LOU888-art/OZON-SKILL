@@ -89,15 +89,36 @@ def _dimensions(
     )
 
 
-def _images(final: Mapping[str, Any]) -> list[str]:
-    result: list[str] = []
+def _images(final: Mapping[str, Any], sku_id: str | None = None) -> list[str]:
+    specific: list[str] = []
+    shared_main: list[str] = []
+    shared_gallery: list[str] = []
+    legacy: list[str] = []
     for item in final.get("image_processing") or []:
         if not isinstance(item, Mapping):
             continue
         url = item.get("final_public_url")
-        if isinstance(url, str) and url and url not in result:
-            result.append(url)
-    return result
+        if not isinstance(url, str) or not url:
+            continue
+        usage = item.get("image_usage")
+        if usage == "rich_content":
+            continue
+        if usage == "sku_main":
+            if sku_id is not None and str(item.get("sku_id")) == sku_id:
+                specific.append(url)
+        elif usage == "shared_main":
+            shared_main.append(url)
+        elif usage == "shared_gallery":
+            shared_gallery.append(url)
+        elif usage is None:
+            legacy.append(url)
+    # A SKU-specific main replaces the shared first image; modules 2–8 remain shared.
+    ordered = (
+        specific + shared_gallery + legacy
+        if specific
+        else shared_main + shared_gallery + legacy
+    )
+    return list(dict.fromkeys(ordered))
 
 
 def _api_attributes(
@@ -197,9 +218,6 @@ def assemble_import_payload(
     if final.get("rich_content_json") is None:
         errors.append("rich_content_json is not ready")
 
-    images = _images(final)
-    if not images:
-        errors.append("no verified public product images are available")
     dimensions, dimension_source = _dimensions(source, store.dimension_defaults)
     if dimensions is None:
         errors.append("dimensions and weight are missing and no estimate is configured")
@@ -246,6 +264,11 @@ def assemble_import_payload(
         errors.extend(attribute_errors)
         sku_id_value = sku.get("sku_id")
         sku_id = str(sku_id_value) if sku_id_value is not None else None
+        images = _images(final, sku_id)
+        if not images:
+            errors.append(
+                f"SKU {sku_id or 'default'} has no verified public product images"
+            )
         offer_id = _offer_id(store.store_id, source_offer_id, sku_id)
         offer_ids.append(offer_id)
         purchase_price = sku.get("purchase_price_cny")

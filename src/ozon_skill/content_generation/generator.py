@@ -217,25 +217,31 @@ def _tags() -> tuple[list[str], dict[str, list[str]]]:
 def _rich_content(
     media: Sequence[Mapping[str, Any]], description: str
 ) -> dict[str, Any] | None:
-    urls = [
-        str(item["final_public_url"])
-        for item in media
-        if item.get("final_public_url")
-        and item.get("ocr_status") in {"COMPLETED", "REVIEWED"}
-        and item.get("translation_status")
-        in {"NOT_REQUIRED", "TRANSLATED_AND_UPLOADED", "AI_GENERATED"}
-    ]
+    urls: list[str] = []
+    for item in media:
+        url = item.get("final_public_url")
+        usage = item.get("image_usage")
+        if usage in {"shared_main", "sku_main"}:
+            continue
+        if (
+            isinstance(url, str)
+            and url not in urls
+            and item.get("ocr_status") in {"COMPLETED", "REVIEWED"}
+            and item.get("translation_status")
+            in {"NOT_REQUIRED", "TRANSLATED_AND_UPLOADED", "AI_GENERATED"}
+        ):
+            urls.append(url)
     if not urls:
         return None
     block_titles = [
-        "Термокружка для ежедневных напитков",
-        "Объем 500 мл и корпус из нержавеющей стали",
-        "Для дома, офиса, автомобиля и поездок",
+        "Подробности товара",
+        "Характеристики и преимущества",
+        "Использование и детали",
     ]
     summary = description.split("\n\n")[0]
     blocks = [
         {"url": url, "title": block_titles[index % len(block_titles)], "text": summary}
-        for index, url in enumerate(urls[:3])
+        for index, url in enumerate(urls[:20])
     ]
     return build_rich_content(blocks)
 
