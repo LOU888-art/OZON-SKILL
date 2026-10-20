@@ -133,7 +133,8 @@ if command -v getenforce >/dev/null 2>&1 && [ "$(getenforce)" != "Disabled" ]; t
 fi
 
 systemctl daemon-reload
-systemctl enable --now ozon-erp
+systemctl enable ozon-erp
+systemctl restart ozon-erp
 nginx -t
 systemctl reload nginx
 
