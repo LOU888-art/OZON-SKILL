@@ -84,10 +84,36 @@ def _title_and_segments(
             "на прогулках и в путешествиях"
         )
     brand = _brand(prelisting, source)
-    parts = [core, key_attributes, scenario]
-    if brand:
-        parts.append(brand)
-    title = " — ".join([" ".join(parts[:2]), *parts[2:]])
+
+    def compose() -> str:
+        first = " ".join(part for part in (core, key_attributes) if part)
+        return " — ".join(part for part in (first, scenario, brand) if part)
+
+    title = compose()
+    if len(title) > 200:
+        scenario = "для дома, офиса, автомобиля, прогулок и поездок"
+        title = compose()
+    if len(title) > 200 and volume:
+        key_attributes = volume
+        title = compose()
+    for addition in (
+        "практичный выбор для комфортного ежедневного использования",
+        "подходит для себя и в подарок близким",
+        "удобно брать с собой каждый день",
+    ):
+        if len(title) >= 150:
+            break
+        candidate_scenario = f"{scenario}, {addition}"
+        previous = scenario
+        scenario = candidate_scenario
+        candidate = compose()
+        if len(candidate) <= 200:
+            title = candidate
+        else:
+            scenario = previous
+    if len(title) > 200:
+        shortened = title[:200].rsplit(" ", 1)[0].rstrip(" ,—-")
+        title = shortened
     return title, {
         "core_product_name": core,
         "key_attributes": key_attributes,

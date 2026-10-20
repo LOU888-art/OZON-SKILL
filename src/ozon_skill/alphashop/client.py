@@ -103,16 +103,68 @@ def _looks_like_api_error(payload: Mapping[str, Any]) -> bool:
 
 
 def _translated_image_url(payload: Mapping[str, Any]) -> str | None:
-    direct = payload.get("translatedImageUrl")
-    if isinstance(direct, str) and direct:
-        return direct
-    for key in ("result", "data"):
-        nested = payload.get(key)
-        if isinstance(nested, Mapping):
-            found = _translated_image_url(nested)
-            if found:
-                return found
-    return None
+    """Read AlphaShop image URLs across documented gateway wrapper variants."""
+
+    url_keys = {
+        "translatedimageurl",
+        "translatedurl",
+        "outputimageurl",
+        "resultimageurl",
+        "targetimageurl",
+        "translatedimage",
+        "outputimage",
+        "resultimage",
+        "targetimage",
+        "fileurl",
+        "downloadurl",
+        "imageurl",
+        "url",
+    }
+    container_keys = {"result", "data", "output", "images", "items"}
+
+    def is_url(value: Any) -> bool:
+        return isinstance(value, str) and value.strip().startswith(("https://", "http://"))
+
+    def visit(value: Any, *, scalar_allowed: bool = False) -> str | None:
+        if is_url(value) and scalar_allowed:
+            return str(value).strip()
+        if isinstance(value, Mapping):
+            for key, nested in value.items():
+                normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+                if normalized in url_keys and is_url(nested):
+                    return str(nested).strip()
+            for key, nested in value.items():
+                normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
+                found = visit(
+                    nested,
+                    scalar_allowed=scalar_allowed or normalized in container_keys,
+                )
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for nested in value:
+                found = visit(nested, scalar_allowed=scalar_allowed)
+                if found:
+                    return found
+        return None
+
+    return visit(payload)
+
+
+def _image_response_shape(payload: Mapping[str, Any]) -> str:
+    keys: set[str] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Mapping):
+            for key, nested in value.items():
+                keys.add(str(key))
+                visit(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                visit(nested)
+
+    visit(payload)
+    return f"response_keys={sorted(keys)[:30]}"
 
 
 def extract_external_category_pair(payload: Mapping[str, Any]) -> tuple[int, int]:
@@ -191,7 +243,10 @@ class AlphaShopClient:
         )
         translated = _translated_image_url(exchange.payload)
         if not translated:
-            raise AlphaShopApiError("AlphaShop 图片翻译响应缺少 translatedImageUrl")
+            raise AlphaShopApiError(
+                "AlphaShop 图片翻译响应缺少可识别的公开图片 URL；"
+                + _image_response_shape(exchange.payload)
+            )
         return translated, exchange
 
     def _post(
