@@ -11,6 +11,9 @@ from typing import Any, Mapping, Sequence
 from .rich_content import build_rich_content
 
 
+NO_BRAND_TITLE_RU = "без бренда"
+
+
 def _attribute_by_concept(prelisting: Mapping[str, Any], needle: str) -> Mapping[str, Any]:
     for item in prelisting.get("ozon_attributes") or []:
         if isinstance(item, Mapping) and needle.lower() in str(
@@ -38,19 +41,9 @@ def _source_attribute(source: Mapping[str, Any], *names: str) -> Any:
     return None
 
 
-def _has_cjk(value: str) -> bool:
-    return any("\u3400" <= char <= "\u9fff" for char in value)
-
-
 def _brand(prelisting: Mapping[str, Any], source: Mapping[str, Any]) -> str | None:
-    brand_attribute = _attribute_by_concept(prelisting, "бренд")
-    value = brand_attribute.get("value")
-    if isinstance(value, str) and value.strip() and not _has_cjk(value):
-        return value.strip()
-    source_value = _source_attribute(source, "品牌")
-    if isinstance(source_value, str) and source_value.strip() and not _has_cjk(source_value):
-        return source_value.strip()
-    return None
+    del prelisting, source
+    return NO_BRAND_TITLE_RU
 
 
 def _temperature_ru(source: Mapping[str, Any]) -> str | None:
@@ -120,8 +113,6 @@ def _title_validation(title: str, segments: Mapping[str, str | None]) -> dict[st
         issues.append("核心产品名不在前 60 个字符内")
     if excessive:
         issues.append("存在同一词根重复 3 次以上")
-    if not segments.get("brand"):
-        issues.append("缺少经过来源确认的品牌段")
     return {
         "length": length,
         "first_60_characters": first_60,
@@ -278,13 +269,6 @@ def build_final_listing(
     )
 
     confirmations = deepcopy(prelisting.get("needs_confirmation") or [])
-    if not segments.get("brand"):
-        confirmations.append(
-            {
-                "field": "title_ru.brand",
-                "reason": "采集数据和已映射属性中没有经过确认的品牌，不能用供应商名称代替",
-            }
-        )
     unresolved_media = [
         item for item in media_inspection if not item.get("final_public_url")
     ]

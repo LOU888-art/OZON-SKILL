@@ -7,6 +7,11 @@ from typing import Any, Mapping
 from ozon_skill.alibaba1688.normalizer import normalize_product
 
 
+def _is_brand_attribute(name: Any) -> bool:
+    normalized = str(name or "").strip().casefold().replace(" ", "")
+    return any(marker in normalized for marker in ("品牌", "商标", "brand", "товарныйзнак"))
+
+
 def _raw_contract(normalized: Mapping[str, Any]) -> dict[str, Any]:
     raw_attributes = normalized.get("attributes_zh")
     attributes: dict[str, Any] = {}
@@ -15,6 +20,7 @@ def _raw_contract(normalized: Mapping[str, Any]) -> dict[str, Any]:
             str(item.get("name")): item.get("value")
             for item in raw_attributes
             if isinstance(item, Mapping) and item.get("name") is not None
+            and not _is_brand_attribute(item.get("name"))
         }
     category = normalized.get("category_path_zh")
     category_id = category.get("selected_category_id") if isinstance(category, Mapping) else None

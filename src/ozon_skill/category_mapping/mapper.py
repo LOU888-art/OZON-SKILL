@@ -12,6 +12,7 @@ from .provider import MetadataProvider
 
 
 CONFIDENCE_THRESHOLD = 0.70
+NO_BRAND_VALUE_RU = "Нет бренда"
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ ATTRIBUTE_CONCEPTS = (
 )
 
 VALUE_CONCEPTS = (
+    Concept("no_brand", ("无品牌", "нет бренда", "без бренда"), ("нет бренда", "без бренда")),
     Concept("stainless_steel", ("不锈钢", "304不锈钢", "316不锈钢"), ("нержавеющая сталь",)),
     Concept("black", ("黑色", "曜石黑", "黑"), ("черный", "чёрный")),
     Concept("white", ("白色", "珍珠白", "白"), ("белый",)),
@@ -522,6 +524,14 @@ def _map_attributes(
         source_refs: list[dict[str, Any]] = []
         if concept is not None:
             values, source_refs = _source_attribute_values(source, concept)
+        if concept is not None and concept.name == "brand":
+            values = [NO_BRAND_VALUE_RU]
+            source_refs = [
+                {
+                    "location": "listing_policy.no_brand",
+                    "value": NO_BRAND_VALUE_RU,
+                }
+            ]
 
         item: dict[str, Any] = {
             "attribute_id": attribute_id,

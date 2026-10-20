@@ -209,7 +209,10 @@ def gate_stage_3(value: Mapping[str, Any]) -> list[str]:
             try:
                 validate_public_image_url(str(url or ""))
             except ValueError as exc:
-                failures.append(f"localized_images[{index}]：{exc}")
+                detail = item.get("error") if isinstance(item, Mapping) else None
+                failures.append(
+                    f"localized_images[{index}]：{str(detail)[:240] if detail else exc}"
+                )
     tags = value.get("tags_ru")
     if not isinstance(tags, list) or len(tags) > 30:
         failures.append("tags_ru 必须为不超过 30 项的数组")
@@ -498,7 +501,13 @@ class PipelineService:
                 raise PipelineError(str(exc), status=402) from exc
             final = build_final_listing(mapped, _source_for_mapper(raw), inspection)
             final["localized_images"] = [
-                {"source_url": item.get("source_url"), "final_public_url": item.get("final_public_url"), "contains_chinese": item.get("contains_chinese")}
+                {
+                    "source_url": item.get("source_url"),
+                    "final_public_url": item.get("final_public_url"),
+                    "contains_chinese": item.get("contains_chinese"),
+                    "translation_status": item.get("translation_status"),
+                    "error": item.get("error"),
+                }
                 for item in inspection
             ]
             failures = gate_stage_3(final)
