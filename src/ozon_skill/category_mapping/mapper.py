@@ -537,14 +537,18 @@ def _map_attributes(
         }
 
         if not values:
-            if required:
+            if required or dictionary:
                 item["mapping_status"] = "NEEDS_CONFIRMATION"
                 confirmations.append(
                     {
                         "field": "ozon_attribute",
                         "attribute_id": attribute_id,
                         "attribute_name_ru": name_ru,
-                        "reason": "OZON 必填属性无法从 attributes_zh 或 sku_list 可靠映射",
+                        "reason": (
+                            "OZON 必填属性无法从 attributes_zh 或 sku_list 可靠映射"
+                            if required
+                            else "OZON 可选字典属性无可靠来源值，未填自由文本并列入人工确认"
+                        ),
                     }
                 )
             mapped.append(item)
