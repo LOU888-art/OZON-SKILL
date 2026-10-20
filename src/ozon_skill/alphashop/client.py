@@ -31,6 +31,7 @@ _INSUFFICIENT_MARKERS = (
     "insufficient balance",
     "insufficient points",
     "balance not enough",
+    "fail_account_point_not_enough",
 )
 
 
@@ -99,7 +100,18 @@ def _looks_like_api_error(payload: Mapping[str, Any]) -> bool:
     if payload.get("success") is False:
         return True
     code = payload.get("code") or payload.get("errorCode") or payload.get("error_code")
-    return code not in (None, 0, "0", 200, "200", "SUCCESS", "success")
+    if code not in (None, 0, "0", 200, "200", "SUCCESS", "success"):
+        return True
+    result_code = payload.get("resultCode")
+    return result_code not in (
+        None,
+        0,
+        "0",
+        200,
+        "200",
+        "SUCCESS",
+        "success",
+    )
 
 
 def _translated_image_url(payload: Mapping[str, Any]) -> str | None:
@@ -325,7 +337,15 @@ class AlphaShopClient:
             raise AlphaShopInsufficientPointsError(INSUFFICIENT_POINTS_MESSAGE)
         if _looks_like_api_error(payload):
             message = payload.get("message") or payload.get("msg") or payload.get("errorMessage")
-            raise AlphaShopApiError(f"AlphaShop API 返回错误：{str(message or payload)[:500]}")
+            code = (
+                payload.get("resultCode")
+                or payload.get("code")
+                or payload.get("errorCode")
+                or payload.get("error_code")
+                or "UNKNOWN"
+            )
+            detail = f"；{str(message)[:300]}" if message else ""
+            raise AlphaShopApiError(f"AlphaShop API 返回错误：{code}{detail}")
         return AlphaShopExchange(
             payload=payload,
             response_preview=preview,
