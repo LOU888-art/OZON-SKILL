@@ -261,8 +261,32 @@ class PipelineService:
         self.work_root = work_root.resolve()
         self.work_root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._background_jobs: dict[tuple[str, int], threading.Thread] = {}
         self.stores = StoreRegistry(self.work_root / ".ozon-stores.json")
         self.ai_provider = AiProviderRegistry(self.work_root / ".ai-provider.json")
+        self._recover_interrupted_jobs()
+
+    def _recover_interrupted_jobs(self) -> None:
+        """Turn orphaned RUNNING states into explicit failures after a restart."""
+
+        for directory in self.work_root.iterdir():
+            state_path = directory / "pipeline.json"
+            if not directory.is_dir() or not state_path.exists():
+                continue
+            try:
+                state = _read_object(state_path)
+            except PipelineError:
+                continue
+            changed = False
+            for stage in (state.get("stages") or {}).values():
+                if isinstance(stage, dict) and stage.get("status") == "RUNNING":
+                    stage["status"] = "FAIL"
+                    stage["checked_at"] = _now()
+                    stage["failures"] = ["服务器重启中断了后台任务，请重新运行该阶段"]
+                    changed = True
+            if changed:
+                state["updated_at"] = _now()
+                _atomic_json(state_path, state)
 
     def ai_provider_status(self) -> dict[str, Any]:
         return self.ai_provider.public_status()
@@ -365,6 +389,24 @@ class PipelineService:
             "file": STAGE_FILES[stage],
             "checked_at": _now(),
             "failures": failures,
+        }
+        _atomic_json(path, state)
+
+    def _record_running(self, pipeline_id: str, stage: int) -> None:
+        path = self._state_path(pipeline_id)
+        state = _read_object(path)
+        state["updated_at"] = _now()
+        for downstream in range(stage + 1, 6):
+            existing = state.get("stages", {}).get(str(downstream))
+            if isinstance(existing, dict):
+                existing["status"] = "STALE"
+                existing["stale_after_stage"] = stage
+                existing["checked_at"] = _now()
+        state.setdefault("stages", {})[str(stage)] = {
+            "status": "RUNNING",
+            "file": STAGE_FILES[stage],
+            "checked_at": _now(),
+            "failures": [],
         }
         _atomic_json(path, state)
 
@@ -591,6 +633,69 @@ class PipelineService:
             _atomic_json(self.path(pipeline_id, 3), final)
             self._record(pipeline_id, 3, not failures, failures)
             return {"stage": 3, "status": "PASS" if not failures else "FAIL", "failures": failures, "artifact": STAGE_FILES[3]}
+
+    def start_stage_3(
+        self,
+        pipeline_id: Any,
+        *,
+        media_manifest: Any = None,
+        media_mode: Any = "alphashop_translate",
+        text_mode: Any = "built_in",
+    ) -> dict[str, Any]:
+        """Start the slow image/content stage without holding an HTTP request open."""
+
+        pipeline_id = _safe_pipeline_id(pipeline_id)
+        self._require_previous(pipeline_id, 3)
+        normalized_media_mode = str(media_mode or "").strip().lower()
+        normalized_text_mode = str(text_mode or "").strip().lower()
+        if media_manifest is not None:
+            raise PipelineError("图片必须通过已配置的 API 处理，不接受人工清单绕过")
+        if normalized_media_mode not in {"alphashop_translate", "ai_generate"}:
+            raise PipelineError("图片模式必须是 AlphaShop 翻译或 AI 生图")
+        if normalized_text_mode not in {"built_in", "ai_generate"}:
+            raise PipelineError("文本模式必须是内置规则或 AI 生成")
+
+        key = (pipeline_id, 3)
+        with self._lock:
+            existing = self._background_jobs.get(key)
+            if existing is not None and existing.is_alive():
+                raise PipelineError("阶段 3 正在后台执行，请等待完成", status=409)
+            self._record_running(pipeline_id, 3)
+
+            def worker() -> None:
+                try:
+                    self.run_stage_3(
+                        pipeline_id,
+                        media_manifest=None,
+                        media_mode=normalized_media_mode,
+                        text_mode=normalized_text_mode,
+                    )
+                except PipelineError as exc:
+                    self._record(pipeline_id, 3, False, [str(exc)[:500]])
+                except Exception as exc:  # keep unexpected worker failures auditable
+                    self._record(
+                        pipeline_id,
+                        3,
+                        False,
+                        [f"阶段 3 后台执行失败：{str(exc)[:400]}"],
+                    )
+                finally:
+                    with self._lock:
+                        self._background_jobs.pop(key, None)
+
+            thread = threading.Thread(
+                target=worker,
+                name=f"ozon-stage-3-{pipeline_id}",
+                daemon=True,
+            )
+            self._background_jobs[key] = thread
+            thread.start()
+        return {
+            "stage": 3,
+            "status": "RUNNING",
+            "failures": [],
+            "artifact": STAGE_FILES[3],
+        }
 
     def run_stage_4(self, pipeline_id: Any, *, store_config: Any) -> dict[str, Any]:
         pipeline_id = _safe_pipeline_id(pipeline_id)

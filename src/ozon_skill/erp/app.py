@@ -157,7 +157,7 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                     store_id=body.get("store_id"),
                 )
             elif stage == 3:
-                result = self.service.run_stage_3(
+                result = self.service.start_stage_3(
                     pipeline_id,
                     media_manifest=body.get("media_manifest"),
                     media_mode=body.get("media_mode", "alphashop_translate"),
