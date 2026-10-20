@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="1688 到 OZON 商品上架流水线 ERP">
+  <title>Northstar · 1688 → OZON ERP</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="noise"></div>
+  <header class="topbar">
+    <a class="brand" href="#"><span class="brand-mark">N</span><span>Northstar</span></a>
+    <div class="top-actions">
+      <span id="modeBadge" class="badge safe">DRY RUN</span>
+      <button id="refreshBtn" class="icon-btn" title="刷新">↻</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <aside class="sidebar">
+      <div class="eyebrow">跨境商品工作台</div>
+      <h1>把复杂上架<br><em>变成五步。</em></h1>
+      <p class="intro">官方 API 采集、实时类目映射、俄语本地化、载荷校验与安全提交，每一步都有门禁和可追溯产物。</p>
+
+      <form id="createForm" class="create-card">
+        <label for="offerId">1688 商品 ID</label>
+        <div class="input-row">
+          <input id="offerId" name="offer_id" autocomplete="off" placeholder="输入 offer_id / num_iid" required>
+          <button type="submit" class="primary">开始采集 <span>→</span></button>
+        </div>
+        <small>仅调用 1688 开放平台，不使用网页爬虫。</small>
+      </form>
+
+      <div class="section-label">商品工作区</div>
+      <div id="pipelineList" class="pipeline-list"><div class="empty">暂无商品</div></div>
+    </aside>
+
+    <section class="workspace">
+      <div id="emptyState" class="hero-empty">
+        <div class="orbit"><span></span><span></span><span></span><b>5</b></div>
+        <h2>选择一个商品，查看上架旅程</h2>
+        <p>所有阶段严格串行；门禁失败后，后续步骤会自动锁定。</p>
+      </div>
+
+      <div id="detail" class="detail hidden">
+        <div class="detail-head">
+          <div>
+            <div class="eyebrow">ACTIVE PIPELINE</div>
+            <h2 id="productTitle">商品流水线</h2>
+            <code id="productId"></code>
+          </div>
+          <button id="auditBtn" class="secondary">全链路审查</button>
+        </div>
+
+        <div id="configStrip" class="config-strip"></div>
+
+        <div id="stageGrid" class="stages"></div>
+
+        <section class="console-card">
+          <div class="console-head">
+            <div>
+              <span class="section-label">ARTIFACT VIEWER</span>
+              <h3 id="artifactTitle">运行结果</h3>
+            </div>
+            <button id="copyBtn" class="ghost">复制 JSON</button>
+          </div>
+          <pre id="console">选择阶段查看产物。</pre>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="stageDialog">
+    <form method="dialog" class="dialog-card">
+      <div class="dialog-head"><div><span class="eyebrow">STAGE CONFIG</span><h3 id="dialogTitle">阶段参数</h3></div><button value="cancel" class="close">×</button></div>
+      <div id="dialogFields"></div>
+      <div class="dialog-actions"><button value="cancel" class="ghost">取消</button><button id="runStageBtn" value="default" class="primary">运行阶段</button></div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast"></div>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
