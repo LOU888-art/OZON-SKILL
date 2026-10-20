@@ -209,13 +209,86 @@ def _category_tree_shape(response: Mapping[str, Any]) -> str:
 
     mapping_count = 0
     list_count = 0
+    category_nodes = 0
+    nonzero_type_nodes = 0
+    enabled_type_nodes = 0
+    enabled_leaf_type_nodes = 0
+    disabled_true_nodes = 0
+    disabled_false_nodes = 0
+    disabled_other_nodes = 0
     relevant_keys: set[str] = set()
     interesting = re.compile(r"category|type|child|disabled|result|item|data", re.I)
 
+    def first(value: Mapping[str, Any], *names: str) -> Any:
+        for name in names:
+            if name in value:
+                return value[name]
+        return None
+
+    def disabled_state(value: Any) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)) and value in (0, 1):
+            return bool(value)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "1", "yes"}:
+                return True
+            if normalized in {"false", "0", "no", ""}:
+                return False
+        if value is None:
+            return False
+        return None
+
+    def has_children(value: Any) -> bool:
+        if isinstance(value, list):
+            return bool(value)
+        if isinstance(value, Mapping):
+            for key in ("items", "categories", "children", "result", "data"):
+                if key in value:
+                    return has_children(value[key])
+            return bool(value)
+        return False
+
     def visit(value: Any) -> None:
-        nonlocal mapping_count, list_count
+        nonlocal mapping_count, list_count, category_nodes, nonzero_type_nodes
+        nonlocal enabled_type_nodes, enabled_leaf_type_nodes
+        nonlocal disabled_true_nodes, disabled_false_nodes, disabled_other_nodes
         if isinstance(value, Mapping):
             mapping_count += 1
+            category_id = first(
+                value,
+                "description_category_id",
+                "descriptionCategoryId",
+                "category_id",
+                "categoryId",
+            )
+            if category_id is not None:
+                category_nodes += 1
+                type_id = _as_int(first(value, "type_id", "typeId"))
+                state = disabled_state(
+                    first(value, "disabled", "is_disabled", "isDisabled")
+                )
+                if state is True:
+                    disabled_true_nodes += 1
+                elif state is False:
+                    disabled_false_nodes += 1
+                else:
+                    disabled_other_nodes += 1
+                if type_id not in (None, 0):
+                    nonzero_type_nodes += 1
+                    if state is False:
+                        enabled_type_nodes += 1
+                        children = first(
+                            value,
+                            "children",
+                            "child_categories",
+                            "childCategories",
+                            "subcategories",
+                            "subCategories",
+                        )
+                        if not has_children(children):
+                            enabled_leaf_type_nodes += 1
             for key, nested in value.items():
                 key_text = str(key)
                 if interesting.search(key_text):
@@ -231,7 +304,11 @@ def _category_tree_shape(response: Mapping[str, Any]) -> str:
     observed = sorted(relevant_keys)[:24]
     return (
         f"root_keys={root_keys}; mappings={mapping_count}; lists={list_count}; "
-        f"observed_keys={observed}"
+        f"category_nodes={category_nodes}; nonzero_type_nodes={nonzero_type_nodes}; "
+        f"enabled_type_nodes={enabled_type_nodes}; "
+        f"enabled_leaf_type_nodes={enabled_leaf_type_nodes}; "
+        f"disabled_true={disabled_true_nodes}; disabled_false={disabled_false_nodes}; "
+        f"disabled_other={disabled_other_nodes}; observed_keys={observed}"
     )
 
 
