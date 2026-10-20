@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
+from ozon_skill.ai_relay.client import AiRelayError
 from ozon_skill.alphashop.client import (
     AlphaShopApiError,
     AlphaShopClient,
@@ -25,7 +26,7 @@ from ozon_skill.alphashop.normalizer import normalize_alphashop_offer
 from ozon_skill.category_mapping.mapper import CONFIDENCE_THRESHOLD, map_listing
 from ozon_skill.category_mapping.provider import LiveMetadataProvider
 from ozon_skill.content_generation.generator import build_final_listing
-from ozon_skill.content_generation.media import translate_all_images
+from ozon_skill.content_generation.media import generate_all_images, translate_all_images
 from ozon_skill.content_generation.rich_content import (
     BANNED_IMAGE_HOSTS,
     validate_public_image_url,
@@ -38,6 +39,7 @@ from ozon_skill.upload.config import load_store_configs
 from ozon_skill.upload.log import UploadLog
 from ozon_skill.upload.workflow import run_upload_workflow
 
+from .ai_provider import AiProviderConfigurationError, AiProviderRegistry
 from .stores import StoreAuthorizationError, StoreRegistry
 
 
@@ -193,9 +195,19 @@ def gate_stage_3(value: Mapping[str, Any]) -> list[str]:
     title = value.get("title_ru")
     if not isinstance(title, str) or not 150 <= len(title) <= 200:
         failures.append("title_ru 长度不在 150–200 字符")
+    if isinstance(title, str) and (
+        not re.search(r"[А-Яа-яЁё]", title)
+        or re.search(r"[\u3400-\u9fff]", title)
+    ):
+        failures.append("title_ru 必须是自然俄语且不得包含中文")
     validation = value.get("title_validation")
     if not isinstance(validation, Mapping) or not validation.get("core_keyword_in_first_60"):
         failures.append("title_ru 前 60 字符未验证包含核心词")
+    elif validation.get("status") != "VALID":
+        failures.append("title_ru 未通过重复词根等标题规则")
+    segments = value.get("title_segments")
+    if not isinstance(segments, Mapping) or segments.get("brand") != "без бренда":
+        failures.append("title_segments.brand 必须为无品牌")
     try:
         validate_rich_content(value.get("rich_content_json"))
     except ValueError as exc:
@@ -214,8 +226,19 @@ def gate_stage_3(value: Mapping[str, Any]) -> list[str]:
                     f"localized_images[{index}]：{str(detail)[:240] if detail else exc}"
                 )
     tags = value.get("tags_ru")
-    if not isinstance(tags, list) or len(tags) > 30:
-        failures.append("tags_ru 必须为不超过 30 项的数组")
+    if not isinstance(tags, list) or not tags or len(tags) > 30:
+        failures.append("tags_ru 必须为 1–30 项的数组")
+    elif any(
+        not isinstance(tag, str) or re.search(r"[\u3400-\u9fff]", tag)
+        for tag in tags
+    ):
+        failures.append("tags_ru 必须全部为自然俄语且不得包含中文")
+    if not isinstance(value.get("description_ru"), str) or not value.get(
+        "description_ru", ""
+    ).strip():
+        failures.append("description_ru 为空")
+    elif re.search(r"[\u3400-\u9fff]", value["description_ru"]):
+        failures.append("description_ru 不得包含中文")
     return failures
 
 
@@ -239,6 +262,19 @@ class PipelineService:
         self.work_root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self.stores = StoreRegistry(self.work_root / ".ozon-stores.json")
+        self.ai_provider = AiProviderRegistry(self.work_root / ".ai-provider.json")
+
+    def ai_provider_status(self) -> dict[str, Any]:
+        return self.ai_provider.public_status()
+
+    def configure_ai_provider(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            return self.ai_provider.save(value)
+        except AiProviderConfigurationError as exc:
+            raise PipelineError(str(exc), status=422) from exc
+
+    def delete_ai_provider(self) -> None:
+        self.ai_provider.delete()
 
     def list_stores(self) -> list[dict[str, Any]]:
         return self.stores.list_public()
@@ -483,23 +519,64 @@ class PipelineService:
             self._assign_store(pipeline_id, str(authorized_store["store_id"]))
             return {"stage": 2, "status": "PASS" if not failures else "FAIL", "failures": failures, "artifact": STAGE_FILES[2]}
 
-    def run_stage_3(self, pipeline_id: Any, *, media_manifest: Any = None) -> dict[str, Any]:
+    def run_stage_3(
+        self,
+        pipeline_id: Any,
+        *,
+        media_manifest: Any = None,
+        media_mode: Any = "alphashop_translate",
+        text_mode: Any = "built_in",
+    ) -> dict[str, Any]:
         pipeline_id = _safe_pipeline_id(pipeline_id)
         self._require_previous(pipeline_id, 3)
         if media_manifest is not None:
-            raise PipelineError("图片必须通过 AlphaShop 翻译，不接受绕过接口的人工清单")
+            raise PipelineError("图片必须通过已配置的 API 处理，不接受人工清单绕过")
+        media_mode = str(media_mode or "").strip().lower()
+        text_mode = str(text_mode or "").strip().lower()
+        if media_mode not in {"alphashop_translate", "ai_generate"}:
+            raise PipelineError("图片模式必须是 AlphaShop 翻译或 AI 生图")
+        if text_mode not in {"built_in", "ai_generate"}:
+            raise PipelineError("文本模式必须是内置规则或 AI 生成")
         with self._lock:
             raw = self.read_artifact(pipeline_id, 1)
             mapped = self.read_artifact(pipeline_id, 2)
             try:
-                inspection = translate_all_images(
-                    _image_items(raw), AlphaShopClient.from_environment()
-                )
+                if media_mode == "ai_generate":
+                    relay = self.ai_provider.client()
+                    inspection = generate_all_images(_image_items(raw), relay, raw)
+                else:
+                    inspection = translate_all_images(
+                        _image_items(raw), AlphaShopClient.from_environment()
+                    )
             except AlphaShopInsufficientPointsError as exc:
                 failures = [str(exc)]
                 self._record(pipeline_id, 3, False, failures)
                 raise PipelineError(str(exc), status=402) from exc
-            final = build_final_listing(mapped, _source_for_mapper(raw), inspection)
+            except (AiRelayError, AiProviderConfigurationError) as exc:
+                failures = [str(exc)]
+                self._record(pipeline_id, 3, False, failures)
+                raise PipelineError(str(exc), status=502) from exc
+            generated_copy = None
+            if text_mode == "ai_generate":
+                try:
+                    generated_copy = self.ai_provider.client().generate_listing_copy(
+                        _source_for_mapper(raw), mapped
+                    )
+                except (AiRelayError, AiProviderConfigurationError) as exc:
+                    failures = [str(exc)]
+                    self._record(pipeline_id, 3, False, failures)
+                    raise PipelineError(str(exc), status=502) from exc
+            final = build_final_listing(
+                mapped,
+                _source_for_mapper(raw),
+                inspection,
+                generated_copy=generated_copy,
+            )
+            final["generation_options"] = {
+                "media_mode": media_mode,
+                "text_mode": text_mode,
+                "ai_relay": self.ai_provider.public_status(),
+            }
             final["localized_images"] = [
                 {
                     "source_url": item.get("source_url"),
@@ -703,6 +780,8 @@ class PipelineService:
             "ALPHASHOP_ACCESS_KEY": bool(os.environ.get("ALPHASHOP_ACCESS_KEY")),
             "ALPHASHOP_SECRET_KEY": bool(os.environ.get("ALPHASHOP_SECRET_KEY")),
             "DRY_RUN": bool(os.environ.get("DRY_RUN")),
+            "AI_RELAY_TEXT_API_KEY": bool(os.environ.get("AI_RELAY_TEXT_API_KEY")),
+            "AI_RELAY_IMAGE_API_KEY": bool(os.environ.get("AI_RELAY_IMAGE_API_KEY")),
         }
         stores = self.stores.list_public()
         return {
@@ -710,4 +789,5 @@ class PipelineService:
             "dry_run": os.environ.get("DRY_RUN", "true").strip().lower() != "false",
             "ozon_stores": len(stores),
             "ozon_authorized": bool(stores),
+            "ai_relay": self.ai_provider.public_status(),
         }

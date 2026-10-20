@@ -222,7 +222,8 @@ def _rich_content(
         for item in media
         if item.get("final_public_url")
         and item.get("ocr_status") in {"COMPLETED", "REVIEWED"}
-        and item.get("translation_status") in {"NOT_REQUIRED", "TRANSLATED_AND_UPLOADED"}
+        and item.get("translation_status")
+        in {"NOT_REQUIRED", "TRANSLATED_AND_UPLOADED", "AI_GENERATED"}
     ]
     if not urls:
         return None
@@ -282,13 +283,44 @@ def build_final_listing(
     prelisting: Mapping[str, Any],
     source: Mapping[str, Any],
     media_inspection: Sequence[Mapping[str, Any]],
+    generated_copy: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Merge copy with pre-listing attributes while preserving unresolved facts."""
 
-    title, segments = _title_and_segments(prelisting, source)
+    if generated_copy is None:
+        title, segments = _title_and_segments(prelisting, source)
+        description = _description(prelisting, source)
+        tags, tag_groups = _tags()
+        copy_provider = "BUILT_IN"
+    else:
+        title = str(generated_copy.get("title_ru") or "").strip()
+        raw_segments = generated_copy.get("title_segments")
+        if not isinstance(raw_segments, Mapping):
+            raw_segments = {}
+        segments = {
+            "core_product_name": str(raw_segments.get("core_product_name") or "").strip(),
+            "key_attributes": str(raw_segments.get("key_attributes") or "").strip() or None,
+            "use_case_or_core_benefit": str(
+                raw_segments.get("use_case_or_core_benefit") or ""
+            ).strip()
+            or None,
+            "brand": NO_BRAND_TITLE_RU,
+        }
+        description = str(generated_copy.get("description_ru") or "").strip()
+        raw_tags = generated_copy.get("tags_ru")
+        tags = []
+        seen: set[str] = set()
+        if isinstance(raw_tags, list):
+            for value in raw_tags:
+                tag = str(value).strip()
+                key = tag.casefold()
+                if tag and key not in seen:
+                    seen.add(key)
+                    tags.append(tag)
+        tags = tags[:30]
+        tag_groups = {"ai_generated": tags}
+        copy_provider = "AI_RELAY"
     title_validation = _title_validation(title, segments)
-    description = _description(prelisting, source)
-    tags, tag_groups = _tags()
     rich_content = _rich_content(media_inspection, description)
     attributes, attribute_changes = _bind_generated_attributes(
         prelisting.get("ozon_attributes") or [], description, tags, rich_content
@@ -313,7 +345,8 @@ def build_final_listing(
         }
         for item in media_inspection
         if item.get("contains_chinese") is True
-        and item.get("translation_status") == "TRANSLATED_AND_UPLOADED"
+        and item.get("translation_status")
+        in {"TRANSLATED_AND_UPLOADED", "AI_GENERATED"}
     ]
     blockers = bool(confirmations or rich_content is None or title_validation["status"] != "VALID")
     return {
@@ -329,6 +362,7 @@ def build_final_listing(
         "title_segments": segments,
         "title_validation": title_validation,
         "description_ru": description,
+        "copy_provider": copy_provider,
         "tags_ru": tags,
         "tag_groups": tag_groups,
         "rich_content_json": rich_content,

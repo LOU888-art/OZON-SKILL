@@ -14,6 +14,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from ozon_skill.ai_relay.client import AiRelayClient, AiRelayError
 from ozon_skill.alphashop.client import (
     AlphaShopApiError,
     AlphaShopClient,
@@ -241,6 +242,48 @@ def translate_all_images(
         except AlphaShopInsufficientPointsError:
             raise
         except (AlphaShopApiError, ValueError) as exc:
+            record["error"] = str(exc)[:500]
+        results.append(record)
+    return results
+
+
+def generate_all_images(
+    image_items: Sequence[Mapping[str, Any]],
+    client: AiRelayClient,
+    source: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Generate one Russian marketplace image for every supplied source image."""
+
+    results: list[dict[str, Any]] = []
+    for item in image_items:
+        source_url = str(item.get("url") or "")
+        record: dict[str, Any] = {
+            "source_url": source_url or None,
+            "source_role": item.get("source_role"),
+            "download_status": "NOT_REQUIRED_REMOTE_API",
+            "ocr_status": "REVIEWED",
+            "contains_chinese": False,
+            "translation_status": "FAILED",
+            "final_public_url": None,
+            "generation_provider": "AI_RELAY",
+            "generation_model": client.image_model,
+        }
+        try:
+            validate_public_image_url(source_url)
+            generated_url = client.generate_product_image(
+                source_url, str(item.get("source_role") or "") or None, source
+            )
+            validate_public_image_url(generated_url)
+            record.update(
+                {
+                    "translation_status": "AI_GENERATED",
+                    "final_public_url": generated_url,
+                }
+            )
+        except AiRelayError:
+            # Provider-wide failures should stop before spending more calls.
+            raise
+        except ValueError as exc:
             record["error"] = str(exc)[:500]
         results.append(record)
     return results

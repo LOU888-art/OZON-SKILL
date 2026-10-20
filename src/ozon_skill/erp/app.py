@@ -20,6 +20,7 @@ _ARTIFACT_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/artifacts/([1-5])$")
 _AUDIT_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/audit$")
 _STORE_ROUTE = re.compile(r"^/api/stores/([^/]+)$")
 _STORE_VERIFY_ROUTE = re.compile(r"^/api/stores/([^/]+)/verify$")
+_AI_PROVIDER_ROUTE = "/api/ai-provider"
 _STATIC_ROOT = Path(__file__).with_name("static")
 
 
@@ -102,6 +103,8 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._json({"pipelines": self.service.list_pipelines()})
             elif path == "/api/stores":
                 self._json({"stores": self.service.list_stores()})
+            elif path == _AI_PROVIDER_ROUTE:
+                self._json({"provider": self.service.ai_provider_status()})
             elif match := _PIPELINE_ROUTE.fullmatch(path):
                 self._json(self.service.get_pipeline(unquote(match.group(1))))
             elif match := _ARTIFACT_ROUTE.fullmatch(path):
@@ -125,6 +128,11 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
             body = self._body()
             if path == "/api/stores":
                 self._json({"store": self.service.authorize_store(body)}, 201)
+                return
+            if path == _AI_PROVIDER_ROUTE:
+                self._json(
+                    {"provider": self.service.configure_ai_provider(body)}, 201
+                )
                 return
             if store_match := _STORE_VERIFY_ROUTE.fullmatch(path):
                 self._json(
@@ -150,7 +158,10 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 )
             elif stage == 3:
                 result = self.service.run_stage_3(
-                    pipeline_id, media_manifest=body.get("media_manifest")
+                    pipeline_id,
+                    media_manifest=body.get("media_manifest"),
+                    media_mode=body.get("media_mode", "alphashop_translate"),
+                    text_mode=body.get("text_mode", "built_in"),
                 )
             elif stage == 4:
                 result = self.service.run_stage_4(
@@ -171,6 +182,10 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         try:
+            if path == _AI_PROVIDER_ROUTE:
+                self.service.delete_ai_provider()
+                self._json({"status": "deleted"})
+                return
             match = _STORE_ROUTE.fullmatch(path)
             if not match:
                 self._error("Not found", 404)

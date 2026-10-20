@@ -12,6 +12,7 @@
   <header class="topbar">
     <a class="brand" href="#"><span class="brand-mark">N</span><span>Northstar</span></a>
     <div class="top-actions">
+      <button id="aiProviderBtn" class="store-btn"><span id="aiProviderState">0</span> AI 服务</button>
       <button id="storesBtn" class="store-btn"><span id="storeCount">0</span> OZON 店铺</button>
       <span id="modeBadge" class="badge safe">DRY RUN</span>
       <button id="refreshBtn" class="icon-btn" title="刷新">↻</button>
@@ -96,6 +97,25 @@
         </div>
         <div class="field"><label for="ozonApiKey">Api-Key</label><input id="ozonApiKey" type="password" autocomplete="new-password" required></div>
         <div class="dialog-actions"><button type="submit" class="primary">验证并保存授权</button></div>
+      </form>
+    </div>
+  </dialog>
+
+  <dialog id="aiProviderDialog">
+    <div class="dialog-card stores-dialog">
+      <div class="dialog-head"><div><span class="eyebrow">AI RELAY</span><h3>AI 文本与生图服务</h3></div><button id="closeAiProviderBtn" class="close" type="button">×</button></div>
+      <p class="dialog-note">密钥保存在服务器私有配置中且永不回显。保存后可在第三阶段选择 AlphaShop 翻译或 AI 生图。</p>
+      <form id="aiProviderForm" class="store-form">
+        <div class="field"><label for="aiBaseUrl">API 地址</label><input id="aiBaseUrl" type="url" required></div>
+        <div class="field-grid">
+          <div class="field"><label for="aiTextModel">文本模型</label><input id="aiTextModel" required></div>
+          <div class="field"><label for="aiImageModel">生图模型</label><input id="aiImageModel" required></div>
+        </div>
+        <div class="field-grid">
+          <div class="field"><label for="aiTextKey">文本 API Key</label><input id="aiTextKey" type="password" autocomplete="new-password" placeholder="已配置时留空表示保持不变"></div>
+          <div class="field"><label for="aiImageKey">生图 API Key</label><input id="aiImageKey" type="password" autocomplete="new-password" placeholder="已配置时留空表示保持不变"></div>
+        </div>
+        <div class="dialog-actions"><button id="deleteAiProviderBtn" type="button" class="ghost">删除私有配置</button><button type="submit" class="primary">安全保存</button></div>
       </form>
     </div>
   </dialog>
