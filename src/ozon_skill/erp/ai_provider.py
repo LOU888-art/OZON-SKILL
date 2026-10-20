@@ -16,6 +16,7 @@ from ozon_skill.ai_relay.client import (
     AiRelayClient,
     AiRelayError,
     _https_base_url,
+    normalize_image_model,
 )
 
 
@@ -64,7 +65,9 @@ class AiProviderRegistry:
             "source": source,
             "base_url": value.get("base_url", DEFAULT_BASE_URL),
             "text_model": value.get("text_model", DEFAULT_TEXT_MODEL),
-            "image_model": value.get("image_model", DEFAULT_IMAGE_MODEL),
+            "image_model": normalize_image_model(
+                str(value.get("image_model", DEFAULT_IMAGE_MODEL))
+            ),
             "text_api_key_configured": bool(value.get("text_api_key")),
             "image_api_key_configured": bool(value.get("image_api_key")),
         }
@@ -86,11 +89,11 @@ class AiProviderRegistry:
             text_model = str(
                 value.get("text_model") or existing.get("text_model") or DEFAULT_TEXT_MODEL
             ).strip()
-            image_model = str(
+            image_model = normalize_image_model(str(
                 value.get("image_model")
                 or existing.get("image_model")
                 or DEFAULT_IMAGE_MODEL
-            ).strip()
+            ))
             text_key = str(value.get("text_api_key") or "").strip() or existing.get(
                 "text_api_key"
             )
@@ -122,7 +125,7 @@ class AiProviderRegistry:
                 text_api_key=str(stored["text_api_key"]),
                 image_api_key=str(stored["image_api_key"]),
                 text_model=str(stored["text_model"]),
-                image_model=str(stored["image_model"]),
+                image_model=normalize_image_model(str(stored["image_model"])),
             )
         except (KeyError, AiRelayError) as exc:
             raise AiProviderConfigurationError("AI 服务私有配置不完整") from exc

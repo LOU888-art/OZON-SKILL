@@ -14,11 +14,19 @@ from urllib.request import Request, urlopen
 
 DEFAULT_BASE_URL = "https://gpt.gptzzz.xyz/v1"
 DEFAULT_TEXT_MODEL = "GPT-5.6Sol"
-DEFAULT_IMAGE_MODEL = "GPT-image-2.0"
+DEFAULT_IMAGE_MODEL = "gpt-image-2"
+_LEGACY_IMAGE_MODELS = {"GPT-image-2.0": DEFAULT_IMAGE_MODEL}
 
 
 class AiRelayError(RuntimeError):
     """The relay returned an unusable or unsafe response."""
+
+
+def normalize_image_model(value: str) -> str:
+    """Migrate the previously configured relay model name without touching keys."""
+
+    model = value.strip()
+    return _LEGACY_IMAGE_MODELS.get(model, model)
 
 
 def _safe_error_detail(raw: str) -> tuple[str | None, str | None]:
@@ -122,7 +130,9 @@ class AiRelayClient:
                 or DEFAULT_TEXT_MODEL
             ),
             image_model=(
-                os.environ.get("AI_RELAY_IMAGE_MODEL", DEFAULT_IMAGE_MODEL).strip()
+                normalize_image_model(
+                    os.environ.get("AI_RELAY_IMAGE_MODEL", DEFAULT_IMAGE_MODEL)
+                )
                 or DEFAULT_IMAGE_MODEL
             ),
         )
