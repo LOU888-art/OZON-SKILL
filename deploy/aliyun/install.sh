@@ -79,7 +79,8 @@ EOF
 
 admin_password=$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-20)
 printf 'admin:%s\n' "$(openssl passwd -apr1 "$admin_password")" >"$nginx_secret_dir/htpasswd"
-chmod 600 "$nginx_secret_dir/htpasswd"
+chown root:nginx "$nginx_secret_dir/htpasswd"
+chmod 640 "$nginx_secret_dir/htpasswd"
 
 openssl req -x509 -nodes -newkey rsa:2048 -days 30 \
   -keyout "$nginx_secret_dir/server.key" \
@@ -87,6 +88,9 @@ openssl req -x509 -nodes -newkey rsa:2048 -days 30 \
   -subj '/CN=8.217.125.205' \
   -addext 'subjectAltName=IP:8.217.125.205' >/dev/null 2>&1
 chmod 600 "$nginx_secret_dir/server.key"
+if command -v restorecon >/dev/null 2>&1; then
+  restorecon -RF "$nginx_secret_dir"
+fi
 
 cat >/etc/nginx/conf.d/ozon-erp.conf <<'EOF'
 server {
