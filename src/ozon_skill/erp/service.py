@@ -1347,6 +1347,9 @@ class PipelineService:
                 "store_id": authorized_store["store_id"],
                 "credential_prefix": authorized_store["store_id"],
                 "currency_code": ozon_currency,
+                "cny_to_rub_rate": (
+                    "1" if ozon_currency == "CNY" else store_config.get("cny_to_rub_rate")
+                ),
             }
             stores = load_store_configs({"stores": [effective_store_config]})
             assembly = assemble_import_payload(final, _source_for_mapper(raw), stores[0])
