@@ -715,16 +715,43 @@ def run_upload_workflow(
         picture_diagnostics: dict[str, Any] = {}
         product_ids_by_offer = _product_ids_by_offer(info_response, final_details)
         source_images_by_offer = _source_images_by_offer(assembly.payload)
-        picture_import_attempted = bool(entry.get("picture_import_requested"))
+        picture_api_is_v2 = entry.get("picture_import_api_version") == "v2"
+        picture_import_attempted = bool(
+            entry.get("picture_import_requested") and picture_api_is_v2
+        )
         fallback_import_attempted = bool(
-            entry.get("picture_fallback_import_requested")
+            entry.get("picture_fallback_import_requested") and picture_api_is_v2
         )
         picture_import_errors: list[str] = []
         picture_import_responses: dict[str, Any] = {}
         fallback_import_errors: list[str] = []
         fallback_import_responses: dict[str, Any] = {}
+        picture_task_ids: dict[str, int] = {
+            str(offer_id): int(task_id)
+            for offer_id, task_id in (
+                entry.get("picture_import_task_ids") or {}
+            ).items()
+            if isinstance(task_id, int) and task_id > 0
+        }
+        picture_task_diagnostics: dict[str, Any] = {}
         image_poll_limit = max(1, image_hosting_max_polls)
         for image_poll in range(1, image_poll_limit + 1):
+            picture_task_diagnostics = {}
+            for offer_id, picture_task_id in picture_task_ids.items():
+                try:
+                    task_response = client.import_info(picture_task_id)
+                    task_state, task_items = _poll_state(task_response)
+                    picture_task_diagnostics[offer_id] = {
+                        "task_id": picture_task_id,
+                        "state": task_state,
+                        "items": task_items,
+                    }
+                except Exception as exc:
+                    picture_task_diagnostics[offer_id] = {
+                        "task_id": picture_task_id,
+                        "state": "API_ERROR",
+                        "error": str(exc)[:500],
+                    }
             if product_ids_by_offer and hasattr(client, "product_pictures_info"):
                 try:
                     pictures_response = client.product_pictures_info(
@@ -750,7 +777,7 @@ def run_upload_workflow(
                 and hasattr(client, "product_pictures_import")
             ):
                 picture_import_attempted = True
-                for offer_id, product_id in product_ids_by_offer.items():
+                for offer_id in product_ids_by_offer:
                     source_images = source_images_by_offer.get(offer_id) or []
                     if not source_images:
                         picture_import_errors.append(
@@ -759,11 +786,14 @@ def run_upload_workflow(
                         continue
                     try:
                         import_response = client.product_pictures_import(
-                            product_id, source_images
+                            offer_id, source_images
                         )
                         picture_import_responses[offer_id] = _response_diagnostics(
                             import_response
                         )
+                        picture_task_id = _task_id(import_response)
+                        if picture_task_id is not None:
+                            picture_task_ids[offer_id] = picture_task_id
                     except Exception as exc:
                         picture_import_errors.append(
                             f"offer_id={offer_id}: {str(exc)[:500]}"
@@ -780,8 +810,10 @@ def run_upload_workflow(
                 upload_log.update(
                     log_index,
                     picture_import_requested=True,
+                    picture_import_api_version="v2",
                     picture_import_errors=picture_import_errors,
                     picture_import_responses=picture_import_responses,
+                    picture_import_task_ids=picture_task_ids,
                     history=entry["history"],
                 )
             # AI providers may return temporary URLs which browsers can open
@@ -797,7 +829,7 @@ def run_upload_workflow(
                 and hasattr(client, "product_pictures_import")
             ):
                 fallback_import_attempted = True
-                for offer_id, product_id in product_ids_by_offer.items():
+                for offer_id in product_ids_by_offer:
                     fallback_images = [
                         value
                         for value in fallback_source_images_by_offer.get(offer_id, [])
@@ -811,11 +843,14 @@ def run_upload_workflow(
                         continue
                     try:
                         import_response = client.product_pictures_import(
-                            product_id, fallback_images
+                            offer_id, fallback_images
                         )
                         fallback_import_responses[offer_id] = _response_diagnostics(
                             import_response
                         )
+                        picture_task_id = _task_id(import_response)
+                        if picture_task_id is not None:
+                            picture_task_ids[offer_id] = picture_task_id
                     except Exception as exc:
                         fallback_import_errors.append(
                             f"offer_id={offer_id}: {str(exc)[:500]}"
@@ -832,8 +867,10 @@ def run_upload_workflow(
                 upload_log.update(
                     log_index,
                     picture_fallback_import_requested=True,
+                    picture_import_api_version="v2",
                     picture_fallback_import_errors=fallback_import_errors,
                     picture_fallback_import_responses=fallback_import_responses,
+                    picture_import_task_ids=picture_task_ids,
                     history=entry["history"],
                 )
             entry["history"].append(
@@ -848,6 +885,7 @@ def run_upload_workflow(
                     "picture_diagnostics": picture_diagnostics,
                     "picture_import_errors": picture_import_errors,
                     "fallback_import_errors": fallback_import_errors,
+                    "picture_task_diagnostics": picture_task_diagnostics,
                     "errors": rich_errors[:20],
                 }
             )
@@ -897,6 +935,18 @@ def run_upload_workflow(
                 error += f"；图片重传错误：{'; '.join(picture_import_errors)[:1200]}"
             if fallback_import_errors:
                 error += f"；原图补传错误：{'; '.join(fallback_import_errors)[:1200]}"
+            failed_picture_tasks = {
+                offer_id: detail
+                for offer_id, detail in picture_task_diagnostics.items()
+                if detail.get("state") in {"FAILED", "API_ERROR"}
+            }
+            if failed_picture_tasks:
+                task_text = json.dumps(
+                    failed_picture_tasks,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                error += f"；图片任务诊断：{task_text[:1800]}"
             entry["history"].append(
                 {
                     "at": _now(),

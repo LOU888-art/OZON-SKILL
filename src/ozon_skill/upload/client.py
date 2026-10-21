@@ -26,7 +26,9 @@ class OzonUploadClient:
     UNARCHIVE_PATH = "/v1/product/unarchive"
     INFO_LIST_PATH = "/v3/product/info/list"
     PICTURES_INFO_PATH = "/v2/product/pictures/info"
-    PICTURES_IMPORT_PATH = "/v1/product/pictures/import"
+    # Ozon disabled /v1/product/pictures/import on 2026-10-01.  V2 uses
+    # seller offer_id values and a batched `items` request shape.
+    PICTURES_IMPORT_PATH = "/v2/product/pictures/import"
     INFO_ATTRIBUTES_PATH = "/v4/product/info/attributes"
 
     def __post_init__(self) -> None:
@@ -71,11 +73,11 @@ class OzonUploadClient:
         return self._post(self.PICTURES_INFO_PATH, {"product_id": product_ids})
 
     def product_pictures_import(
-        self, product_id: int, images: list[str]
+        self, offer_id: str, images: list[str]
     ) -> dict[str, Any]:
         return self._post(
             self.PICTURES_IMPORT_PATH,
-            {"product_id": product_id, "images": images, "images360": []},
+            {"items": [{"offer_id": offer_id, "images": images}]},
         )
 
     def _post(self, path: str, body: Mapping[str, Any]) -> dict[str, Any]:
