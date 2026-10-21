@@ -25,6 +25,9 @@ _IMAGES_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/images$")
 _REQUIRED_ATTRIBUTES_ROUTE = re.compile(
     r"^/api/pipelines/([^/]+)/required-attributes$"
 )
+_ATTRIBUTE_VALUES_ROUTE = re.compile(
+    r"^/api/pipelines/([^/]+)/attributes/(\d+)/values$"
+)
 _STATIC_ROOT = Path(__file__).with_name("static")
 
 
@@ -120,6 +123,12 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
             elif match := _REQUIRED_ATTRIBUTES_ROUTE.fullmatch(path):
                 self._json(
                     self.service.required_attribute_options(unquote(match.group(1)))
+                )
+            elif match := _ATTRIBUTE_VALUES_ROUTE.fullmatch(path):
+                self._json(
+                    self.service.attribute_dictionary_options(
+                        unquote(match.group(1)), int(match.group(2))
+                    )
                 )
             elif path in {"/", "/index.html"}:
                 self._serve_static("index.html")

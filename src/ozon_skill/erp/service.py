@@ -309,6 +309,25 @@ def _ozon_dictionary_rows(response: Mapping[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _blocking_confirmations(value: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    required_ids = {
+        item.get("attribute_id")
+        for item in value.get("ozon_attributes") or []
+        if isinstance(item, Mapping)
+        and item.get("is_required")
+        and isinstance(item.get("attribute_id"), int)
+    }
+    return [
+        item
+        for item in value.get("needs_confirmation") or []
+        if isinstance(item, Mapping)
+        and (
+            item.get("attribute_id") in required_ids
+            or item.get("field") == "ozon_category_id"
+        )
+    ]
+
+
 class PipelineService:
     """Own pipeline artifacts and prevent stages from being skipped."""
 
@@ -1042,7 +1061,7 @@ class PipelineService:
     def required_attribute_options(
         self, pipeline_id: Any, *, store_id: Any = None
     ) -> dict[str, Any]:
-        """Return only live Ozon values for unresolved required attributes."""
+        """Return every category attribute without eagerly downloading dictionaries."""
 
         pipeline_id = _safe_pipeline_id(pipeline_id)
         self._require_previous(pipeline_id, 4)
@@ -1052,35 +1071,100 @@ class PipelineService:
         type_id = final.get("ozon_type_id")
         if not isinstance(category_id, int) or not isinstance(type_id, int):
             raise PipelineError("阶段 3 缺少 Ozon category/type", status=409)
-        client = OzonDescriptionCategoryClient(store["client_id"], store["api_key"])
+        del store  # Authorization is deliberately checked before exposing metadata.
+        previous: dict[int, Mapping[str, Any]] = {}
+        context_path = self.directory(pipeline_id) / "04_context.json"
+        if context_path.exists():
+            context = _read_object(context_path)
+            previous = {
+                item["attribute_id"]: item
+                for item in context.get("attribute_override_provenance") or []
+                if isinstance(item, Mapping)
+                and isinstance(item.get("attribute_id"), int)
+            }
         attributes: list[dict[str, Any]] = []
-        try:
-            for item in _missing_required_attributes(final):
-                attribute_id = item.get("attribute_id")
-                if not isinstance(attribute_id, int):
-                    continue
-                dictionary = bool(item.get("is_dictionary"))
-                options: list[dict[str, Any]] = []
-                if dictionary:
-                    options = _ozon_dictionary_rows(
-                        client.attribute_values(category_id, type_id, attribute_id)
-                    )
-                attributes.append(
-                    {
-                        "attribute_id": attribute_id,
-                        "attribute_name_ru": item.get("attribute_name_ru"),
-                        "attribute_type": item.get("attribute_type"),
-                        "is_dictionary": dictionary,
-                        "options": options,
-                    }
-                )
-        except OzonApiError as exc:
-            raise PipelineError(f"Ozon 必填属性候选值查询失败：{exc}", status=502) from exc
+        unresolved_ids = {
+            item.get("attribute_id") for item in _missing_required_attributes(final)
+        }
+        for item in final.get("ozon_attributes") or []:
+            if not isinstance(item, Mapping):
+                continue
+            attribute_id = item.get("attribute_id")
+            if not isinstance(attribute_id, int):
+                continue
+            matches = [
+                match
+                for match in item.get("dictionary_matches") or []
+                if isinstance(match, Mapping)
+                and isinstance(match.get("dictionary_value_id"), int)
+            ]
+            prior = previous.get(attribute_id, {})
+            selected_id = prior.get("dictionary_value_id")
+            selected_value = prior.get("value")
+            if selected_id is None and matches:
+                selected_id = matches[0].get("dictionary_value_id")
+                selected_value = matches[0].get("dictionary_value")
+            if selected_value is None:
+                selected_value = item.get("value")
+            attributes.append(
+                {
+                    "attribute_id": attribute_id,
+                    "attribute_name_ru": item.get("attribute_name_ru"),
+                    "attribute_type": item.get("attribute_type"),
+                    "is_required": bool(item.get("is_required")),
+                    "is_dictionary": bool(item.get("is_dictionary")),
+                    "mapping_status": item.get("mapping_status"),
+                    "selected_dictionary_value_id": selected_id,
+                    "selected_value": selected_value,
+                    "override_required": (
+                        attribute_id in previous or attribute_id in unresolved_ids
+                    ),
+                }
+            )
         return {
             "pipeline_id": pipeline_id,
             "ozon_category_id": category_id,
             "ozon_type_id": type_id,
             "attributes": attributes,
+            "blocking_confirmation_count": len(_blocking_confirmations(final)),
+        }
+
+    def attribute_dictionary_options(
+        self, pipeline_id: Any, attribute_id: Any, *, store_id: Any = None
+    ) -> dict[str, Any]:
+        pipeline_id = _safe_pipeline_id(pipeline_id)
+        self._require_previous(pipeline_id, 4)
+        try:
+            requested_id = int(attribute_id)
+        except (TypeError, ValueError) as exc:
+            raise PipelineError("属性 ID 无效") from exc
+        store = self._selected_store(pipeline_id, store_id)
+        final = self.read_artifact(pipeline_id, 3)
+        attribute = next(
+            (
+                item
+                for item in final.get("ozon_attributes") or []
+                if isinstance(item, Mapping)
+                and item.get("attribute_id") == requested_id
+            ),
+            None,
+        )
+        if attribute is None or not attribute.get("is_dictionary"):
+            raise PipelineError("该属性不是当前类目的字典特征", status=404)
+        category_id = final.get("ozon_category_id")
+        type_id = final.get("ozon_type_id")
+        if not isinstance(category_id, int) or not isinstance(type_id, int):
+            raise PipelineError("阶段 3 缺少 Ozon category/type", status=409)
+        try:
+            response = OzonDescriptionCategoryClient(
+                store["client_id"], store["api_key"]
+            ).attribute_values(category_id, type_id, requested_id)
+        except OzonApiError as exc:
+            raise PipelineError(f"Ozon 字典值查询失败：{exc}", status=502) from exc
+        return {
+            "attribute_id": requested_id,
+            "attribute_name_ru": attribute.get("attribute_name_ru"),
+            "options": _ozon_dictionary_rows(response),
         }
 
     def _apply_required_attribute_overrides(
@@ -1092,18 +1176,19 @@ class PipelineService:
         if not isinstance(overrides, Mapping):
             raise PipelineError("attribute_overrides 必须是对象")
         resolved = deepcopy(dict(final))
-        missing = {
+        known = {
             item.get("attribute_id"): item
-            for item in _missing_required_attributes(resolved)
+            for item in resolved.get("ozon_attributes") or []
+            if isinstance(item, Mapping)
             if isinstance(item.get("attribute_id"), int)
         }
         unknown = {
             str(key)
             for key in overrides
-            if not str(key).isdigit() or int(str(key)) not in missing
+            if not str(key).isdigit() or int(str(key)) not in known
         }
         if unknown:
-            raise PipelineError(f"包含未知或无需补充的属性：{', '.join(sorted(unknown))}")
+            raise PipelineError(f"包含非当前类目的属性：{', '.join(sorted(unknown))}")
         category_id = resolved.get("ozon_category_id")
         type_id = resolved.get("ozon_type_id")
         client = OzonDescriptionCategoryClient(store["client_id"], store["api_key"])
@@ -1167,8 +1252,6 @@ class PipelineService:
                 value = str(raw_override.get("value") or "").strip()
                 if not value:
                     raise PipelineError(f"必填属性 {attribute_id} 不能为空")
-                if len(value) > 2000:
-                    raise PipelineError(f"必填属性 {attribute_id} 超过 2000 字符")
                 attribute["value"] = value
                 provenance.append(
                     {
@@ -1191,7 +1274,7 @@ class PipelineService:
                 and item.get("attribute_id") in resolved_ids
             )
         ]
-        if not resolved["needs_confirmation"] and not gate_stage_3(resolved):
+        if not _blocking_confirmations(resolved) and not gate_stage_3(resolved):
             resolved["listing_readiness"] = "READY_FOR_PAYLOAD_ASSEMBLY"
         return resolved, provenance
 

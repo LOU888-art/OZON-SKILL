@@ -354,7 +354,27 @@ def build_final_listing(
         and item.get("translation_status")
         in {"TRANSLATED_AND_UPLOADED", "AI_GENERATED"}
     ]
-    blockers = bool(confirmations or rich_content is None or title_validation["status"] != "VALID")
+    required_attribute_ids = {
+        item.get("attribute_id")
+        for item in attributes
+        if isinstance(item, Mapping)
+        and item.get("is_required")
+        and isinstance(item.get("attribute_id"), int)
+    }
+    blocking_confirmations = [
+        item
+        for item in confirmations
+        if isinstance(item, Mapping)
+        and (
+            item.get("attribute_id") in required_attribute_ids
+            or item.get("field") == "ozon_category_id"
+        )
+    ]
+    blockers = bool(
+        blocking_confirmations
+        or rich_content is None
+        or title_validation["status"] != "VALID"
+    )
     return {
         "schema_version": "1.0",
         "source_offer_id": prelisting.get("source_offer_id"),
@@ -375,5 +395,6 @@ def build_final_listing(
         "image_processing": list(media_inspection),
         "ocr_translated_images": modified_images,
         "needs_confirmation": confirmations,
+        "blocking_confirmations": blocking_confirmations,
     }
 
