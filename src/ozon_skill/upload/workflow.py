@@ -119,14 +119,18 @@ def _ozon_image_urls(item: Mapping[str, Any]) -> list[str]:
         if isinstance(value, str) and _is_ozon_resource_url(value):
             result.append(value)
         elif isinstance(value, Mapping):
-            for key in ("url", "file_name", "src", "original", "default"):
-                add(value.get(key))
+            # Once inside an image field, Ozon may expose renditions under
+            # version-specific names such as big/mini/default/original.
+            for child in value.values():
+                add(child)
         elif isinstance(value, list):
             for child in value:
                 add(child)
 
-    for key in ("primary_image", "images", "images360", "color_image"):
-        add(item.get(key))
+    for key, value in item.items():
+        normalized_key = str(key).lower()
+        if any(marker in normalized_key for marker in ("image", "photo", "picture")):
+            add(value)
     return list(dict.fromkeys(result))
 
 
@@ -339,6 +343,7 @@ def run_upload_workflow(
     poll_interval_seconds: float = 5.0,
     max_polls: int = 60,
     verification_max_polls: int = 12,
+    image_hosting_max_polls: int = 24,
 ) -> dict[str, Any]:
     """Run one store independently; dry-run never calls the supplied client."""
 
@@ -409,6 +414,7 @@ def run_upload_workflow(
                     "UNARCHIVE_ERROR",
                     "ATTRIBUTE_VERIFY_ERROR",
                     "VERIFICATION_FAILED",
+                    "RICH_CONTENT_IMAGES_PENDING",
                     "RICH_CONTENT_IMAGES_MISSING",
                     "RICH_CONTENT_UPDATE_ERROR",
                 }
@@ -577,11 +583,57 @@ def run_upload_workflow(
             return upload_log.data["entries"][log_index]
 
     if rich_content_plans:
-        rich_updates, rich_errors = _hosted_rich_content_updates(
-            rich_content_plans, info_response
-        )
+        rich_updates: list[dict[str, Any]] = []
+        rich_errors: list[str] = []
+        image_poll_limit = max(1, image_hosting_max_polls)
+        for image_poll in range(1, image_poll_limit + 1):
+            rich_updates, rich_errors = _hosted_rich_content_updates(
+                rich_content_plans, info_response
+            )
+            if not rich_errors and len(rich_updates) == len(rich_content_plans):
+                break
+            entry["history"].append(
+                {
+                    "at": _now(),
+                    "status": "RICH_CONTENT_IMAGES_PENDING",
+                    "poll_number": image_poll,
+                    "offer_count": len(rich_content_plans),
+                    "ready_offer_count": len(rich_updates),
+                    "errors": rich_errors[:20],
+                }
+            )
+            upload_log.update(
+                log_index,
+                status="RICH_CONTENT_IMAGES_PENDING",
+                error=None,
+                history=entry["history"],
+            )
+            if image_poll >= image_poll_limit:
+                break
+            if poll_interval_seconds:
+                time.sleep(poll_interval_seconds)
+            try:
+                info_response = client.product_info_list(assembly.offer_ids)
+            except Exception as exc:
+                entry["history"].append(
+                    {
+                        "at": _now(),
+                        "status": "INFO_LIST_ERROR",
+                        "error": str(exc)[:500],
+                    }
+                )
+                upload_log.update(
+                    log_index,
+                    status="INFO_LIST_ERROR",
+                    error=str(exc)[:500],
+                    history=entry["history"],
+                )
+                return upload_log.data["entries"][log_index]
         if rich_errors or len(rich_updates) != len(rich_content_plans):
-            error = "; ".join(rich_errors) or "未生成完整的 Ozon 富内容更新"
+            error = (
+                "; ".join(rich_errors)
+                or "未生成完整的 Ozon 富内容更新"
+            ) + f"；已等待并回查 {image_poll_limit} 次"
             entry["history"].append(
                 {
                     "at": _now(),
