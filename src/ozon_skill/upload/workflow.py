@@ -92,17 +92,32 @@ def _archived_product_ids(response: Mapping[str, Any]) -> list[int]:
 def _verify_required_attributes(
     response: Mapping[str, Any], offer_ids: Sequence[str], required_ids: Sequence[int]
 ) -> dict[str, Any]:
+    def attribute_ids(value: Any) -> set[int]:
+        found: set[int] = set()
+        if isinstance(value, list):
+            for child in value:
+                found.update(attribute_ids(child))
+        elif isinstance(value, Mapping):
+            raw_id = value.get("id") or value.get("attribute_id")
+            if not isinstance(raw_id, bool):
+                try:
+                    found.add(int(raw_id))
+                except (TypeError, ValueError):
+                    pass
+            for key in ("attributes", "complex_attributes"):
+                found.update(attribute_ids(value.get(key)))
+        return found
+
     expected = set(required_ids)
     found_by_offer: dict[str, set[int]] = {}
     for item in _result_items(response):
         offer_id = str(item.get("offer_id") or "")
-        found: set[int] = set()
-        for attribute in item.get("attributes") or []:
-            if isinstance(attribute, Mapping):
-                value = attribute.get("id") or attribute.get("attribute_id")
-                if isinstance(value, int):
-                    found.add(value)
-        found_by_offer[offer_id] = found
+        found_by_offer[offer_id] = attribute_ids(
+            {
+                "attributes": item.get("attributes") or [],
+                "complex_attributes": item.get("complex_attributes") or [],
+            }
+        )
     missing = {
         offer_id: sorted(expected - found_by_offer.get(offer_id, set()))
         for offer_id in offer_ids
@@ -110,6 +125,10 @@ def _verify_required_attributes(
     }
     return {
         "required_attribute_ids": sorted(expected),
+        "returned_offer_ids": sorted(found_by_offer),
+        "found_attribute_ids_by_offer": {
+            offer_id: sorted(found) for offer_id, found in found_by_offer.items()
+        },
         "missing_by_offer_id": missing,
         "all_required_attributes_present": not missing,
     }
@@ -125,6 +144,7 @@ def run_upload_workflow(
     supplemental_attributes: list[dict[str, Any]] | None = None,
     poll_interval_seconds: float = 5.0,
     max_polls: int = 60,
+    verification_max_polls: int = 12,
 ) -> dict[str, Any]:
     """Run one store independently; dry-run never calls the supplied client."""
 
@@ -357,22 +377,42 @@ def run_upload_workflow(
             )
             return upload_log.data["entries"][log_index]
 
-    try:
-        attribute_response = client.product_info_attributes(assembly.offer_ids)
-    except Exception as exc:
+    attribute_verification: dict[str, Any] = {}
+    for verification_poll in range(1, max(1, verification_max_polls) + 1):
+        try:
+            attribute_response = client.product_info_attributes(assembly.offer_ids)
+        except Exception as exc:
+            entry["history"].append(
+                {
+                    "at": _now(),
+                    "status": "ATTRIBUTE_VERIFY_ERROR",
+                    "error": str(exc)[:500],
+                }
+            )
+            upload_log.update(
+                log_index,
+                status="ATTRIBUTE_VERIFY_ERROR",
+                error=str(exc)[:500],
+                history=entry["history"],
+            )
+            return upload_log.data["entries"][log_index]
+        attribute_verification = _verify_required_attributes(
+            attribute_response, assembly.offer_ids, assembly.required_attribute_ids
+        )
         entry["history"].append(
-            {"at": _now(), "status": "ATTRIBUTE_VERIFY_ERROR", "error": str(exc)[:500]}
+            {
+                "at": _now(),
+                "status": "ATTRIBUTE_VERIFY_PENDING",
+                "poll_number": verification_poll,
+                "missing_by_offer_id": attribute_verification[
+                    "missing_by_offer_id"
+                ],
+            }
         )
-        upload_log.update(
-            log_index,
-            status="ATTRIBUTE_VERIFY_ERROR",
-            error=str(exc)[:500],
-            history=entry["history"],
-        )
-        return upload_log.data["entries"][log_index]
-    attribute_verification = _verify_required_attributes(
-        attribute_response, assembly.offer_ids, assembly.required_attribute_ids
-    )
+        if attribute_verification["all_required_attributes_present"]:
+            break
+        if verification_poll < max(1, verification_max_polls) and poll_interval_seconds:
+            time.sleep(poll_interval_seconds)
     final_status = (
         "VERIFIED"
         if attribute_verification["all_required_attributes_present"]

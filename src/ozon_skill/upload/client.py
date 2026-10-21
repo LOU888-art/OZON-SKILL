@@ -54,7 +54,15 @@ class OzonUploadClient:
     def product_info_attributes(self, offer_ids: list[str]) -> dict[str, Any]:
         return self._post(
             self.INFO_ATTRIBUTES_PATH,
-            {"filter": {"offer_id": offer_ids}, "limit": 100, "last_id": ""},
+            {
+                "filter": {
+                    "offer_id": offer_ids,
+                    "product_id": [],
+                    "visibility": "ALL",
+                },
+                "limit": 100,
+                "sort_dir": "ASC",
+            },
         )
 
     def _post(self, path: str, body: Mapping[str, Any]) -> dict[str, Any]:

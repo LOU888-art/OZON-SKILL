@@ -389,6 +389,18 @@ def _upload_error_messages(value: Mapping[str, Any]) -> list[str]:
     top_level_error = value.get("error")
     if top_level_error:
         messages.append(f"Ozon API 回查失败：{str(top_level_error)[:1200]}")
+    verification = value.get("attribute_verification")
+    if isinstance(verification, Mapping):
+        missing_by_offer = verification.get("missing_by_offer_id")
+        if isinstance(missing_by_offer, Mapping):
+            for offer_id, missing_ids in missing_by_offer.items():
+                if missing_ids:
+                    rendered = ", ".join(str(item) for item in missing_ids)
+                    messages.append(
+                        f"Ozon 属性回读缺失：offer_id={offer_id}；属性 ID={rendered}"
+                    )
+                if len(messages) >= 20:
+                    return messages
     for item in value.get("import_items") or []:
         if not isinstance(item, Mapping):
             continue
