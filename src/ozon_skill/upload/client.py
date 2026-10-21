@@ -23,7 +23,7 @@ class OzonUploadClient:
     IMPORT_PATH = "/v3/product/import"
     IMPORT_INFO_PATH = "/v1/product/import/info"
     ATTRIBUTES_UPDATE_PATH = "/v1/product/attributes/update"
-    UNARCHIVE_PATH = "/v2/product/unarchive"
+    UNARCHIVE_PATH = "/v1/product/unarchive"
     INFO_LIST_PATH = "/v3/product/info/list"
     INFO_ATTRIBUTES_PATH = "/v4/product/info/attributes"
 
