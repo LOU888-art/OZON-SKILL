@@ -137,6 +137,7 @@ def _ozon_image_urls(item: Mapping[str, Any]) -> list[str]:
 def _hosted_rich_content_updates(
     plans: Mapping[str, Sequence[Mapping[str, Any]]],
     info_response: Mapping[str, Any],
+    picture_urls_by_offer: Mapping[str, Sequence[str]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     by_offer = {
         str(item.get("offer_id") or ""): item for item in _result_items(info_response)
@@ -144,7 +145,9 @@ def _hosted_rich_content_updates(
     updates: list[dict[str, Any]] = []
     errors: list[str] = []
     for offer_id, attributes in plans.items():
-        hosted_images = _ozon_image_urls(by_offer.get(offer_id, {}))
+        hosted_images = list((picture_urls_by_offer or {}).get(offer_id) or [])
+        hosted_images.extend(_ozon_image_urls(by_offer.get(offer_id, {})))
+        hosted_images = list(dict.fromkeys(hosted_images))
         if not hosted_images:
             errors.append(f"offer_id={offer_id} 未取得 Ozon 托管图片 URL")
             continue
@@ -192,6 +195,51 @@ def _hosted_rich_content_updates(
                 {"offer_id": offer_id, "attributes": rewritten_attributes}
             )
     return updates, errors
+
+
+def _product_ids_by_offer(
+    info_response: Mapping[str, Any],
+    import_items: Sequence[Mapping[str, Any]],
+) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for item in [*_result_items(info_response), *import_items]:
+        offer_id = str(item.get("offer_id") or "")
+        raw_product_id = item.get("id") or item.get("product_id")
+        if not offer_id or isinstance(raw_product_id, bool):
+            continue
+        try:
+            product_id = int(raw_product_id)
+        except (TypeError, ValueError):
+            continue
+        if product_id > 0:
+            result[offer_id] = product_id
+    return result
+
+
+def _picture_urls_by_offer(
+    response: Mapping[str, Any], product_ids_by_offer: Mapping[str, int]
+) -> dict[str, list[str]]:
+    offer_by_product = {
+        product_id: offer_id for offer_id, product_id in product_ids_by_offer.items()
+    }
+    result: dict[str, list[str]] = {}
+    for item in _result_items(response):
+        raw_product_id = item.get("product_id") or item.get("id")
+        if isinstance(raw_product_id, bool):
+            continue
+        try:
+            product_id = int(raw_product_id)
+        except (TypeError, ValueError):
+            continue
+        offer_id = offer_by_product.get(product_id)
+        if not offer_id:
+            continue
+        # This endpoint uses rendition keys such as primary/secondary/color,
+        # so the entire item is known to be an image container.
+        urls = _ozon_image_urls({"images": item})
+        if urls:
+            result[offer_id] = urls
+    return result
 
 
 def _poll_state(response: Mapping[str, Any]) -> tuple[str, list[dict[str, Any]]]:
@@ -585,10 +633,24 @@ def run_upload_workflow(
     if rich_content_plans:
         rich_updates: list[dict[str, Any]] = []
         rich_errors: list[str] = []
+        picture_urls: dict[str, list[str]] = {}
+        picture_info_error: str | None = None
+        product_ids_by_offer = _product_ids_by_offer(info_response, final_details)
         image_poll_limit = max(1, image_hosting_max_polls)
         for image_poll in range(1, image_poll_limit + 1):
+            if product_ids_by_offer and hasattr(client, "product_pictures_info"):
+                try:
+                    pictures_response = client.product_pictures_info(
+                        list(dict.fromkeys(product_ids_by_offer.values()))
+                    )
+                    picture_urls = _picture_urls_by_offer(
+                        pictures_response, product_ids_by_offer
+                    )
+                    picture_info_error = None
+                except Exception as exc:
+                    picture_info_error = str(exc)[:500]
             rich_updates, rich_errors = _hosted_rich_content_updates(
-                rich_content_plans, info_response
+                rich_content_plans, info_response, picture_urls
             )
             if not rich_errors and len(rich_updates) == len(rich_content_plans):
                 break
@@ -599,6 +661,8 @@ def run_upload_workflow(
                     "poll_number": image_poll,
                     "offer_count": len(rich_content_plans),
                     "ready_offer_count": len(rich_updates),
+                    "picture_offer_count": len(picture_urls),
+                    "picture_info_error": picture_info_error,
                     "errors": rich_errors[:20],
                 }
             )
@@ -614,6 +678,9 @@ def run_upload_workflow(
                 time.sleep(poll_interval_seconds)
             try:
                 info_response = client.product_info_list(assembly.offer_ids)
+                product_ids_by_offer.update(
+                    _product_ids_by_offer(info_response, final_details)
+                )
             except Exception as exc:
                 entry["history"].append(
                     {
@@ -634,6 +701,8 @@ def run_upload_workflow(
                 "; ".join(rich_errors)
                 or "未生成完整的 Ozon 富内容更新"
             ) + f"；已等待并回查 {image_poll_limit} 次"
+            if picture_info_error:
+                error += f"；Ozon 图片信息接口：{picture_info_error}"
             entry["history"].append(
                 {
                     "at": _now(),
