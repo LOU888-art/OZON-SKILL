@@ -300,6 +300,24 @@ def _source_images_by_offer(payload: Mapping[str, Any]) -> dict[str, list[str]]:
     return result
 
 
+def _response_diagnostics(response: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep useful Ozon response metadata without copying a large payload."""
+
+    result = response.get("result")
+    return {
+        "root_keys": sorted(map(str, response.keys()))[:30],
+        "result_type": type(result).__name__,
+        "result_keys": (
+            sorted(map(str, result.keys()))[:30]
+            if isinstance(result, Mapping)
+            else []
+        ),
+        "task_id": _task_id(response),
+        "code": response.get("code"),
+        "message": response.get("message"),
+    }
+
+
 def _poll_state(response: Mapping[str, Any]) -> tuple[str, list[dict[str, Any]]]:
     items = _result_items(response)
     details: list[dict[str, Any]] = []
@@ -450,6 +468,7 @@ def run_upload_workflow(
     max_polls: int = 60,
     verification_max_polls: int = 12,
     image_hosting_max_polls: int = 24,
+    fallback_source_images_by_offer: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
     """Run one store independently; dry-run never calls the supplied client."""
 
@@ -697,7 +716,13 @@ def run_upload_workflow(
         product_ids_by_offer = _product_ids_by_offer(info_response, final_details)
         source_images_by_offer = _source_images_by_offer(assembly.payload)
         picture_import_attempted = bool(entry.get("picture_import_requested"))
+        fallback_import_attempted = bool(
+            entry.get("picture_fallback_import_requested")
+        )
         picture_import_errors: list[str] = []
+        picture_import_responses: dict[str, Any] = {}
+        fallback_import_errors: list[str] = []
+        fallback_import_responses: dict[str, Any] = {}
         image_poll_limit = max(1, image_hosting_max_polls)
         for image_poll in range(1, image_poll_limit + 1):
             if product_ids_by_offer and hasattr(client, "product_pictures_info"):
@@ -733,7 +758,12 @@ def run_upload_workflow(
                         )
                         continue
                     try:
-                        client.product_pictures_import(product_id, source_images)
+                        import_response = client.product_pictures_import(
+                            product_id, source_images
+                        )
+                        picture_import_responses[offer_id] = _response_diagnostics(
+                            import_response
+                        )
                     except Exception as exc:
                         picture_import_errors.append(
                             f"offer_id={offer_id}: {str(exc)[:500]}"
@@ -744,12 +774,66 @@ def run_upload_workflow(
                         "status": "PICTURES_IMPORT_REQUESTED",
                         "offer_count": len(product_ids_by_offer),
                         "errors": picture_import_errors,
+                        "responses": picture_import_responses,
                     }
                 )
                 upload_log.update(
                     log_index,
                     picture_import_requested=True,
                     picture_import_errors=picture_import_errors,
+                    picture_import_responses=picture_import_responses,
+                    history=entry["history"],
+                )
+            # AI providers may return temporary URLs which browsers can open
+            # but Ozon's fetcher cannot retrieve. After a short grace period,
+            # seed the gallery with the corresponding original 1688 images.
+            # Rich Content then uses Ozon's own hosted CDN renditions.
+            fallback_at_poll = min(4, image_poll_limit)
+            if (
+                not fallback_import_attempted
+                and image_poll >= fallback_at_poll
+                and product_ids_by_offer
+                and fallback_source_images_by_offer
+                and hasattr(client, "product_pictures_import")
+            ):
+                fallback_import_attempted = True
+                for offer_id, product_id in product_ids_by_offer.items():
+                    fallback_images = [
+                        value
+                        for value in fallback_source_images_by_offer.get(offer_id, [])
+                        if isinstance(value, str) and value.startswith("https://")
+                    ]
+                    fallback_images = list(dict.fromkeys(fallback_images))[:15]
+                    if not fallback_images:
+                        fallback_import_errors.append(
+                            f"offer_id={offer_id} 没有对应的 1688 原始公共图片"
+                        )
+                        continue
+                    try:
+                        import_response = client.product_pictures_import(
+                            product_id, fallback_images
+                        )
+                        fallback_import_responses[offer_id] = _response_diagnostics(
+                            import_response
+                        )
+                    except Exception as exc:
+                        fallback_import_errors.append(
+                            f"offer_id={offer_id}: {str(exc)[:500]}"
+                        )
+                entry["history"].append(
+                    {
+                        "at": _now(),
+                        "status": "PICTURES_FALLBACK_IMPORT_REQUESTED",
+                        "offer_count": len(product_ids_by_offer),
+                        "errors": fallback_import_errors,
+                        "responses": fallback_import_responses,
+                    }
+                )
+                upload_log.update(
+                    log_index,
+                    picture_fallback_import_requested=True,
+                    picture_fallback_import_errors=fallback_import_errors,
+                    picture_fallback_import_responses=fallback_import_responses,
                     history=entry["history"],
                 )
             entry["history"].append(
@@ -763,6 +847,7 @@ def run_upload_workflow(
                     "picture_info_error": picture_info_error,
                     "picture_diagnostics": picture_diagnostics,
                     "picture_import_errors": picture_import_errors,
+                    "fallback_import_errors": fallback_import_errors,
                     "errors": rich_errors[:20],
                 }
             )
@@ -810,6 +895,8 @@ def run_upload_workflow(
                 error += f"；图片接口诊断：{diagnostic_text[:1800]}"
             if picture_import_errors:
                 error += f"；图片重传错误：{'; '.join(picture_import_errors)[:1200]}"
+            if fallback_import_errors:
+                error += f"；原图补传错误：{'; '.join(fallback_import_errors)[:1200]}"
             entry["history"].append(
                 {
                     "at": _now(),

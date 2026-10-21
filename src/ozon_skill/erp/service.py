@@ -1714,6 +1714,44 @@ class PipelineService:
         )
         return assembly, store
 
+    def _fallback_source_images_by_offer(
+        self, pipeline_id: str, assembly: AssemblyResult
+    ) -> dict[str, list[str]]:
+        """Map assembled SKU images back to their original 1688 URLs."""
+
+        final = self.read_artifact(pipeline_id, 3)
+        source_by_final: dict[str, str] = {}
+        all_sources: list[str] = []
+        for row in final.get("image_processing") or []:
+            if not isinstance(row, Mapping):
+                continue
+            final_url = row.get("final_public_url")
+            source_url = row.get("source_url")
+            if not (
+                isinstance(source_url, str)
+                and source_url.startswith("https://")
+            ):
+                continue
+            all_sources.append(source_url)
+            if isinstance(final_url, str) and final_url:
+                source_by_final[final_url] = source_url
+        all_sources = list(dict.fromkeys(all_sources))
+        result: dict[str, list[str]] = {}
+        for item in assembly.payload.get("items") or []:
+            if not isinstance(item, Mapping):
+                continue
+            offer_id = str(item.get("offer_id") or "")
+            mapped = [
+                source_by_final[url]
+                for url in item.get("images") or []
+                if isinstance(url, str) and url in source_by_final
+            ]
+            # Old stage-four artifacts may predate exact per-image provenance.
+            # The selected original set is still a stable recovery source.
+            if offer_id:
+                result[offer_id] = list(dict.fromkeys(mapped or all_sources))[:15]
+        return result
+
     def run_stage_5(self, pipeline_id: Any, *, request_execute: bool = False) -> dict[str, Any]:
         pipeline_id = _safe_pipeline_id(pipeline_id)
         self._require_previous(pipeline_id, 5)
@@ -1728,12 +1766,16 @@ class PipelineService:
                     authorized_store["client_id"], authorized_store["api_key"]
                 )
             upload_log = UploadLog(self.path(pipeline_id, 5))
+            fallback_source_images = self._fallback_source_images_by_offer(
+                pipeline_id, assembly
+            )
             result = run_upload_workflow(
                 store=store,
                 assembly=assembly,
                 upload_log=upload_log,
                 execute=execute,
                 client=client,
+                fallback_source_images_by_offer=fallback_source_images,
             )
             if request_execute and not environment_execute:
                 result["execution_guard"] = "请求了执行，但环境仍为 DRY_RUN=true；未发送请求"
