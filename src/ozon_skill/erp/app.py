@@ -22,6 +22,9 @@ _STORE_ROUTE = re.compile(r"^/api/stores/([^/]+)$")
 _STORE_VERIFY_ROUTE = re.compile(r"^/api/stores/([^/]+)/verify$")
 _AI_PROVIDER_ROUTE = "/api/ai-provider"
 _IMAGES_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/images$")
+_REQUIRED_ATTRIBUTES_ROUTE = re.compile(
+    r"^/api/pipelines/([^/]+)/required-attributes$"
+)
 _STATIC_ROOT = Path(__file__).with_name("static")
 
 
@@ -114,6 +117,10 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._json(self.service.audit(unquote(match.group(1))))
             elif match := _IMAGES_ROUTE.fullmatch(path):
                 self._json(self.service.list_images(unquote(match.group(1))))
+            elif match := _REQUIRED_ATTRIBUTES_ROUTE.fullmatch(path):
+                self._json(
+                    self.service.required_attribute_options(unquote(match.group(1)))
+                )
             elif path in {"/", "/index.html"}:
                 self._serve_static("index.html")
             elif path.startswith("/static/"):

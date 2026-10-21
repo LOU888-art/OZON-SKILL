@@ -8,6 +8,7 @@ import os
 import re
 import tempfile
 import threading
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -36,7 +37,7 @@ from ozon_skill.content_generation.rich_content import (
     validate_public_image_url,
     validate_rich_content,
 )
-from ozon_skill.ozon.client import OzonDescriptionCategoryClient
+from ozon_skill.ozon.client import OzonApiError, OzonDescriptionCategoryClient
 from ozon_skill.upload.assembler import AssemblyResult, assemble_import_payload
 from ozon_skill.upload.client import OzonUploadClient
 from ozon_skill.upload.config import load_store_configs
@@ -264,6 +265,48 @@ def gate_stage_4(value: Mapping[str, Any]) -> list[str]:
         if item.get(field) in (None, "", []):
             failures.append(f"items[0].{field} 为空")
     return failures
+
+
+def _missing_required_attributes(value: Mapping[str, Any]) -> list[dict[str, Any]]:
+    missing: list[dict[str, Any]] = []
+    for item in value.get("ozon_attributes") or []:
+        if not isinstance(item, Mapping) or not item.get("is_required"):
+            continue
+        has_dictionary_value = any(
+            isinstance(match, Mapping)
+            and isinstance(match.get("dictionary_value_id"), int)
+            for match in item.get("dictionary_matches") or []
+        )
+        has_direct_value = item.get("value") not in (None, "", [])
+        is_missing = (
+            not has_dictionary_value
+            if item.get("is_dictionary")
+            else not has_direct_value
+        )
+        if is_missing:
+            missing.append(dict(item))
+    return missing
+
+
+def _ozon_dictionary_rows(response: Mapping[str, Any]) -> list[dict[str, Any]]:
+    result = response.get("result")
+    if isinstance(result, Mapping):
+        result = result.get("values") or result.get("items") or []
+    if not isinstance(result, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in result:
+        if not isinstance(item, Mapping):
+            continue
+        raw_id = item.get("id") if item.get("id") is not None else item.get("value_id")
+        label = item.get("value") if item.get("value") is not None else item.get("name")
+        try:
+            value_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if label is not None:
+            rows.append({"dictionary_value_id": value_id, "value": str(label)})
+    return rows
 
 
 class PipelineService:
@@ -959,6 +1002,11 @@ class PipelineService:
         with self._lock:
             raw = self.read_artifact(pipeline_id, 1)
             final = self.read_artifact(pipeline_id, 3)
+            final, override_provenance = self._apply_required_attribute_overrides(
+                final,
+                store_config.get("attribute_overrides") or {},
+                authorized_store,
+            )
             effective_store_config = {
                 **dict(store_config),
                 "store_id": authorized_store["store_id"],
@@ -985,10 +1033,167 @@ class PipelineService:
                 "dimension_source": assembly.dimension_source,
                 "warnings": assembly.warnings,
                 "validation_errors": assembly.validation_errors,
+                "attribute_override_provenance": override_provenance,
             })
             self._record(pipeline_id, 4, not failures, failures)
             self._assign_store(pipeline_id, str(authorized_store["store_id"]))
             return {"stage": 4, "status": "PASS" if not failures else "FAIL", "failures": failures, "warnings": assembly.warnings, "artifact": STAGE_FILES[4]}
+
+    def required_attribute_options(
+        self, pipeline_id: Any, *, store_id: Any = None
+    ) -> dict[str, Any]:
+        """Return only live Ozon values for unresolved required attributes."""
+
+        pipeline_id = _safe_pipeline_id(pipeline_id)
+        self._require_previous(pipeline_id, 4)
+        store = self._selected_store(pipeline_id, store_id)
+        final = self.read_artifact(pipeline_id, 3)
+        category_id = final.get("ozon_category_id")
+        type_id = final.get("ozon_type_id")
+        if not isinstance(category_id, int) or not isinstance(type_id, int):
+            raise PipelineError("阶段 3 缺少 Ozon category/type", status=409)
+        client = OzonDescriptionCategoryClient(store["client_id"], store["api_key"])
+        attributes: list[dict[str, Any]] = []
+        try:
+            for item in _missing_required_attributes(final):
+                attribute_id = item.get("attribute_id")
+                if not isinstance(attribute_id, int):
+                    continue
+                dictionary = bool(item.get("is_dictionary"))
+                options: list[dict[str, Any]] = []
+                if dictionary:
+                    options = _ozon_dictionary_rows(
+                        client.attribute_values(category_id, type_id, attribute_id)
+                    )
+                attributes.append(
+                    {
+                        "attribute_id": attribute_id,
+                        "attribute_name_ru": item.get("attribute_name_ru"),
+                        "attribute_type": item.get("attribute_type"),
+                        "is_dictionary": dictionary,
+                        "options": options,
+                    }
+                )
+        except OzonApiError as exc:
+            raise PipelineError(f"Ozon 必填属性候选值查询失败：{exc}", status=502) from exc
+        return {
+            "pipeline_id": pipeline_id,
+            "ozon_category_id": category_id,
+            "ozon_type_id": type_id,
+            "attributes": attributes,
+        }
+
+    def _apply_required_attribute_overrides(
+        self,
+        final: Mapping[str, Any],
+        overrides: Any,
+        store: Mapping[str, Any],
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        if not isinstance(overrides, Mapping):
+            raise PipelineError("attribute_overrides 必须是对象")
+        resolved = deepcopy(dict(final))
+        missing = {
+            item.get("attribute_id"): item
+            for item in _missing_required_attributes(resolved)
+            if isinstance(item.get("attribute_id"), int)
+        }
+        unknown = {
+            str(key)
+            for key in overrides
+            if not str(key).isdigit() or int(str(key)) not in missing
+        }
+        if unknown:
+            raise PipelineError(f"包含未知或无需补充的属性：{', '.join(sorted(unknown))}")
+        category_id = resolved.get("ozon_category_id")
+        type_id = resolved.get("ozon_type_id")
+        client = OzonDescriptionCategoryClient(store["client_id"], store["api_key"])
+        provenance: list[dict[str, Any]] = []
+        resolved_ids: set[int] = set()
+        by_id = {
+            item.get("attribute_id"): item
+            for item in resolved.get("ozon_attributes") or []
+            if isinstance(item, dict) and isinstance(item.get("attribute_id"), int)
+        }
+        for raw_attribute_id, raw_override in overrides.items():
+            attribute_id = int(str(raw_attribute_id))
+            if not isinstance(raw_override, Mapping):
+                raise PipelineError(f"属性 {attribute_id} 的补充值格式错误")
+            attribute = by_id[attribute_id]
+            if attribute.get("is_dictionary"):
+                raw_value_id = raw_override.get("dictionary_value_id")
+                try:
+                    value_id = int(raw_value_id)
+                except (TypeError, ValueError) as exc:
+                    raise PipelineError(f"字典属性 {attribute_id} 必须选择合法值") from exc
+                if not isinstance(category_id, int) or not isinstance(type_id, int):
+                    raise PipelineError("无法校验字典值：category/type 缺失")
+                try:
+                    rows = _ozon_dictionary_rows(
+                        client.attribute_values(category_id, type_id, attribute_id)
+                    )
+                except OzonApiError as exc:
+                    raise PipelineError(
+                        f"Ozon 字典属性 {attribute_id} 校验失败：{exc}", status=502
+                    ) from exc
+                legal = next(
+                    (row for row in rows if row["dictionary_value_id"] == value_id),
+                    None,
+                )
+                if legal is None:
+                    raise PipelineError(
+                        f"字典属性 {attribute_id} 的值 ID 不在本次 Ozon API 返回范围内"
+                    )
+                attribute["value"] = legal["value"]
+                attribute["dictionary_value_id"] = value_id
+                attribute["dictionary_matches"] = [
+                    {
+                        "source_value": "ERP_MANUAL_SELECTION",
+                        "dictionary_value": legal["value"],
+                        "dictionary_value_id": value_id,
+                        "confidence": 1.0,
+                        "reason": "用户从本次 Ozon API 返回的合法字典值中选择",
+                    }
+                ]
+                provenance.append(
+                    {
+                        "attribute_id": attribute_id,
+                        "dictionary_value_id": value_id,
+                        "value": legal["value"],
+                        "endpoint": OzonDescriptionCategoryClient.ATTRIBUTE_VALUES_PATH,
+                        "validated_live": True,
+                    }
+                )
+            else:
+                value = str(raw_override.get("value") or "").strip()
+                if not value:
+                    raise PipelineError(f"必填属性 {attribute_id} 不能为空")
+                if len(value) > 2000:
+                    raise PipelineError(f"必填属性 {attribute_id} 超过 2000 字符")
+                attribute["value"] = value
+                provenance.append(
+                    {
+                        "attribute_id": attribute_id,
+                        "value": value,
+                        "source": "ERP_MANUAL_INPUT",
+                    }
+                )
+            attribute["mapping_status"] = "MAPPED_MANUAL_VALIDATED"
+            attribute["mapping_confidence"] = 1.0
+            attribute["source_refs"] = [
+                {"location": "stage_4.attribute_overrides", "value": attribute["value"]}
+            ]
+            resolved_ids.add(attribute_id)
+        resolved["needs_confirmation"] = [
+            item
+            for item in resolved.get("needs_confirmation") or []
+            if not (
+                isinstance(item, Mapping)
+                and item.get("attribute_id") in resolved_ids
+            )
+        ]
+        if not resolved["needs_confirmation"] and not gate_stage_3(resolved):
+            resolved["listing_readiness"] = "READY_FOR_PAYLOAD_ASSEMBLY"
+        return resolved, provenance
 
     def _assembly_from_files(self, pipeline_id: str) -> tuple[AssemblyResult, Any]:
         payload = self.read_artifact(pipeline_id, 4)
