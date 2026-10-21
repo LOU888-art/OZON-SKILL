@@ -328,6 +328,37 @@ def _blocking_confirmations(value: Mapping[str, Any]) -> list[Mapping[str, Any]]
     ]
 
 
+def _upload_error_messages(value: Mapping[str, Any]) -> list[str]:
+    messages: list[str] = []
+    for item in value.get("import_items") or []:
+        if not isinstance(item, Mapping):
+            continue
+        offer_id = str(item.get("offer_id") or "未知 offer_id")
+        errors = item.get("errors") or []
+        if not isinstance(errors, list):
+            errors = [errors]
+        for error in errors:
+            if isinstance(error, Mapping):
+                code = error.get("code") or error.get("error_code") or "OZON_ERROR"
+                description = (
+                    error.get("description")
+                    or error.get("message")
+                    or error.get("text")
+                    or error.get("details")
+                    or "Ozon 未返回错误说明"
+                )
+                field = error.get("field") or error.get("attribute_id")
+                suffix = f"；field={field}" if field not in (None, "") else ""
+                messages.append(
+                    f"Ozon 拒绝 {offer_id}：{code}；{str(description)[:500]}{suffix}"
+                )
+            elif error:
+                messages.append(f"Ozon 拒绝 {offer_id}：{str(error)[:500]}")
+            if len(messages) >= 20:
+                return messages
+    return messages
+
+
 class PipelineService:
     """Own pipeline artifacts and prevent stages from being skipped."""
 
@@ -1322,8 +1353,14 @@ class PipelineService:
                 if result.get("task_id") is None:
                     failures.append("执行模式未取得 task_id")
                 if result.get("status") != "VERIFIED":
-                    failures.append(f"执行未完成属性回查验证：{result.get('status')}")
-                if not isinstance(result.get("attribute_verification"), Mapping):
+                    details = _upload_error_messages(result)
+                    failures.extend(
+                        details
+                        or [f"Ozon 执行未完成：{result.get('status')}"]
+                    )
+                if result.get("status") in {"VERIFIED", "VERIFICATION_FAILED"} and not isinstance(
+                    result.get("attribute_verification"), Mapping
+                ):
                     failures.append("执行模式缺少 attribute_verification 回查结果")
             passed = not failures
             self._record(pipeline_id, 5, passed, failures)

@@ -160,6 +160,17 @@ def run_upload_workflow(
         entry["history"].append({"at": _now(), "status": "EXECUTION_BLOCKED"})
         upload_log.append(entry)
         return entry
+    previous = upload_log.latest_for_payload(store.store_id, entry["payload_sha256"])
+    if previous and previous.get("status") in {
+        "FAILED",
+        "VERIFICATION_FAILED",
+        "ATTRIBUTE_VERIFY_ERROR",
+        "INFO_LIST_ERROR",
+        "UNARCHIVE_ERROR",
+        "VERIFIED",
+    }:
+        previous["reused_existing_result"] = True
+        return previous
     duplicate = [
         offer_id
         for offer_id in assembly.offer_ids

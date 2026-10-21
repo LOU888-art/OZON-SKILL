@@ -24,13 +24,35 @@ class UploadLog:
         return value
 
     def has_task_for_offer(self, store_id: str, offer_id: str) -> bool:
+        retryable_terminal_statuses = {
+            "FAILED",
+            "VERIFICATION_FAILED",
+            "ATTRIBUTE_VERIFY_ERROR",
+            "INFO_LIST_ERROR",
+            "UNARCHIVE_ERROR",
+        }
         return any(
             isinstance(entry, dict)
             and entry.get("store_id") == store_id
             and entry.get("task_id") is not None
             and offer_id in (entry.get("offer_ids") or [])
+            and entry.get("status") not in retryable_terminal_statuses
             for entry in self.data["entries"]
         )
+
+    def latest_for_payload(
+        self, store_id: str, payload_sha256: str
+    ) -> dict[str, Any] | None:
+        for entry in reversed(self.data["entries"]):
+            if (
+                isinstance(entry, dict)
+                and entry.get("store_id") == store_id
+                and entry.get("payload_sha256") == payload_sha256
+                and entry.get("request_sent") is True
+                and entry.get("task_id") is not None
+            ):
+                return dict(entry)
+        return None
 
     def append(self, entry: dict[str, Any]) -> int:
         self.data["entries"].append(entry)
