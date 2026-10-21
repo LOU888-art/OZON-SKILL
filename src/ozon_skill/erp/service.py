@@ -386,6 +386,9 @@ def _blocking_confirmations(value: Mapping[str, Any]) -> list[Mapping[str, Any]]
 
 def _upload_error_messages(value: Mapping[str, Any]) -> list[str]:
     messages: list[str] = []
+    top_level_error = value.get("error")
+    if top_level_error:
+        messages.append(f"Ozon API 回查失败：{str(top_level_error)[:1200]}")
     for item in value.get("import_items") or []:
         if not isinstance(item, Mapping):
             continue

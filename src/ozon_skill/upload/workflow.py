@@ -160,92 +160,139 @@ def run_upload_workflow(
         entry["history"].append({"at": _now(), "status": "EXECUTION_BLOCKED"})
         upload_log.append(entry)
         return entry
-    previous = upload_log.latest_for_payload(store.store_id, entry["payload_sha256"])
-    if previous and previous.get("status") in {
-        "FAILED",
-        "VERIFICATION_FAILED",
-        "ATTRIBUTE_VERIFY_ERROR",
-        "INFO_LIST_ERROR",
-        "UNARCHIVE_ERROR",
-        "VERIFIED",
-    }:
-        previous["reused_existing_result"] = True
-        return previous
-    duplicate = [
-        offer_id
-        for offer_id in assembly.offer_ids
-        if upload_log.has_task_for_offer(store.store_id, offer_id)
-    ]
-    if duplicate:
-        entry["status"] = "SKIPPED_EXISTING_TASK"
-        entry["duplicate_offer_ids"] = duplicate
-        entry["history"].append({"at": _now(), "status": entry["status"]})
-        upload_log.append(entry)
-        return entry
     if client is None:
         raise ValueError("an OZON client is required in execute mode")
 
-    import_response = client.product_import(assembly.payload)
-    task_id = _task_id(import_response)
-    if task_id is None:
-        entry["status"] = "IMPORT_RESPONSE_MISSING_TASK_ID"
-        entry["request_sent"] = True
-        entry["history"].append({"at": _now(), "status": entry["status"]})
-        upload_log.append(entry)
-        return entry
-
-    # Persist the task before any polling or follow-up request.
-    entry["request_sent"] = True
-    entry["task_id"] = task_id
-    entry["status"] = "SUBMITTED"
-    entry["history"].append({"at": _now(), "status": "SUBMITTED", "task_id": task_id})
-    log_index = upload_log.append(entry)
-
-    final_state = "PENDING"
+    previous = upload_log.latest_for_payload(store.store_id, entry["payload_sha256"])
+    log_index: int | None = None
+    resume_verification = False
     final_details: list[dict[str, Any]] = []
-    for poll_number in range(1, max_polls + 1):
-        try:
-            response = client.import_info(task_id)
-        except Exception as exc:
+    if previous:
+        previous_status = str(previous.get("status") or "")
+        if previous_status in {"FAILED", "VERIFIED"}:
+            previous["reused_existing_result"] = True
+            return previous
+        previous_run_id = previous.get("run_id")
+        log_index = next(
+            (
+                index
+                for index, saved in enumerate(upload_log.data["entries"])
+                if isinstance(saved, Mapping) and saved.get("run_id") == previous_run_id
+            ),
+            None,
+        )
+        if log_index is not None:
+            entry = upload_log.data["entries"][log_index]
+            task_id = entry.get("task_id")
+            if not isinstance(task_id, int):
+                log_index = None
+            else:
+                resume_verification = previous_status in {
+                    "INFO_LIST_ERROR",
+                    "UNARCHIVE_ERROR",
+                    "ATTRIBUTE_VERIFY_ERROR",
+                    "VERIFICATION_FAILED",
+                }
+                final_details = list(entry.get("import_items") or [])
+                entry.setdefault("history", []).append(
+                    {
+                        "at": _now(),
+                        "status": (
+                            "RESUMING_VERIFICATION"
+                            if resume_verification
+                            else "RESUMING_TASK_POLL"
+                        ),
+                        "task_id": task_id,
+                    }
+                )
+                upload_log.update(
+                    log_index,
+                    status=(
+                        "RESUMING_VERIFICATION"
+                        if resume_verification
+                        else "RESUMING_TASK_POLL"
+                    ),
+                    error=None,
+                    history=entry["history"],
+                )
+
+    if log_index is None:
+        duplicate = [
+            offer_id
+            for offer_id in assembly.offer_ids
+            if upload_log.has_task_for_offer(store.store_id, offer_id)
+        ]
+        if duplicate:
+            entry["status"] = "SKIPPED_EXISTING_TASK"
+            entry["duplicate_offer_ids"] = duplicate
+            entry["history"].append({"at": _now(), "status": entry["status"]})
+            upload_log.append(entry)
+            return entry
+
+        import_response = client.product_import(assembly.payload)
+        task_id = _task_id(import_response)
+        if task_id is None:
+            entry["status"] = "IMPORT_RESPONSE_MISSING_TASK_ID"
+            entry["request_sent"] = True
+            entry["history"].append({"at": _now(), "status": entry["status"]})
+            upload_log.append(entry)
+            return entry
+
+        # Persist the task before any polling or follow-up request.
+        entry["request_sent"] = True
+        entry["task_id"] = task_id
+        entry["status"] = "SUBMITTED"
+        entry["history"].append(
+            {"at": _now(), "status": "SUBMITTED", "task_id": task_id}
+        )
+        log_index = upload_log.append(entry)
+
+    if not resume_verification:
+        final_state = "PENDING"
+        for poll_number in range(1, max_polls + 1):
+            try:
+                response = client.import_info(task_id)
+            except Exception as exc:
+                entry["history"].append(
+                    {"at": _now(), "status": "POLL_API_ERROR", "error": str(exc)[:500]}
+                )
+                upload_log.update(
+                    log_index,
+                    status="POLL_API_ERROR",
+                    error=str(exc)[:500],
+                    history=entry["history"],
+                )
+                return upload_log.data["entries"][log_index]
+            final_state, final_details = _poll_state(response)
             entry["history"].append(
-                {"at": _now(), "status": "POLL_API_ERROR", "error": str(exc)[:500]}
+                {
+                    "at": _now(),
+                    "status": final_state,
+                    "poll_number": poll_number,
+                    "items": final_details,
+                }
             )
             upload_log.update(
                 log_index,
-                status="POLL_API_ERROR",
-                error=str(exc)[:500],
+                status=final_state,
+                error=None,
                 history=entry["history"],
+                import_items=final_details,
             )
+            if final_state != "PENDING":
+                break
+            if poll_interval_seconds:
+                time.sleep(poll_interval_seconds)
+        else:
+            final_state = "POLL_TIMEOUT"
+            entry["history"].append({"at": _now(), "status": final_state})
+            upload_log.update(log_index, status=final_state, history=entry["history"])
             return upload_log.data["entries"][log_index]
-        final_state, final_details = _poll_state(response)
-        entry["history"].append(
-            {
-                "at": _now(),
-                "status": final_state,
-                "poll_number": poll_number,
-                "items": final_details,
-            }
-        )
-        upload_log.update(
-            log_index,
-            status=final_state,
-            history=entry["history"],
-            import_items=final_details,
-        )
-        if final_state != "PENDING":
-            break
-        if poll_interval_seconds:
-            time.sleep(poll_interval_seconds)
-    else:
-        final_state = "POLL_TIMEOUT"
-        entry["history"].append({"at": _now(), "status": final_state})
-        upload_log.update(log_index, status=final_state, history=entry["history"])
-        return upload_log.data["entries"][log_index]
 
-    if final_state != "SUCCEEDED":
-        return upload_log.data["entries"][log_index]
+        if final_state != "SUCCEEDED":
+            return upload_log.data["entries"][log_index]
 
-    if supplemental_attributes:
+    if supplemental_attributes and not resume_verification:
         try:
             client.attributes_update(supplemental_attributes)
         except Exception as exc:
@@ -292,7 +339,23 @@ def run_upload_workflow(
         entry["history"].append(
             {"at": _now(), "status": "UNARCHIVED", "product_ids": archived_ids}
         )
-        info_response = client.product_info_list(assembly.offer_ids)
+        try:
+            info_response = client.product_info_list(assembly.offer_ids)
+        except Exception as exc:
+            entry["history"].append(
+                {
+                    "at": _now(),
+                    "status": "INFO_LIST_ERROR",
+                    "error": str(exc)[:500],
+                }
+            )
+            upload_log.update(
+                log_index,
+                status="INFO_LIST_ERROR",
+                error=str(exc)[:500],
+                history=entry["history"],
+            )
+            return upload_log.data["entries"][log_index]
 
     try:
         attribute_response = client.product_info_attributes(assembly.offer_ids)
@@ -319,6 +382,7 @@ def run_upload_workflow(
     upload_log.update(
         log_index,
         status=final_status,
+        error=None,
         history=entry["history"],
         import_items=final_details,
         product_info_list=info_response,

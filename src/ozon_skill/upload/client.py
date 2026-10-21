@@ -48,7 +48,7 @@ class OzonUploadClient:
     def product_info_list(self, offer_ids: list[str]) -> dict[str, Any]:
         return self._post(
             self.INFO_LIST_PATH,
-            {"filter": {"offer_id": offer_ids}, "limit": 100, "cursor": ""},
+            {"offer_id": offer_ids, "product_id": [], "sku": []},
         )
 
     def product_info_attributes(self, offer_ids: list[str]) -> dict[str, Any]:
@@ -74,7 +74,15 @@ class OzonUploadClient:
             with urlopen(request, timeout=self.timeout_seconds) as response:
                 raw = response.read().decode("utf-8")
         except HTTPError as exc:
-            raise OzonUploadApiError(f"OZON returned HTTP {exc.code} for {path}") from exc
+            try:
+                raw_error = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                raw_error = ""
+            detail = raw_error.strip().replace("\n", " ")[:1200]
+            suffix = f": {detail}" if detail else ""
+            raise OzonUploadApiError(
+                f"OZON returned HTTP {exc.code} for {path}{suffix}"
+            ) from exc
         except URLError as exc:
             raise OzonUploadApiError(f"OZON request failed for {path}: {exc.reason}") from exc
         try:
