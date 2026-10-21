@@ -26,6 +26,7 @@ class OzonUploadClient:
     UNARCHIVE_PATH = "/v1/product/unarchive"
     INFO_LIST_PATH = "/v3/product/info/list"
     PICTURES_INFO_PATH = "/v2/product/pictures/info"
+    PICTURES_IMPORT_PATH = "/v1/product/pictures/import"
     INFO_ATTRIBUTES_PATH = "/v4/product/info/attributes"
 
     def __post_init__(self) -> None:
@@ -68,6 +69,14 @@ class OzonUploadClient:
 
     def product_pictures_info(self, product_ids: list[int]) -> dict[str, Any]:
         return self._post(self.PICTURES_INFO_PATH, {"product_id": product_ids})
+
+    def product_pictures_import(
+        self, product_id: int, images: list[str]
+    ) -> dict[str, Any]:
+        return self._post(
+            self.PICTURES_IMPORT_PATH,
+            {"product_id": product_id, "images": images, "images360": []},
+        )
 
     def _post(self, path: str, body: Mapping[str, Any]) -> dict[str, Any]:
         request = Request(

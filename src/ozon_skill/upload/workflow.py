@@ -134,6 +134,27 @@ def _ozon_image_urls(item: Mapping[str, Any]) -> list[str]:
     return list(dict.fromkeys(result))
 
 
+def _ozon_image_urls_anywhere(item: Mapping[str, Any]) -> list[str]:
+    """Find CDN image resources even when Ozon nests them under `sources`."""
+
+    candidates = _ozon_image_urls({"images": item})
+    result: list[str] = []
+    for value in candidates:
+        parsed = urlparse(value)
+        host = (parsed.hostname or "").lower()
+        path = parsed.path.lower()
+        if (
+            host.endswith(".ozone.ru")
+            or host.endswith(".ozonusercontent.com")
+            or host.endswith(".ozonusercontent.ru")
+            or any(marker in host for marker in ("cdn", "image", "img", "media", "ir."))
+            or any(marker in path for marker in ("/s3/", "multimedia", "/image/", "/images/"))
+            or path.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif"))
+        ):
+            result.append(value)
+    return list(dict.fromkeys(result))
+
+
 def _hosted_rich_content_updates(
     plans: Mapping[str, Sequence[Mapping[str, Any]]],
     info_response: Mapping[str, Any],
@@ -146,7 +167,7 @@ def _hosted_rich_content_updates(
     errors: list[str] = []
     for offer_id, attributes in plans.items():
         hosted_images = list((picture_urls_by_offer or {}).get(offer_id) or [])
-        hosted_images.extend(_ozon_image_urls(by_offer.get(offer_id, {})))
+        hosted_images.extend(_ozon_image_urls_anywhere(by_offer.get(offer_id, {})))
         hosted_images = list(dict.fromkeys(hosted_images))
         if not hosted_images:
             errors.append(f"offer_id={offer_id} 未取得 Ozon 托管图片 URL")
@@ -236,9 +257,46 @@ def _picture_urls_by_offer(
             continue
         # This endpoint uses rendition keys such as primary/secondary/color,
         # so the entire item is known to be an image container.
-        urls = _ozon_image_urls({"images": item})
+        urls = _ozon_image_urls_anywhere(item)
         if urls:
             result[offer_id] = urls
+    return result
+
+
+def _picture_response_diagnostics(response: Mapping[str, Any]) -> dict[str, Any]:
+    items = _result_items(response)
+    return {
+        "root_keys": sorted(map(str, response.keys()))[:20],
+        "item_count": len(items),
+        "items": [
+            {
+                "product_id": item.get("product_id") or item.get("id"),
+                "status": item.get("status"),
+                "errors": item.get("errors"),
+                "keys": sorted(map(str, item.keys()))[:30],
+                "ozon_image_count": len(_ozon_image_urls_anywhere(item)),
+            }
+            for item in items[:100]
+        ],
+    }
+
+
+def _source_images_by_offer(payload: Mapping[str, Any]) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {}
+    for item in payload.get("items") or []:
+        if not isinstance(item, Mapping):
+            continue
+        offer_id = str(item.get("offer_id") or "")
+        images = [
+            value
+            for value in item.get("images") or []
+            if isinstance(value, str) and value.startswith("https://")
+        ]
+        primary = item.get("primary_image")
+        if isinstance(primary, str) and primary.startswith("https://"):
+            images.insert(0, primary)
+        if offer_id and images:
+            result[offer_id] = list(dict.fromkeys(images))[:15]
     return result
 
 
@@ -635,7 +693,11 @@ def run_upload_workflow(
         rich_errors: list[str] = []
         picture_urls: dict[str, list[str]] = {}
         picture_info_error: str | None = None
+        picture_diagnostics: dict[str, Any] = {}
         product_ids_by_offer = _product_ids_by_offer(info_response, final_details)
+        source_images_by_offer = _source_images_by_offer(assembly.payload)
+        picture_import_attempted = bool(entry.get("picture_import_requested"))
+        picture_import_errors: list[str] = []
         image_poll_limit = max(1, image_hosting_max_polls)
         for image_poll in range(1, image_poll_limit + 1):
             if product_ids_by_offer and hasattr(client, "product_pictures_info"):
@@ -646,6 +708,9 @@ def run_upload_workflow(
                     picture_urls = _picture_urls_by_offer(
                         pictures_response, product_ids_by_offer
                     )
+                    picture_diagnostics = _picture_response_diagnostics(
+                        pictures_response
+                    )
                     picture_info_error = None
                 except Exception as exc:
                     picture_info_error = str(exc)[:500]
@@ -654,6 +719,39 @@ def run_upload_workflow(
             )
             if not rich_errors and len(rich_updates) == len(rich_content_plans):
                 break
+            if (
+                not picture_import_attempted
+                and product_ids_by_offer
+                and hasattr(client, "product_pictures_import")
+            ):
+                picture_import_attempted = True
+                for offer_id, product_id in product_ids_by_offer.items():
+                    source_images = source_images_by_offer.get(offer_id) or []
+                    if not source_images:
+                        picture_import_errors.append(
+                            f"offer_id={offer_id} 没有可重新提交的源图片"
+                        )
+                        continue
+                    try:
+                        client.product_pictures_import(product_id, source_images)
+                    except Exception as exc:
+                        picture_import_errors.append(
+                            f"offer_id={offer_id}: {str(exc)[:500]}"
+                        )
+                entry["history"].append(
+                    {
+                        "at": _now(),
+                        "status": "PICTURES_IMPORT_REQUESTED",
+                        "offer_count": len(product_ids_by_offer),
+                        "errors": picture_import_errors,
+                    }
+                )
+                upload_log.update(
+                    log_index,
+                    picture_import_requested=True,
+                    picture_import_errors=picture_import_errors,
+                    history=entry["history"],
+                )
             entry["history"].append(
                 {
                     "at": _now(),
@@ -663,6 +761,8 @@ def run_upload_workflow(
                     "ready_offer_count": len(rich_updates),
                     "picture_offer_count": len(picture_urls),
                     "picture_info_error": picture_info_error,
+                    "picture_diagnostics": picture_diagnostics,
+                    "picture_import_errors": picture_import_errors,
                     "errors": rich_errors[:20],
                 }
             )
@@ -703,6 +803,13 @@ def run_upload_workflow(
             ) + f"；已等待并回查 {image_poll_limit} 次"
             if picture_info_error:
                 error += f"；Ozon 图片信息接口：{picture_info_error}"
+            elif picture_diagnostics:
+                diagnostic_text = json.dumps(
+                    picture_diagnostics, ensure_ascii=False, separators=(",", ":")
+                )
+                error += f"；图片接口诊断：{diagnostic_text[:1800]}"
+            if picture_import_errors:
+                error += f"；图片重传错误：{'; '.join(picture_import_errors)[:1200]}"
             entry["history"].append(
                 {
                     "at": _now(),
