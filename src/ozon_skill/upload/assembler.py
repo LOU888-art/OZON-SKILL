@@ -127,6 +127,22 @@ def _images(final: Mapping[str, Any], sku_id: str | None = None) -> list[str]:
 
 _CJK = re.compile(r"[\u3400-\u9fff]")
 _COLOR_TRANSLATIONS = (
+    ("英国梨与小苍兰", "Английская груша и фрезия"),
+    ("鼠尾草海盐", "Шалфей и морская соль"),
+    ("白桃乌龙", "Белый персик и улун"),
+    ("玫瑰檀香", "Роза и сандал"),
+    ("一轮玫瑰", "Роза"),
+    ("奶油蛋糕", "Сливочный торт"),
+    ("迷雾森林", "Туманный лес"),
+    ("大吉岭茶", "Дарджилингский чай"),
+    ("乌木沉香", "Уд и агаровое дерево"),
+    ("香格里拉", "Шангри-Ла"),
+    ("蓝风铃", "Голубой колокольчик"),
+    ("黑鸦片", "Черный опиум"),
+    ("薰衣草", "Лаванда"),
+    ("晚香玉", "Тубероза"),
+    ("冷水", "Прохладная вода"),
+    ("香草", "Ваниль"),
     ("米白", "Бежевый"),
     ("咖啡", "Коричневый"),
     ("透明", "Прозрачный"),
@@ -187,20 +203,31 @@ def _sku_source_values(
     source_refs = [
         item for item in attribute.get("source_refs") or [] if isinstance(item, Mapping)
     ]
+    sku_values = {
+        str(item.get("value")).strip()
+        for item in (sku or {}).get("specification_zh") or []
+        if isinstance(item, Mapping) and item.get("value") is not None
+    }
+    specification_text = str((sku or {}).get("specification_text_zh") or "")
+    for part in specification_text.split(";"):
+        candidate = part.split(":", 1)[-1].strip()
+        if candidate:
+            sku_values.add(candidate)
+    matched_values = [
+        item for item in raw_values if str(item).strip() in sku_values
+    ]
+    if matched_values:
+        return matched_values
     sku_scoped = bool(source_refs) and all(
         str(item.get("location") or "").startswith("sku_list[") for item in source_refs
     )
     if not sku_scoped:
         return raw_values
-    sku_values = {
-        str(item.get("value"))
-        for item in (sku or {}).get("specification_zh") or []
-        if isinstance(item, Mapping) and item.get("value") is not None
-    }
     return [
         item.get("value")
         for item in source_refs
-        if item.get("value") is not None and str(item.get("value")) in sku_values
+        if item.get("value") is not None
+        and str(item.get("value")).strip() in sku_values
     ]
 
 

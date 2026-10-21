@@ -34,6 +34,7 @@ from ozon_skill.content_generation.media import (
 )
 from ozon_skill.content_generation.rich_content import (
     BANNED_IMAGE_HOSTS,
+    upgrade_legacy_rich_content,
     validate_public_image_url,
     validate_rich_content,
 )
@@ -1207,6 +1208,38 @@ class PipelineService:
         if not isinstance(overrides, Mapping):
             raise PipelineError("attribute_overrides 必须是对象")
         resolved = deepcopy(dict(final))
+        rich_value = resolved.get("rich_content_json")
+        if rich_value is not None:
+            description = str(resolved.get("description_ru") or "Описание товара")
+            try:
+                upgraded_rich = upgrade_legacy_rich_content(
+                    rich_value,
+                    fallback_title="Подробности товара",
+                    fallback_text=description.split("\n\n", 1)[0][:500],
+                )
+            except ValueError:
+                # The stage-3 gate and assembler report the precise structural
+                # problem; do not hide an unrelated malformed payload here.
+                pass
+            else:
+                resolved["rich_content_json"] = upgraded_rich
+                for attribute in resolved.get("ozon_attributes") or []:
+                    if not isinstance(attribute, dict):
+                        continue
+                    name = str(attribute.get("attribute_name_ru") or "").lower()
+                    if ("rich" in name or "рич" in name) and "контент" in name:
+                        serialized = json.dumps(
+                            upgraded_rich,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                        attribute["value"] = serialized
+                        attribute["source_refs"] = [
+                            {
+                                "location": "stage_4.legacy_rich_content_upgrade",
+                                "value": serialized,
+                            }
+                        ]
         known = {
             item.get("attribute_id"): item
             for item in resolved.get("ozon_attributes") or []
