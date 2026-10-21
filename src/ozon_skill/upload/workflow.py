@@ -6,8 +6,10 @@ import hashlib
 import json
 import time
 import uuid
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
+from urllib.parse import urlparse
 
 from .assembler import AssemblyResult
 from .config import StoreConfig
@@ -45,6 +47,147 @@ def _result_items(response: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     else:
         items = response.get("items") or []
     return [item for item in items if isinstance(item, Mapping)] if isinstance(items, list) else []
+
+
+def _rich_content_value(attribute: Mapping[str, Any]) -> dict[str, Any] | None:
+    for value in attribute.get("values") or []:
+        if not isinstance(value, Mapping) or not isinstance(value.get("value"), str):
+            continue
+        try:
+            candidate = json.loads(value["value"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if (
+            isinstance(candidate, dict)
+            and candidate.get("version") == 0.3
+            and isinstance(candidate.get("content"), list)
+        ):
+            return candidate
+    return None
+
+
+def _split_rich_content_payload(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    """Keep external Rich Content URLs out of the initial product import."""
+
+    cleaned = deepcopy(dict(payload))
+    plans: dict[str, list[dict[str, Any]]] = {}
+    for item in cleaned.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        offer_id = str(item.get("offer_id") or "")
+        kept: list[Any] = []
+        for attribute in item.get("attributes") or []:
+            if not isinstance(attribute, Mapping):
+                kept.append(attribute)
+                continue
+            rich_value = _rich_content_value(attribute)
+            if rich_value is None:
+                kept.append(attribute)
+                continue
+            if offer_id:
+                plans.setdefault(offer_id, []).append(
+                    {
+                        "complex_id": int(attribute.get("complex_id") or 0),
+                        "id": attribute.get("id") or attribute.get("attribute_id"),
+                        "value": rich_value,
+                    }
+                )
+        item["attributes"] = kept
+    return cleaned, plans
+
+
+def _is_ozon_resource_url(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    parsed = urlparse(value)
+    host = (parsed.hostname or "").lower()
+    return parsed.scheme == "https" and (
+        host == "ozon.ru"
+        or host.endswith(".ozon.ru")
+        or host.endswith(".ozone.ru")
+        or host.endswith(".ozonusercontent.com")
+        or host.endswith(".ozonusercontent.ru")
+    )
+
+
+def _ozon_image_urls(item: Mapping[str, Any]) -> list[str]:
+    result: list[str] = []
+
+    def add(value: Any) -> None:
+        if isinstance(value, str) and _is_ozon_resource_url(value):
+            result.append(value)
+        elif isinstance(value, Mapping):
+            for key in ("url", "file_name", "src", "original", "default"):
+                add(value.get(key))
+        elif isinstance(value, list):
+            for child in value:
+                add(child)
+
+    for key in ("primary_image", "images", "images360", "color_image"):
+        add(item.get(key))
+    return list(dict.fromkeys(result))
+
+
+def _hosted_rich_content_updates(
+    plans: Mapping[str, Sequence[Mapping[str, Any]]],
+    info_response: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    by_offer = {
+        str(item.get("offer_id") or ""): item for item in _result_items(info_response)
+    }
+    updates: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for offer_id, attributes in plans.items():
+        hosted_images = _ozon_image_urls(by_offer.get(offer_id, {}))
+        if not hosted_images:
+            errors.append(f"offer_id={offer_id} 未取得 Ozon 托管图片 URL")
+            continue
+        rewritten_attributes: list[dict[str, Any]] = []
+        for attribute in attributes:
+            attribute_id = attribute.get("id")
+            if not isinstance(attribute_id, int):
+                errors.append(f"offer_id={offer_id} 的 Rich Content 属性 ID 无效")
+                continue
+            rich_value = deepcopy(attribute.get("value"))
+            image_index = 0
+            for component in rich_value.get("content") or []:
+                if not isinstance(component, dict):
+                    continue
+                for block in component.get("blocks") or []:
+                    if not isinstance(block, dict) or not isinstance(block.get("img"), dict):
+                        continue
+                    hosted_url = hosted_images[image_index % len(hosted_images)]
+                    image_index += 1
+                    block["img"]["src"] = hosted_url
+                    block["img"]["srcMobile"] = hosted_url
+                    block["imgLink"] = ""
+            serialized = json.dumps(
+                rich_value, ensure_ascii=False, separators=(",", ":")
+            )
+            if not hosted_images or any(
+                not _is_ozon_resource_url(block.get("img", {}).get(field))
+                for component in rich_value.get("content") or []
+                if isinstance(component, Mapping)
+                for block in component.get("blocks") or []
+                if isinstance(block, Mapping) and isinstance(block.get("img"), Mapping)
+                for field in ("src", "srcMobile")
+            ):
+                errors.append(f"offer_id={offer_id} 的 Rich Content 仍包含外部图片")
+                continue
+            rewritten_attributes.append(
+                {
+                    "complex_id": int(attribute.get("complex_id") or 0),
+                    "id": attribute_id,
+                    "values": [{"value": serialized}],
+                }
+            )
+        if rewritten_attributes:
+            updates.append(
+                {"offer_id": offer_id, "attributes": rewritten_attributes}
+            )
+    return updates, errors
 
 
 def _poll_state(response: Mapping[str, Any]) -> tuple[str, list[dict[str, Any]]]:
@@ -215,6 +358,9 @@ def run_upload_workflow(
         "status": "CREATED",
         "history": [],
     }
+    import_payload, rich_content_plans = _split_rich_content_payload(assembly.payload)
+    if rich_content_plans:
+        entry["rich_content_strategy"] = "OZON_HOSTED_IMAGES_AFTER_IMPORT"
 
     if not execute:
         entry["status"] = (
@@ -263,6 +409,8 @@ def run_upload_workflow(
                     "UNARCHIVE_ERROR",
                     "ATTRIBUTE_VERIFY_ERROR",
                     "VERIFICATION_FAILED",
+                    "RICH_CONTENT_IMAGES_MISSING",
+                    "RICH_CONTENT_UPDATE_ERROR",
                 }
                 final_details = list(entry.get("import_items") or [])
                 entry.setdefault("history", []).append(
@@ -300,7 +448,7 @@ def run_upload_workflow(
             upload_log.append(entry)
             return entry
 
-        import_response = client.product_import(assembly.payload)
+        import_response = client.product_import(import_payload)
         task_id = _task_id(import_response)
         if task_id is None:
             entry["status"] = "IMPORT_RESPONSE_MISSING_TASK_ID"
@@ -427,6 +575,57 @@ def run_upload_workflow(
                 history=entry["history"],
             )
             return upload_log.data["entries"][log_index]
+
+    if rich_content_plans:
+        rich_updates, rich_errors = _hosted_rich_content_updates(
+            rich_content_plans, info_response
+        )
+        if rich_errors or len(rich_updates) != len(rich_content_plans):
+            error = "; ".join(rich_errors) or "未生成完整的 Ozon 富内容更新"
+            entry["history"].append(
+                {
+                    "at": _now(),
+                    "status": "RICH_CONTENT_IMAGES_MISSING",
+                    "error": error[:1200],
+                }
+            )
+            upload_log.update(
+                log_index,
+                status="RICH_CONTENT_IMAGES_MISSING",
+                error=error[:1200],
+                history=entry["history"],
+            )
+            return upload_log.data["entries"][log_index]
+        try:
+            rich_response = client.attributes_update(rich_updates)
+        except Exception as exc:
+            entry["history"].append(
+                {
+                    "at": _now(),
+                    "status": "RICH_CONTENT_UPDATE_ERROR",
+                    "error": str(exc)[:1200],
+                }
+            )
+            upload_log.update(
+                log_index,
+                status="RICH_CONTENT_UPDATE_ERROR",
+                error=str(exc)[:1200],
+                history=entry["history"],
+            )
+            return upload_log.data["entries"][log_index]
+        entry["history"].append(
+            {
+                "at": _now(),
+                "status": "RICH_CONTENT_UPDATED",
+                "offer_count": len(rich_updates),
+            }
+        )
+        upload_log.update(
+            log_index,
+            rich_content_update=rich_response,
+            rich_content_offer_count=len(rich_updates),
+            history=entry["history"],
+        )
 
     attribute_verification: dict[str, Any] = {}
     implicit_type_attributes = _top_level_type_attribute_ids(
