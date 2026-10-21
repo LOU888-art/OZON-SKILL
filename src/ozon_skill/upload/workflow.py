@@ -90,7 +90,10 @@ def _archived_product_ids(response: Mapping[str, Any]) -> list[int]:
 
 
 def _verify_required_attributes(
-    response: Mapping[str, Any], offer_ids: Sequence[str], required_ids: Sequence[int]
+    response: Mapping[str, Any],
+    offer_ids: Sequence[str],
+    required_ids: Sequence[int],
+    implicitly_present_by_offer: Mapping[str, set[int]] | None = None,
 ) -> dict[str, Any]:
     def attribute_ids(value: Any) -> set[int]:
         found: set[int] = set()
@@ -118,10 +121,19 @@ def _verify_required_attributes(
                 "complex_attributes": item.get("complex_attributes") or [],
             }
         )
+    implicit = implicitly_present_by_offer or {}
     missing = {
-        offer_id: sorted(expected - found_by_offer.get(offer_id, set()))
+        offer_id: sorted(
+            expected
+            - found_by_offer.get(offer_id, set())
+            - implicit.get(offer_id, set())
+        )
         for offer_id in offer_ids
-        if expected - found_by_offer.get(offer_id, set())
+        if (
+            expected
+            - found_by_offer.get(offer_id, set())
+            - implicit.get(offer_id, set())
+        )
     }
     return {
         "required_attribute_ids": sorted(expected),
@@ -129,9 +141,48 @@ def _verify_required_attributes(
         "found_attribute_ids_by_offer": {
             offer_id: sorted(found) for offer_id, found in found_by_offer.items()
         },
+        "implicitly_present_attribute_ids_by_offer": {
+            offer_id: sorted(found) for offer_id, found in implicit.items() if found
+        },
         "missing_by_offer_id": missing,
         "all_required_attributes_present": not missing,
     }
+
+
+def _top_level_type_attribute_ids(
+    payload: Mapping[str, Any], required_ids: Sequence[int]
+) -> dict[str, set[int]]:
+    """Find type-selector attributes represented by Ozon's top-level type_id.
+
+    Ozon accepts these attributes during import but does not echo them in the
+    v4 attributes collection because the same selection is returned as type_id.
+    """
+
+    required = set(required_ids)
+    result: dict[str, set[int]] = {}
+    for item in payload.get("items") or []:
+        if not isinstance(item, Mapping):
+            continue
+        offer_id = str(item.get("offer_id") or "")
+        type_id = item.get("type_id")
+        if not offer_id or not isinstance(type_id, int):
+            continue
+        matched: set[int] = set()
+        for attribute in item.get("attributes") or []:
+            if not isinstance(attribute, Mapping):
+                continue
+            attribute_id = attribute.get("id") or attribute.get("attribute_id")
+            if not isinstance(attribute_id, int) or attribute_id not in required:
+                continue
+            if any(
+                isinstance(value, Mapping)
+                and value.get("dictionary_value_id") == type_id
+                for value in attribute.get("values") or []
+            ):
+                matched.add(attribute_id)
+        if matched:
+            result[offer_id] = matched
+    return result
 
 
 def run_upload_workflow(
@@ -378,6 +429,9 @@ def run_upload_workflow(
             return upload_log.data["entries"][log_index]
 
     attribute_verification: dict[str, Any] = {}
+    implicit_type_attributes = _top_level_type_attribute_ids(
+        assembly.payload, assembly.required_attribute_ids
+    )
     for verification_poll in range(1, max(1, verification_max_polls) + 1):
         try:
             attribute_response = client.product_info_attributes(assembly.offer_ids)
@@ -397,7 +451,10 @@ def run_upload_workflow(
             )
             return upload_log.data["entries"][log_index]
         attribute_verification = _verify_required_attributes(
-            attribute_response, assembly.offer_ids, assembly.required_attribute_ids
+            attribute_response,
+            assembly.offer_ids,
+            assembly.required_attribute_ids,
+            implicit_type_attributes,
         )
         entry["history"].append(
             {
