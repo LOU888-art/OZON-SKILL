@@ -1505,9 +1505,21 @@ class PipelineService:
             if request_execute and not environment_execute:
                 result["execution_guard"] = "请求了执行，但环境仍为 DRY_RUN=true；未发送请求"
             failures = []
-            if not execute and (result.get("request_sent") or result.get("task_id") is not None):
-                failures.append("dry-run 日志出现请求或 task_id")
+            if not execute:
+                if request_execute:
+                    failures.append(
+                        "服务器仍为 DRY_RUN=true，未向 Ozon 发送上架请求；"
+                        "请先启用 LIVE MODE 并重启服务"
+                    )
+                else:
+                    failures.append(
+                        "未勾选“我明确要求执行真实提交”，未向 Ozon 发送上架请求"
+                    )
+                if result.get("request_sent") or result.get("task_id") is not None:
+                    failures.append("dry-run 日志异常出现请求或 task_id")
             if execute:
+                if result.get("request_sent") is not True:
+                    failures.append("执行模式没有真实发送 Ozon 请求")
                 if result.get("task_id") is None:
                     failures.append("执行模式未取得 task_id")
                 if result.get("status") != "VERIFIED":

@@ -46,10 +46,17 @@ python3.11 -m venv "$venv_dir"
 "$venv_dir/bin/python" -m pip install --upgrade pip setuptools
 "$venv_dir/bin/python" -m pip install --no-build-isolation --force-reinstall "$app_dir"
 
+dry_run=true
+if [ -r "$config_dir/erp.env" ]; then
+  previous_dry_run=$(sed -n 's/^[[:space:]]*DRY_RUN[[:space:]]*=[[:space:]]*//p' "$config_dir/erp.env" | tail -n 1 | tr -d '\r')
+  case "$previous_dry_run" in
+    true|false) dry_run=$previous_dry_run ;;
+  esac
+fi
 cat >"$config_dir/erp.env" <<EOF
 ALPHASHOP_ACCESS_KEY=$access_key
 ALPHASHOP_SECRET_KEY=$secret_key
-DRY_RUN=true
+DRY_RUN=$dry_run
 EOF
 chmod 600 "$config_dir/erp.env"
 unset access_key secret_key
@@ -168,4 +175,8 @@ else
   echo "登录密码：保持现有密码不变"
 fi
 echo "浏览器会提示自签名证书警告；确认 IP 正确后可继续访问。"
-echo "系统保持 DRY_RUN=true，未配置 OZON 凭证前不会执行真实上架。"
+if [ "$dry_run" = "false" ]; then
+  echo "已保留现有 LIVE MODE（DRY_RUN=false）；网页仍需再次勾选确认才会真实提交。"
+else
+  echo "系统保持 DRY_RUN=true，未配置 OZON 凭证前不会执行真实上架。"
+fi
