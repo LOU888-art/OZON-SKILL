@@ -24,7 +24,11 @@ from ozon_skill.alphashop.client import (
     extract_offer_id,
 )
 from ozon_skill.alphashop.normalizer import normalize_alphashop_offer
-from ozon_skill.category_mapping.mapper import CONFIDENCE_THRESHOLD, map_listing
+from ozon_skill.category_mapping.mapper import (
+    CONFIDENCE_THRESHOLD,
+    flatten_category_types,
+    map_listing,
+)
 from ozon_skill.category_mapping.provider import LiveMetadataProvider
 from ozon_skill.content_generation.generator import build_final_listing
 from ozon_skill.content_generation.media import (
@@ -59,6 +63,35 @@ STAGE_FILES = {
 IMAGE_SELECTION_FILE = "image-selection.json"
 IMAGE_ACTIONS = {"exclude", "translate", "reference_8", "sku_main"}
 _PIPELINE_ID = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
+_CATEGORY_SEARCH_ALIASES = {
+    "香薰石牌": (
+        "香薰石",
+        "香氛石",
+        "扩香石",
+        "香薰挂件",
+        "香薰挂片",
+        "香牌",
+        "固体香薰",
+        "аромакамень",
+        "ароматический камень",
+        "ароматическое саше",
+        "ароматизатор для дома",
+        "интерьерный ароматизатор",
+    ),
+    "香薰石": (
+        "香氛石",
+        "扩香石",
+        "香薰挂件",
+        "香薰挂片",
+        "香牌",
+        "固体香薰",
+        "аромакамень",
+        "ароматический камень",
+        "ароматическое саше",
+        "ароматизатор для дома",
+        "интерьерный ароматизатор",
+    ),
+}
 
 
 class PipelineError(RuntimeError):
@@ -71,6 +104,10 @@ class PipelineError(RuntimeError):
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _category_search_text(value: Any) -> str:
+    return re.sub(r"[^\w\u4e00-\u9fff]+", " ", str(value or "").lower()).strip()
 
 
 def _atomic_json(path: Path, value: Any) -> None:
@@ -826,12 +863,122 @@ class PipelineService:
                 },
             }
 
+    def category_options(
+        self,
+        pipeline_id: Any,
+        *,
+        query: Any,
+        store_id: Any = None,
+    ) -> dict[str, Any]:
+        """Search selectable category/type pairs from the assigned Ozon store."""
+
+        pipeline_id = _safe_pipeline_id(pipeline_id)
+        self._require_previous(pipeline_id, 2)
+        search = str(query or "").strip()
+        if len(search) < 2:
+            raise PipelineError("请输入至少 2 个中文或俄文类目关键词")
+        if len(search) > 80:
+            raise PipelineError("类目关键词不能超过 80 个字符")
+        store = self._selected_store(pipeline_id, store_id)
+        client = OzonDescriptionCategoryClient(store["client_id"], store["api_key"])
+        try:
+            ru_candidates = flatten_category_types(client.category_tree(language="RU"))
+            try:
+                zh_candidates = flatten_category_types(
+                    client.category_tree(language="ZH_HANS")
+                )
+            except OzonApiError:
+                zh_candidates = []
+        except OzonApiError as exc:
+            raise PipelineError(f"读取 Ozon 官方类目失败：{exc}", status=502) from exc
+
+        merged: dict[tuple[int, int], dict[str, Any]] = {}
+        for item in ru_candidates:
+            pair = (int(item["ozon_category_id"]), int(item["ozon_type_id"]))
+            merged[pair] = {
+                "ozon_category_id": pair[0],
+                "ozon_type_id": pair[1],
+                "category_name_ru": str(item.get("category_name_ru") or ""),
+                "category_path_ru": list(item.get("category_path_ru") or []),
+                "type_name_ru": str(item.get("type_name_ru") or ""),
+            }
+        for item in zh_candidates:
+            pair = (int(item["ozon_category_id"]), int(item["ozon_type_id"]))
+            target = merged.setdefault(
+                pair,
+                {
+                    "ozon_category_id": pair[0],
+                    "ozon_type_id": pair[1],
+                    "category_name_ru": "",
+                    "category_path_ru": [],
+                    "type_name_ru": "",
+                },
+            )
+            target["category_name_zh"] = str(item.get("category_name_ru") or "")
+            target["category_path_zh"] = list(item.get("category_path_ru") or [])
+            target["type_name_zh"] = str(item.get("type_name_ru") or "")
+
+        normalized_query = _category_search_text(search)
+        terms = [normalized_query]
+        for key, aliases in _CATEGORY_SEARCH_ALIASES.items():
+            if key in search:
+                terms.extend(_category_search_text(alias) for alias in aliases)
+        ranked: list[dict[str, Any]] = []
+        for item in merged.values():
+            zh_text = _category_search_text(
+                " ".join(
+                    [
+                        *item.get("category_path_zh", []),
+                        item.get("category_name_zh", ""),
+                        item.get("type_name_zh", ""),
+                    ]
+                )
+            )
+            ru_text = _category_search_text(
+                " ".join(
+                    [
+                        *item.get("category_path_ru", []),
+                        item.get("category_name_ru", ""),
+                        item.get("type_name_ru", ""),
+                    ]
+                )
+            )
+            score = 0
+            matched_terms: list[str] = []
+            for index, term in enumerate(dict.fromkeys(terms)):
+                if not term:
+                    continue
+                if term in zh_text:
+                    score += 100 if index == 0 else 35
+                    matched_terms.append(term)
+                elif term in ru_text:
+                    score += 80 if index == 0 else 25
+                    matched_terms.append(term)
+            if score:
+                ranked.append({**item, "score": score, "matched_terms": matched_terms})
+        ranked.sort(
+            key=lambda item: (
+                -int(item["score"]),
+                str(item.get("type_name_zh") or item.get("type_name_ru") or ""),
+                int(item["ozon_category_id"]),
+                int(item["ozon_type_id"]),
+            )
+        )
+        return {
+            "query": search,
+            "options": ranked[:80],
+            "total_matches": len(ranked),
+            "source": "Ozon /v1/description-category/tree",
+        }
+
     def run_stage_2(
         self,
         pipeline_id: Any,
         *,
         confidence_threshold: Any = CONFIDENCE_THRESHOLD,
         store_id: Any = None,
+        manual_category_id: Any = None,
+        manual_type_id: Any = None,
     ) -> dict[str, Any]:
         pipeline_id = _safe_pipeline_id(pipeline_id)
         self._require_previous(pipeline_id, 2)
@@ -842,18 +989,32 @@ class PipelineService:
             raise PipelineError("置信度阈值必须是数字") from exc
         if not 0 <= threshold <= 1:
             raise PipelineError("置信度阈值必须在 0–1 之间")
+        manual_values = (manual_category_id, manual_type_id)
+        if any(value not in (None, "") for value in manual_values):
+            if not all(value not in (None, "") for value in manual_values):
+                raise PipelineError("人工选择类目时必须同时提供 category_id 和 type_id")
+            try:
+                preferred_pair = (int(manual_category_id), int(manual_type_id))
+            except (TypeError, ValueError) as exc:
+                raise PipelineError("人工类目和商品类型 ID 必须是正整数") from exc
+            if preferred_pair[0] <= 0 or preferred_pair[1] <= 0:
+                raise PipelineError("人工类目和商品类型 ID 必须是正整数")
+        else:
+            preferred_pair = None
         with self._lock:
             raw = self.read_artifact(pipeline_id, 1)
             source_category_id = raw.get("category_id")
-            try:
-                category_exchange = AlphaShopClient.from_environment().category_mapping(
-                    str(source_category_id or "")
-                )
-                preferred_pair = extract_external_category_pair(category_exchange.payload)
-            except AlphaShopInsufficientPointsError as exc:
-                raise PipelineError(str(exc), status=402) from exc
-            except (AlphaShopApiError, ValueError) as exc:
-                raise PipelineError(f"AlphaShop 类目映射失败：{exc}", status=502) from exc
+            category_exchange = None
+            if preferred_pair is None:
+                try:
+                    category_exchange = AlphaShopClient.from_environment().category_mapping(
+                        str(source_category_id or "")
+                    )
+                    preferred_pair = extract_external_category_pair(category_exchange.payload)
+                except AlphaShopInsufficientPointsError as exc:
+                    raise PipelineError(str(exc), status=402) from exc
+                except (AlphaShopApiError, ValueError) as exc:
+                    raise PipelineError(f"AlphaShop 类目映射失败：{exc}", status=502) from exc
             provider = LiveMetadataProvider(
                 OzonDescriptionCategoryClient(
                     authorized_store["client_id"], authorized_store["api_key"]
@@ -865,26 +1026,43 @@ class PipelineService:
                 confidence_threshold=threshold,
                 preferred_category_type=preferred_pair,
             )
+            if (
+                int(mapped.get("ozon_category_id") or 0),
+                int(mapped.get("ozon_type_id") or 0),
+            ) != preferred_pair:
+                raise PipelineError(
+                    "所选 category/type 已不在当前 Ozon 店铺的可创建末级类目中，请重新搜索选择",
+                    status=409,
+                )
             mapped["category_search_input"] = {
                 "category_id": raw.get("category_id"),
                 "category_path_zh": raw.get("category_path_zh"),
                 "title_zh": raw.get("title_zh"),
             }
-            canonical_mapping = json.dumps(
-                category_exchange.payload,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-            mapped["alphashop_category_mapping_provenance"] = {
-                "endpoint": "/alphashop.openclaw.offer.cate.ozon.query/1.0",
-                "request": {"categoryId": str(source_category_id)},
-                "response_sha256": hashlib.sha256(canonical_mapping).hexdigest(),
-                "validated_pair": {
+            if category_exchange is not None:
+                canonical_mapping = json.dumps(
+                    category_exchange.payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                mapped["alphashop_category_mapping_provenance"] = {
+                    "endpoint": "/alphashop.openclaw.offer.cate.ozon.query/1.0",
+                    "request": {"categoryId": str(source_category_id)},
+                    "response_sha256": hashlib.sha256(canonical_mapping).hexdigest(),
+                    "validated_pair": {
+                        "ozon_category_id": preferred_pair[0],
+                        "ozon_type_id": preferred_pair[1],
+                    },
+                }
+                mapped["category_selection_source"] = "alphashop_auto"
+            else:
+                mapped["category_selection_source"] = "manual_ozon_tree"
+                mapped["manual_category_selection"] = {
                     "ozon_category_id": preferred_pair[0],
                     "ozon_type_id": preferred_pair[1],
-                },
-            }
+                    "verified_against_live_tree": True,
+                }
             failures = gate_stage_2(mapped)
             _atomic_json(self.path(pipeline_id, 2), mapped)
             self._record(pipeline_id, 2, not failures, failures)

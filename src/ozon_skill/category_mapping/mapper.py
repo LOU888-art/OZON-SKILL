@@ -213,6 +213,16 @@ def _flatten_categories(response: Mapping[str, Any]) -> list[dict[str, Any]]:
     return candidates
 
 
+def flatten_category_types(response: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return selectable leaf category/type pairs from an Ozon tree response.
+
+    This public wrapper keeps the ERP category picker on exactly the same
+    parsing and eligibility rules as automatic category mapping.
+    """
+
+    return _flatten_categories(response)
+
+
 def _category_tree_shape(response: Mapping[str, Any]) -> str:
     """Return a credential-free structural summary for actionable errors."""
 

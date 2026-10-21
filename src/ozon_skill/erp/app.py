@@ -9,7 +9,7 @@ import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Sequence
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .service import PipelineError, PipelineService
 
@@ -24,6 +24,9 @@ _AI_PROVIDER_ROUTE = "/api/ai-provider"
 _IMAGES_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/images$")
 _REQUIRED_ATTRIBUTES_ROUTE = re.compile(
     r"^/api/pipelines/([^/]+)/required-attributes$"
+)
+_CATEGORY_OPTIONS_ROUTE = re.compile(
+    r"^/api/pipelines/([^/]+)/category-options$"
 )
 _ATTRIBUTE_VALUES_ROUTE = re.compile(
     r"^/api/pipelines/([^/]+)/attributes/(\d+)/values$"
@@ -100,7 +103,9 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:  # noqa: N802
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
+        query = parse_qs(parsed.query)
         try:
             if path == "/api/health":
                 self._json({"status": "ok", "service": "1688-to-ozon-erp"})
@@ -120,6 +125,14 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._json(self.service.audit(unquote(match.group(1))))
             elif match := _IMAGES_ROUTE.fullmatch(path):
                 self._json(self.service.list_images(unquote(match.group(1))))
+            elif match := _CATEGORY_OPTIONS_ROUTE.fullmatch(path):
+                self._json(
+                    self.service.category_options(
+                        unquote(match.group(1)),
+                        query=str((query.get("q") or [""])[0]),
+                        store_id=str((query.get("store_id") or [""])[0]),
+                    )
+                )
             elif match := _REQUIRED_ATTRIBUTES_ROUTE.fullmatch(path):
                 self._json(
                     self.service.required_attribute_options(unquote(match.group(1)))
@@ -181,6 +194,8 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                     pipeline_id,
                     confidence_threshold=body.get("confidence_threshold", 0.70),
                     store_id=body.get("store_id"),
+                    manual_category_id=body.get("manual_category_id"),
+                    manual_type_id=body.get("manual_type_id"),
                 )
             elif stage == 3:
                 result = self.service.start_stage_3(
