@@ -310,6 +310,61 @@ def _ozon_dictionary_rows(response: Mapping[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _ozon_attribute_names(response: Mapping[str, Any]) -> dict[int, str]:
+    result = response.get("result")
+    if isinstance(result, Mapping):
+        result = result.get("attributes") or result.get("items") or []
+    if not isinstance(result, list):
+        return {}
+    names: dict[int, str] = {}
+    for item in result:
+        if not isinstance(item, Mapping):
+            continue
+        raw_id = item.get("id") if item.get("id") is not None else item.get(
+            "attribute_id"
+        )
+        try:
+            attribute_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        name = item.get("name") or item.get("attribute_name")
+        if name:
+            names[attribute_id] = str(name)
+    return names
+
+
+_ATTRIBUTE_NAME_ZH_FALLBACKS = (
+    ("бренд", "品牌"),
+    ("название цвета", "颜色名称"),
+    ("название файла pdf", "PDF 文件名"),
+    ("название", "商品名称"),
+    ("аннотац", "商品简介"),
+    ("вес с упаковкой", "含包装重量（克）"),
+    ("вес товара", "商品重量（克）"),
+    ("комплектац", "包装清单"),
+    ("страна-изготовитель", "生产国家"),
+    ("документ pdf", "PDF 文档"),
+    ("единиц в одном товаре", "单件商品数量"),
+    ("тип", "类型"),
+    ("материал", "材质"),
+    ("цвет", "颜色"),
+    ("размер", "尺寸"),
+    ("аромат", "香型"),
+    ("запах", "气味"),
+    ("описание", "商品描述"),
+    ("тег", "主题标签"),
+    ("контент", "富内容"),
+)
+
+
+def _attribute_name_zh_fallback(name_ru: Any, attribute_id: int) -> str:
+    normalized = str(name_ru or "").lower().replace("ё", "е")
+    for token, translated in _ATTRIBUTE_NAME_ZH_FALLBACKS:
+        if token in normalized:
+            return translated
+    return f"Ozon 特征 ID {attribute_id}"
+
+
 def _blocking_confirmations(value: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     required_ids = {
         item.get("attribute_id")
@@ -1103,7 +1158,17 @@ class PipelineService:
         type_id = final.get("ozon_type_id")
         if not isinstance(category_id, int) or not isinstance(type_id, int):
             raise PipelineError("阶段 3 缺少 Ozon category/type", status=409)
-        del store  # Authorization is deliberately checked before exposing metadata.
+        client = OzonDescriptionCategoryClient(store["client_id"], store["api_key"])
+        try:
+            chinese_attribute_names = _ozon_attribute_names(
+                client.category_attributes(category_id, type_id, language="ZH_HANS")
+            )
+            metadata_language = "ZH_HANS"
+        except OzonApiError:
+            # Editing must remain available during a temporary metadata outage.
+            # Known labels still receive deterministic Chinese fallbacks.
+            chinese_attribute_names = {}
+            metadata_language = "ZH_FALLBACK"
         previous: dict[int, Mapping[str, Any]] = {}
         context_path = self.directory(pipeline_id) / "04_context.json"
         if context_path.exists():
@@ -1142,6 +1207,10 @@ class PipelineService:
                 {
                     "attribute_id": attribute_id,
                     "attribute_name_ru": item.get("attribute_name_ru"),
+                    "attribute_name_zh": chinese_attribute_names.get(attribute_id)
+                    or _attribute_name_zh_fallback(
+                        item.get("attribute_name_ru"), attribute_id
+                    ),
                     "attribute_type": item.get("attribute_type"),
                     "is_required": bool(item.get("is_required")),
                     "is_dictionary": bool(item.get("is_dictionary")),
@@ -1157,6 +1226,7 @@ class PipelineService:
             "pipeline_id": pipeline_id,
             "ozon_category_id": category_id,
             "ozon_type_id": type_id,
+            "metadata_language": metadata_language,
             "attributes": attributes,
             "blocking_confirmation_count": len(_blocking_confirmations(final)),
         }
@@ -1190,12 +1260,21 @@ class PipelineService:
         try:
             response = OzonDescriptionCategoryClient(
                 store["client_id"], store["api_key"]
-            ).attribute_values(category_id, type_id, requested_id)
+            ).attribute_values(
+                category_id,
+                type_id,
+                requested_id,
+                language="ZH_HANS",
+            )
         except OzonApiError as exc:
             raise PipelineError(f"Ozon 字典值查询失败：{exc}", status=502) from exc
         return {
             "attribute_id": requested_id,
             "attribute_name_ru": attribute.get("attribute_name_ru"),
+            "attribute_name_zh": _attribute_name_zh_fallback(
+                attribute.get("attribute_name_ru"), requested_id
+            ),
+            "language": "ZH_HANS",
             "options": _ozon_dictionary_rows(response),
         }
 
@@ -1253,6 +1332,46 @@ class PipelineService:
         }
         if unknown:
             raise PipelineError(f"包含非当前类目的属性：{', '.join(sorted(unknown))}")
+        chinese_fields: list[dict[str, Any]] = []
+        for raw_attribute_id, raw_override in overrides.items():
+            if not isinstance(raw_override, Mapping):
+                continue
+            attribute_id = int(str(raw_attribute_id))
+            attribute = known[attribute_id]
+            if attribute.get("is_dictionary"):
+                continue
+            raw_value = str(raw_override.get("value") or "").strip()
+            if not re.search(r"[\u3400-\u9fff]", raw_value):
+                continue
+            attribute_type = str(attribute.get("attribute_type") or "").lower()
+            if any(
+                token in attribute_type
+                for token in ("integer", "decimal", "float", "double", "number")
+            ):
+                raise PipelineError(
+                    f"数值特征 {attribute_id} 请只填写数字，不要填写中文单位"
+                )
+            name = str(attribute.get("attribute_name_ru") or "").lower()
+            if ("rich" in name or "рич" in name) and "контент" in name:
+                raise PipelineError("Rich Content JSON 不能作为普通中文文本翻译")
+            chinese_fields.append(
+                {
+                    "attribute_id": attribute_id,
+                    "attribute_name_ru": attribute.get("attribute_name_ru"),
+                    "value_zh": raw_value,
+                }
+            )
+        translated_values: dict[str, str] = {}
+        if chinese_fields:
+            try:
+                translated_values = self.ai_provider.client().translate_attribute_values(
+                    chinese_fields
+                )
+            except (AiRelayError, AiProviderConfigurationError) as exc:
+                raise PipelineError(
+                    f"中文特征转俄语失败，未组装上架载荷：{exc}",
+                    status=502,
+                ) from exc
         category_id = resolved.get("ozon_category_id")
         type_id = resolved.get("ozon_type_id")
         client = OzonDescriptionCategoryClient(store["client_id"], store["api_key"])
@@ -1313,7 +1432,8 @@ class PipelineService:
                     }
                 )
             else:
-                value = str(raw_override.get("value") or "").strip()
+                value_zh = str(raw_override.get("value") or "").strip()
+                value = translated_values.get(str(attribute_id), value_zh)
                 if not value:
                     raise PipelineError(f"必填属性 {attribute_id} 不能为空")
                 attribute["value"] = value
@@ -1321,7 +1441,12 @@ class PipelineService:
                     {
                         "attribute_id": attribute_id,
                         "value": value,
-                        "source": "ERP_MANUAL_INPUT",
+                        "value_zh": value_zh if value != value_zh else None,
+                        "source": (
+                            "ERP_MANUAL_INPUT_ZH_TRANSLATED"
+                            if value != value_zh
+                            else "ERP_MANUAL_INPUT"
+                        ),
                     }
                 )
             attribute["mapping_status"] = "MAPPED_MANUAL_VALIDATED"

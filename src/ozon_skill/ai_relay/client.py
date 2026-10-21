@@ -6,7 +6,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -320,6 +320,76 @@ class AiRelayClient:
                 raise
             response = request_copy(resolved_model)
         return _json_object(_message_text(response))
+
+    def translate_attribute_values(
+        self, attributes: Sequence[Mapping[str, Any]]
+    ) -> dict[str, str]:
+        """Translate user-entered Chinese attribute values to factual Russian."""
+
+        fields = [
+            {
+                "attribute_id": str(item.get("attribute_id")),
+                "attribute_name_ru": str(item.get("attribute_name_ru") or ""),
+                "value_zh": str(item.get("value_zh") or ""),
+            }
+            for item in attributes
+            if item.get("attribute_id") is not None and item.get("value_zh")
+        ]
+        if not fields:
+            return {}
+        prompt = (
+            "Translate only the supplied Chinese Ozon attribute values into natural "
+            "Russian. Preserve numbers, units, URLs, model codes and factual meaning. "
+            "Do not add facts. Return strict JSON: {\"translations\": "
+            "{\"attribute_id\": \"russian value\"}}. Return every input ID exactly "
+            "once and no extra keys.\nFIELDS:\n"
+            + json.dumps(fields, ensure_ascii=False, separators=(",", ":"))
+        )
+        text_model = normalize_text_model(self.text_model) or DEFAULT_TEXT_MODEL
+
+        def request_translation(model: str) -> dict[str, Any]:
+            return self._post(
+                "/chat/completions",
+                self.text_api_key,
+                {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": "Return strict JSON only."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0,
+                    "response_format": {"type": "json_object"},
+                },
+                operation="特征俄语翻译",
+                model=model,
+            )
+
+        try:
+            response = request_translation(text_model)
+        except AiRelayError as exc:
+            if "model_not_found" not in str(exc).lower():
+                raise
+            resolved_model = self._resolve_text_model(text_model)
+            if resolved_model == text_model:
+                raise
+            response = request_translation(resolved_model)
+
+        parsed = _json_object(_message_text(response))
+        translations = parsed.get("translations")
+        if not isinstance(translations, Mapping):
+            raise AiRelayError("AI 特征翻译响应缺少 translations 对象")
+        expected = {item["attribute_id"] for item in fields}
+        if set(map(str, translations)) != expected:
+            raise AiRelayError("AI 特征翻译返回的属性 ID 与请求不一致")
+        result: dict[str, str] = {}
+        for attribute_id in expected:
+            value = str(translations.get(attribute_id) or "").strip()
+            if not value or re.search(r"[\u3400-\u9fff]", value):
+                raise AiRelayError(
+                    f"AI 特征翻译未产生有效俄语值：ID {attribute_id}"
+                )
+            result[attribute_id] = value
+        return result
 
     def generate_product_image(
         self,
