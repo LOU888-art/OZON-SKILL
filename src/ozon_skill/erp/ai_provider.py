@@ -17,6 +17,7 @@ from ozon_skill.ai_relay.client import (
     AiRelayError,
     _https_base_url,
     normalize_image_model,
+    normalize_text_model,
 )
 
 
@@ -64,7 +65,9 @@ class AiProviderRegistry:
         return {
             "source": source,
             "base_url": value.get("base_url", DEFAULT_BASE_URL),
-            "text_model": value.get("text_model", DEFAULT_TEXT_MODEL),
+            "text_model": normalize_text_model(
+                str(value.get("text_model", DEFAULT_TEXT_MODEL))
+            ),
             "image_model": normalize_image_model(
                 str(value.get("image_model", DEFAULT_IMAGE_MODEL))
             ),
@@ -86,9 +89,9 @@ class AiProviderRegistry:
             base_url = _https_base_url(
                 str(value.get("base_url") or existing.get("base_url") or DEFAULT_BASE_URL)
             )
-            text_model = str(
+            text_model = normalize_text_model(str(
                 value.get("text_model") or existing.get("text_model") or DEFAULT_TEXT_MODEL
-            ).strip()
+            ))
             image_model = normalize_image_model(str(
                 value.get("image_model")
                 or existing.get("image_model")
@@ -120,12 +123,25 @@ class AiProviderRegistry:
         if not stored:
             return AiRelayClient.from_environment()
         try:
+            text_model = normalize_text_model(str(stored["text_model"]))
+            image_model = normalize_image_model(str(stored["image_model"]))
+            if (
+                text_model != stored.get("text_model")
+                or image_model != stored.get("image_model")
+            ):
+                migrated = {
+                    **stored,
+                    "text_model": text_model,
+                    "image_model": image_model,
+                }
+                with self._lock:
+                    self._write(migrated)
             return AiRelayClient(
                 base_url=_https_base_url(str(stored["base_url"])),
                 text_api_key=str(stored["text_api_key"]),
                 image_api_key=str(stored["image_api_key"]),
-                text_model=str(stored["text_model"]),
-                image_model=normalize_image_model(str(stored["image_model"])),
+                text_model=text_model,
+                image_model=image_model,
             )
         except (KeyError, AiRelayError) as exc:
             raise AiProviderConfigurationError("AI 服务私有配置不完整") from exc

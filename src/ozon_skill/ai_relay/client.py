@@ -13,7 +13,7 @@ from urllib.request import Request, urlopen
 
 
 DEFAULT_BASE_URL = "https://gpt.gptzzz.xyz/v1"
-DEFAULT_TEXT_MODEL = "GPT-5.6Sol"
+DEFAULT_TEXT_MODEL = "gpt-5.6-sol"
 DEFAULT_IMAGE_MODEL = "gpt-image-2"
 _LEGACY_IMAGE_MODELS = {"GPT-image-2.0": DEFAULT_IMAGE_MODEL}
 
@@ -27,6 +27,19 @@ def normalize_image_model(value: str) -> str:
 
     model = value.strip()
     return _LEGACY_IMAGE_MODELS.get(model, model)
+
+
+def _model_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def normalize_text_model(value: str) -> str:
+    """Normalize historical display names to the relay's canonical model ID."""
+
+    model = value.strip()
+    if _model_key(model) == _model_key(DEFAULT_TEXT_MODEL):
+        return DEFAULT_TEXT_MODEL
+    return model
 
 
 def _safe_error_detail(raw: str) -> tuple[str | None, str | None]:
@@ -126,7 +139,9 @@ class AiRelayClient:
             text_api_key=(os.environ.get("AI_RELAY_TEXT_API_KEY") or "").strip() or None,
             image_api_key=(os.environ.get("AI_RELAY_IMAGE_API_KEY") or "").strip() or None,
             text_model=(
-                os.environ.get("AI_RELAY_TEXT_MODEL", DEFAULT_TEXT_MODEL).strip()
+                normalize_text_model(
+                    os.environ.get("AI_RELAY_TEXT_MODEL", DEFAULT_TEXT_MODEL)
+                )
                 or DEFAULT_TEXT_MODEL
             ),
             image_model=(
@@ -191,6 +206,57 @@ class AiRelayClient:
             raise AiRelayError(f"AI 中转站返回错误：{code or 'UNKNOWN'}")
         return payload
 
+    def _available_models(self, api_key: str | None) -> list[str]:
+        """Read model IDs without ever exposing the credential in errors or logs."""
+
+        if not api_key:
+            raise AiRelayError("AI 中转站对应的 API Key 尚未配置")
+        request = Request(
+            f"{self.base_url}/models",
+            method="GET",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Accept": "application/json",
+                "User-Agent": "ozon-skill-ai-relay/1.0",
+            },
+        )
+        try:
+            with urlopen(request, timeout=min(self.timeout_seconds, 30.0)) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+                status = response.status
+        except HTTPError as exc:
+            raise AiRelayError(f"AI 中转站模型列表查询失败：HTTP {exc.code}") from exc
+        except URLError as exc:
+            raise AiRelayError(f"AI 中转站模型列表连接失败：{exc.reason}") from exc
+        if status != 200:
+            raise AiRelayError(f"AI 中转站模型列表查询失败：HTTP {status}")
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise AiRelayError("AI 中转站模型列表不是 JSON") from exc
+        data = payload.get("data") if isinstance(payload, Mapping) else None
+        if not isinstance(data, list):
+            raise AiRelayError("AI 中转站模型列表缺少 data")
+        return [
+            str(item["id"]).strip()
+            for item in data
+            if isinstance(item, Mapping) and str(item.get("id") or "").strip()
+        ]
+
+    def _resolve_text_model(self, configured: str) -> str:
+        models = self._available_models(self.text_api_key)
+        if configured in models:
+            return configured
+        matches = [
+            model for model in models if _model_key(model) == _model_key(configured)
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        examples = ", ".join(models[:8]) or "（空列表）"
+        raise AiRelayError(
+            f"AI 中转站不存在文本模型 {configured}；可用模型示例：{examples}"
+        )
+
     def generate_listing_copy(
         self, source: Mapping[str, Any], mapped: Mapping[str, Any]
     ) -> dict[str, Any]:
@@ -225,21 +291,34 @@ class AiRelayClient:
             "тегов. Не добавляй неподтвержденные характеристики.\nFACTS:\n"
             + json.dumps(facts, ensure_ascii=False, separators=(",", ":"))
         )
-        response = self._post(
-            "/chat/completions",
-            self.text_api_key,
-            {
-                "model": self.text_model,
-                "messages": [
-                    {"role": "system", "content": "Return strict JSON only."},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": 0.3,
-                "response_format": {"type": "json_object"},
-            },
-            operation="文本生成",
-            model=self.text_model,
-        )
+        text_model = normalize_text_model(self.text_model) or DEFAULT_TEXT_MODEL
+
+        def request_copy(model: str) -> dict[str, Any]:
+            return self._post(
+                "/chat/completions",
+                self.text_api_key,
+                {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": "Return strict JSON only."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.3,
+                    "response_format": {"type": "json_object"},
+                },
+                operation="文本生成",
+                model=model,
+            )
+
+        try:
+            response = request_copy(text_model)
+        except AiRelayError as exc:
+            if "model_not_found" not in str(exc).lower():
+                raise
+            resolved_model = self._resolve_text_model(text_model)
+            if resolved_model == text_model:
+                raise
+            response = request_copy(resolved_model)
         return _json_object(_message_text(response))
 
     def generate_product_image(
@@ -284,7 +363,7 @@ class AiRelayClient:
     def public_status(self) -> dict[str, Any]:
         return {
             "base_url": self.base_url,
-            "text_model": self.text_model,
+            "text_model": normalize_text_model(self.text_model),
             "image_model": self.image_model,
             "text_api_key_configured": bool(self.text_api_key),
             "image_api_key_configured": bool(self.image_api_key),

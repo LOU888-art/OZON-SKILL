@@ -822,15 +822,17 @@ class PipelineService:
                 self._record(pipeline_id, 3, False, failures)
                 raise PipelineError(failures[0], status=502) from exc
             generated_copy = None
+            copy_fallback_reason = None
             if text_mode == "ai_generate":
                 try:
                     generated_copy = self.ai_provider.client().generate_listing_copy(
                         _source_for_mapper(raw), mapped
                     )
                 except (AiRelayError, AiProviderConfigurationError) as exc:
-                    failures = [str(exc)]
-                    self._record(pipeline_id, 3, False, failures)
-                    raise PipelineError(str(exc), status=502) from exc
+                    # Image generation may already have incurred a charge.  A text
+                    # provider outage must not discard that completed work or block
+                    # the deterministic, strictly validated built-in copy fallback.
+                    copy_fallback_reason = str(exc)[:800]
             final = build_final_listing(
                 mapped,
                 _source_for_mapper(raw),
@@ -840,6 +842,10 @@ class PipelineService:
             final["generation_options"] = {
                 "media_mode": media_mode,
                 "text_mode": text_mode,
+                "effective_text_mode": (
+                    "built_in_fallback" if copy_fallback_reason else text_mode
+                ),
+                "copy_fallback_reason": copy_fallback_reason,
                 "ai_relay": self.ai_provider.public_status(),
             }
             final["localized_images"] = [
@@ -860,7 +866,17 @@ class PipelineService:
             failures = gate_stage_3(final)
             _atomic_json(self.path(pipeline_id, 3), final)
             self._record(pipeline_id, 3, not failures, failures)
-            return {"stage": 3, "status": "PASS" if not failures else "FAIL", "failures": failures, "artifact": STAGE_FILES[3]}
+            return {
+                "stage": 3,
+                "status": "PASS" if not failures else "FAIL",
+                "failures": failures,
+                "warnings": (
+                    [f"AI 文本不可用，已自动使用内置俄语文案：{copy_fallback_reason}"]
+                    if copy_fallback_reason
+                    else []
+                ),
+                "artifact": STAGE_FILES[3],
+            }
 
     def start_stage_3(
         self,
