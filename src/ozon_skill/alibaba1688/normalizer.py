@@ -48,6 +48,68 @@ def _number(value: Any) -> float | int | None:
     return float(number)
 
 
+_PRICE_KEYS = (
+    "price",
+    "skuPrice",
+    "offerPrice",
+    "discountPrice",
+    "salePrice",
+    "retailPrice",
+    "promotionPrice",
+    "wholesalePrice",
+    "consignPrice",
+    "unitPrice",
+    "priceValue",
+    "priceInYuan",
+)
+_PRICE_CONTAINER_KEYS = (
+    "priceInfo",
+    "priceRange",
+    "priceRanges",
+    "priceRangeList",
+    "rangePrices",
+    "priceList",
+)
+
+
+def _price_number(value: Any) -> float | int | None:
+    """Extract the lowest positive CNY price from known price structures."""
+
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, Mapping):
+        candidates = [
+            _price_number(value.get(key))
+            for key in (*_PRICE_KEYS, *_PRICE_CONTAINER_KEYS, "value")
+            if value.get(key) not in (None, "")
+        ]
+    elif isinstance(value, (list, tuple)):
+        candidates = [_price_number(item) for item in value]
+    else:
+        direct = _number(value)
+        if direct is not None and direct > 0:
+            return direct
+        text = str(value).strip()
+        matches = re.findall(r"(?<!\d)(\d+(?:[.,]\d+)?)(?!\d)", text)
+        candidates = [_number(item.replace(",", ".")) for item in matches]
+    valid = [float(item) for item in candidates if item is not None and float(item) > 0]
+    if not valid:
+        return None
+    result = min(valid)
+    return int(result) if result.is_integer() else result
+
+
+def _offer_purchase_price(product: Mapping[str, Any]) -> float | int | None:
+    candidates: list[Any] = [product.get(key) for key in _PRICE_KEYS]
+    candidates.extend(product.get(key) for key in _PRICE_CONTAINER_KEYS)
+    for container_name in ("saleInfo", "productSaleInfo", "sale"):
+        container = product.get(container_name)
+        if isinstance(container, Mapping):
+            candidates.extend(container.get(key) for key in _PRICE_KEYS)
+            candidates.extend(container.get(key) for key in _PRICE_CONTAINER_KEYS)
+    return _price_number(candidates)
+
+
 def _integer(value: Any) -> int | None:
     number = _number(value)
     if isinstance(number, int):
@@ -199,7 +261,9 @@ def _specification(raw: Any) -> tuple[list[dict[str, Any]] | None, str | None]:
     return parts, "; ".join(text_parts) or None
 
 
-def _sku_list(product: Mapping[str, Any]) -> list[dict[str, Any]] | None:
+def _sku_list(
+    product: Mapping[str, Any], fallback_price: float | int | None = None
+) -> list[dict[str, Any]] | None:
     raw = _first(
         product,
         "skuInfos",
@@ -231,14 +295,17 @@ def _sku_list(product: Mapping[str, Any]) -> list[dict[str, Any]] | None:
                 )
                 if image_url is not None:
                     break
+        sku_price = _price_number(
+            [item.get(key) for key in (*_PRICE_KEYS, *_PRICE_CONTAINER_KEYS)]
+        )
+        if sku_price is None:
+            sku_price = fallback_price
         result.append(
             {
                 "sku_id": _text(_first(item, "skuId", "skuID", "id", "specId")),
                 "specification_zh": specification,
                 "specification_text_zh": specification_text,
-                "purchase_price_cny": _number(
-                    _first(item, "price", "skuPrice", "offerPrice", "discountPrice")
-                ),
+                "purchase_price_cny": sku_price,
                 "stock": _integer(
                     _first(item, "amountOnSale", "stock", "quantity", "canBookCount")
                 ),
@@ -354,7 +421,7 @@ def normalize_product(
         "title_zh": _text(_first(product, "subject", "title", "productName")),
         "images": _main_images(product),
         "detail_images": _detail_images(product),
-        "sku_list": _sku_list(product),
+        "sku_list": _sku_list(product, _offer_purchase_price(product)),
         "attributes_zh": _attributes(product),
         "category_path_zh": _category(product),
         "supplier_info": _supplier(product),

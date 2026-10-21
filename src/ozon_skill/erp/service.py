@@ -10,6 +10,7 @@ import tempfile
 import threading
 from copy import deepcopy
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
@@ -1299,7 +1300,42 @@ class PipelineService:
         authorized_store = self._selected_store(pipeline_id, store_config.get("store_id"))
         ozon_currency = str(authorized_store["currency_code"]).strip().upper()
         with self._lock:
-            raw = self.read_artifact(pipeline_id, 1)
+            raw = deepcopy(self.read_artifact(pipeline_id, 1))
+            price_overrides = store_config.get("sku_price_overrides") or {}
+            if not isinstance(price_overrides, Mapping):
+                raise PipelineError("SKU 采购价补充值必须是对象")
+            sku_rows = [
+                item for item in raw.get("sku_list") or [] if isinstance(item, dict)
+            ]
+            sku_by_id = {
+                str(item.get("sku_id")): item
+                for item in sku_rows
+                if item.get("sku_id") is not None
+            }
+            unknown_skus = sorted(set(map(str, price_overrides)) - set(sku_by_id))
+            if unknown_skus:
+                raise PipelineError(
+                    f"采购价补充值包含未知 SKU：{', '.join(unknown_skus)}"
+                )
+            price_override_provenance: list[dict[str, Any]] = []
+            for raw_sku_id, raw_price in price_overrides.items():
+                sku_id = str(raw_sku_id)
+                if raw_price in (None, ""):
+                    continue
+                try:
+                    price = Decimal(str(raw_price).strip())
+                except (InvalidOperation, ValueError) as exc:
+                    raise PipelineError(f"SKU {sku_id} 的人民币采购价不是数字") from exc
+                if not price.is_finite() or price <= 0:
+                    raise PipelineError(f"SKU {sku_id} 的人民币采购价必须大于 0")
+                sku_by_id[sku_id]["purchase_price_cny"] = str(price)
+                price_override_provenance.append(
+                    {
+                        "sku_id": sku_id,
+                        "purchase_price_cny": str(price),
+                        "source": "ERP_MANUAL_INPUT",
+                    }
+                )
             final = self.read_artifact(pipeline_id, 3)
             final, override_provenance = self._apply_required_attribute_overrides(
                 final,
@@ -1333,6 +1369,7 @@ class PipelineService:
                 "warnings": assembly.warnings,
                 "validation_errors": assembly.validation_errors,
                 "attribute_override_provenance": override_provenance,
+                "sku_price_override_provenance": price_override_provenance,
             })
             self._record(pipeline_id, 4, not failures, failures)
             self._assign_store(pipeline_id, str(authorized_store["store_id"]))
