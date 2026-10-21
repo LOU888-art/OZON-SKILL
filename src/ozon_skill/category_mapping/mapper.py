@@ -541,6 +541,8 @@ def _map_attributes(
             "is_required": required,
             "is_dictionary": dictionary,
             "attribute_type": attribute.get("type"),
+            "is_collection": attribute.get("is_collection"),
+            "max_count": attribute.get("max_count"),
             "mapping_status": "NOT_MAPPED_OPTIONAL",
             "mapping_confidence": 0.0,
             "source_refs": source_refs,

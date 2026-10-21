@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Mapping, Sequence
+
+from ozon_skill.content_generation.rich_content import upgrade_legacy_rich_content
+from ozon_skill.content_generation.tags import format_ozon_hashtags
 
 from .config import DimensionDefaults, StoreConfig
 
@@ -121,9 +125,119 @@ def _images(final: Mapping[str, Any], sku_id: str | None = None) -> list[str]:
     return list(dict.fromkeys(ordered))
 
 
+_CJK = re.compile(r"[\u3400-\u9fff]")
+_COLOR_TRANSLATIONS = (
+    ("米白", "Бежевый"),
+    ("咖啡", "Коричневый"),
+    ("透明", "Прозрачный"),
+    ("彩色", "Разноцветный"),
+    ("黑", "Черный"),
+    ("白", "Белый"),
+    ("红", "Красный"),
+    ("粉", "Розовый"),
+    ("蓝", "Синий"),
+    ("绿", "Зеленый"),
+    ("黄", "Желтый"),
+    ("紫", "Фиолетовый"),
+    ("灰", "Серый"),
+    ("棕", "Коричневый"),
+    ("橙", "Оранжевый"),
+)
+
+
+def _attribute_name(attribute: Mapping[str, Any]) -> str:
+    return str(attribute.get("attribute_name_ru") or "").lower().replace("ё", "е")
+
+
+def _is_color_attribute(attribute: Mapping[str, Any]) -> bool:
+    return "цвет" in _attribute_name(attribute)
+
+
+def _is_tag_attribute(attribute: Mapping[str, Any]) -> bool:
+    name = _attribute_name(attribute)
+    return "тег" in name or "хештег" in name or "ключев" in name
+
+
+def _is_rich_content_attribute(attribute: Mapping[str, Any]) -> bool:
+    name = _attribute_name(attribute)
+    return ("rich" in name or "рич" in name) and "контент" in name
+
+
+def _is_single_valued(attribute: Mapping[str, Any]) -> bool:
+    max_count = attribute.get("max_count")
+    return (
+        attribute.get("is_collection") is False
+        or max_count == 1
+        or _is_color_attribute(attribute)
+        or _is_tag_attribute(attribute)
+        or _is_rich_content_attribute(attribute)
+        or "бренд" in _attribute_name(attribute)
+    )
+
+
+def _sku_source_values(
+    attribute: Mapping[str, Any], sku: Mapping[str, Any] | None
+) -> list[Any]:
+    value = attribute.get("value")
+    raw_values = (
+        list(value)
+        if isinstance(value, list)
+        else ([value] if value is not None else [])
+    )
+    source_refs = [
+        item for item in attribute.get("source_refs") or [] if isinstance(item, Mapping)
+    ]
+    sku_scoped = bool(source_refs) and all(
+        str(item.get("location") or "").startswith("sku_list[") for item in source_refs
+    )
+    if not sku_scoped:
+        return raw_values
+    sku_values = {
+        str(item.get("value"))
+        for item in (sku or {}).get("specification_zh") or []
+        if isinstance(item, Mapping) and item.get("value") is not None
+    }
+    return [
+        item.get("value")
+        for item in source_refs
+        if item.get("value") is not None and str(item.get("value")) in sku_values
+    ]
+
+
+def _russian_color(value: Any) -> str:
+    result = str(value or "").strip()
+    if not _CJK.search(result):
+        return result
+    for token, translation in _COLOR_TRANSLATIONS:
+        if len(token) > 1 and token in result:
+            return translation
+    translations = {
+        translation
+        for token, translation in _COLOR_TRANSLATIONS
+        if len(token) == 1 and token in result
+    }
+    if len(translations) == 1:
+        return translations.pop()
+    return result
+
+
+def _deduplicate_values(values: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for value in values:
+        key = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        if key not in seen:
+            seen.add(key)
+            result.append(value)
+    return result
+
+
 def _api_attributes(
     attributes: Sequence[Mapping[str, Any]],
     sku: Mapping[str, Any] | None = None,
+    *,
+    fallback_title: str = "Подробности товара",
+    fallback_text: str = "Описание и преимущества товара",
 ) -> tuple[list[dict[str, Any]], list[str], list[int]]:
     result: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -171,8 +285,74 @@ def _api_attributes(
                     f"dictionary attribute {attribute_id} has a value but no dictionary_value_id"
                 )
         elif value is not None:
-            raw_values = value if isinstance(value, list) else [value]
-            values = [{"value": str(item)} for item in raw_values if item is not None]
+            raw_values = _sku_source_values(attribute, sku)
+            if _is_tag_attribute(attribute):
+                tag_value = format_ozon_hashtags(
+                    raw_values[0]
+                    if len(raw_values) == 1 and isinstance(raw_values[0], str)
+                    else raw_values
+                )
+                if not tag_value:
+                    errors.append(f"hashtag attribute {attribute_id} has no valid #tags")
+                else:
+                    values = [{"value": tag_value}]
+            elif _is_rich_content_attribute(attribute):
+                if len(raw_values) != 1:
+                    errors.append(
+                        f"rich-content attribute {attribute_id} must contain exactly one JSON value"
+                    )
+                elif raw_values:
+                    try:
+                        rich_value = (
+                            json.loads(raw_values[0])
+                            if isinstance(raw_values[0], str)
+                            else raw_values[0]
+                        )
+                        rich_value = upgrade_legacy_rich_content(
+                            rich_value,
+                            fallback_title=fallback_title,
+                            fallback_text=fallback_text,
+                        )
+                    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                        errors.append(
+                            f"rich-content attribute {attribute_id} is invalid: {exc}"
+                        )
+                    else:
+                        values = [
+                            {
+                                "value": json.dumps(
+                                    rich_value,
+                                    ensure_ascii=False,
+                                    separators=(",", ":"),
+                                )
+                            }
+                        ]
+            else:
+                if _is_color_attribute(attribute):
+                    raw_values = [_russian_color(item) for item in raw_values]
+                values = [
+                    {"value": str(item).strip()}
+                    for item in raw_values
+                    if item is not None and str(item).strip()
+                ]
+
+        values = _deduplicate_values(values)
+        if _is_color_attribute(attribute):
+            for entry in values:
+                color = str(entry.get("value") or "")
+                if not color and isinstance(entry.get("dictionary_value_id"), int):
+                    continue
+                if _CJK.search(color) or not re.search(r"[А-Яа-яЁё]", color):
+                    errors.append(
+                        f"color attribute {attribute_id} must contain one Russian "
+                        f"value, got {color!r}"
+                    )
+        if _is_single_valued(attribute) and len(values) > 1:
+            errors.append(
+                f"single-value attribute {attribute_id} ({attribute.get('attribute_name_ru')}) "
+                f"contains {len(values)} values"
+            )
+            values = values[:1]
 
         if values:
             result.append({"complex_id": 0, "id": attribute_id, "values": values})
@@ -203,6 +383,8 @@ def assemble_import_payload(
     warnings: list[str] = []
     source_offer_id = str(final.get("source_offer_id") or source.get("source_offer_id") or "")
     title = final.get("title_ru")
+    rich_fallback_text = str(final.get("description_ru") or "Описание товара")
+    rich_fallback_text = rich_fallback_text.split("\n\n", 1)[0][:500]
     type_id = final.get("ozon_type_id")
     category_id = final.get("ozon_category_id")
     if not source_offer_id:
@@ -217,6 +399,15 @@ def assemble_import_payload(
         errors.append("ozon-listing-final.json is not READY_FOR_PAYLOAD_ASSEMBLY")
     if final.get("rich_content_json") is None:
         errors.append("rich_content_json is not ready")
+    else:
+        try:
+            upgrade_legacy_rich_content(
+                final.get("rich_content_json"),
+                fallback_title="Подробности товара",
+                fallback_text=rich_fallback_text,
+            )
+        except ValueError as exc:
+            errors.append(f"rich_content_json is invalid: {exc}")
 
     dimensions, dimension_source = _dimensions(source, store.dimension_defaults)
     if dimensions is None:
@@ -260,7 +451,12 @@ def assemble_import_payload(
     items: list[dict[str, Any]] = []
     offer_ids: list[str] = []
     for sku in _sku_rows(source):
-        attributes, attribute_errors, _ = _api_attributes(raw_attributes, sku)
+        attributes, attribute_errors, _ = _api_attributes(
+            raw_attributes,
+            sku,
+            fallback_title="Подробности товара",
+            fallback_text=rich_fallback_text,
+        )
         errors.extend(attribute_errors)
         sku_id_value = sku.get("sku_id")
         sku_id = str(sku_id_value) if sku_id_value is not None else None

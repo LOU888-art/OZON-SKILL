@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
 from .rich_content import build_rich_content
+from .tags import format_ozon_hashtags
 
 
 NO_BRAND_TITLE_RU = "без бренда"
@@ -265,7 +266,7 @@ def _bind_generated_attributes(
         if "описание" in name or "аннотац" in name:
             generated_field, value = "description_ru", description
         elif "тег" in name or "ключев" in name:
-            generated_field, value = "tags_ru", list(tags)
+            generated_field, value = "tags_ru", format_ozon_hashtags(tags)
         elif ("rich" in name or "рич" in name) and "контент" in name and rich_content:
             generated_field = "rich_content_json"
             value = json.dumps(rich_content, ensure_ascii=False, separators=(",", ":"))
