@@ -7,11 +7,22 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 secret_file=${1:-/root/秘钥.txt}
-if [ ! -r "$secret_file" ]; then
-  echo "找不到密钥文件：$secret_file" >&2
+existing_env=/etc/ozon-erp/erp.env
+
+if [ -r "$secret_file" ]; then
+  chmod 600 "$secret_file"
+  access_key=$(sed -n 's/^[[:space:]]*Access Key[[:space:]]*[:：][[:space:]]*//p' "$secret_file" | tr -d '\r\n')
+  secret_key=$(sed -n 's/^[[:space:]]*Secret Key[[:space:]]*[:：][[:space:]]*//p' "$secret_file" | tr -d '\r\n')
+  credential_source=$secret_file
+elif [ -r "$existing_env" ]; then
+  access_key=$(sed -n 's/^[[:space:]]*ALPHASHOP_ACCESS_KEY[[:space:]]*=[[:space:]]*//p' "$existing_env" | tail -n 1 | tr -d '\r\n')
+  secret_key=$(sed -n 's/^[[:space:]]*ALPHASHOP_SECRET_KEY[[:space:]]*=[[:space:]]*//p' "$existing_env" | tail -n 1 | tr -d '\r\n')
+  credential_source=$existing_env
+  echo "未找到 $secret_file，正在复用现有 ERP 密钥配置。"
+else
+  echo "找不到密钥文件 $secret_file，且没有可复用的 $existing_env" >&2
   exit 1
 fi
-chmod 600 "$secret_file"
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 install_root=/opt/ozon-erp
@@ -21,10 +32,8 @@ state_dir=/var/lib/ozon-erp
 config_dir=/etc/ozon-erp
 nginx_secret_dir=/etc/nginx/ozon-erp
 
-access_key=$(sed -n 's/^[[:space:]]*Access Key[[:space:]]*[:：][[:space:]]*//p' "$secret_file" | tr -d '\r\n')
-secret_key=$(sed -n 's/^[[:space:]]*Secret Key[[:space:]]*[:：][[:space:]]*//p' "$secret_file" | tr -d '\r\n')
 if [ -z "$access_key" ] || [ -z "$secret_key" ]; then
-  echo "密钥文件必须包含 Access Key 和 Secret Key" >&2
+  echo "$credential_source 中缺少有效的 AlphaShop Access Key 或 Secret Key" >&2
   exit 1
 fi
 case "$access_key$secret_key" in
