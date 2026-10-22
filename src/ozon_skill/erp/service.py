@@ -64,6 +64,23 @@ STAGE_FILES = {
 IMAGE_SELECTION_FILE = "image-selection.json"
 IMAGE_ACTIONS = {"exclude", "translate", "reference_8", "sku_main"}
 _PIPELINE_ID = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
+PLAN_CATALOG = {
+    "starter": {
+        "name": "启航版",
+        "monthly_price_cny": 299,
+        "limits": {"products": 50, "stores": 1, "ai_images": 100, "members": 1},
+    },
+    "growth": {
+        "name": "增长版",
+        "monthly_price_cny": 899,
+        "limits": {"products": 500, "stores": 3, "ai_images": 1000, "members": 5},
+    },
+    "business": {
+        "name": "企业版",
+        "monthly_price_cny": 1999,
+        "limits": {"products": 2000, "stores": 10, "ai_images": 5000, "members": 20},
+    },
+}
 _CATEGORY_SEARCH_ALIASES = {
     "香薰石牌": (
         "香薰石",
@@ -517,6 +534,77 @@ class PipelineService:
     def list_stores(self) -> list[dict[str, Any]]:
         return self.stores.list_public()
 
+    def commercial_status(self, username: str = "") -> dict[str, Any]:
+        """Return the current workspace identity, plan and metered usage."""
+
+        plan_code = str(os.environ.get("ERP_PLAN") or "business").strip().lower()
+        if plan_code not in PLAN_CATALOG:
+            plan_code = "business"
+        plan = PLAN_CATALOG[plan_code]
+        month = datetime.now(timezone.utc).strftime("%Y-%m")
+        monthly_pipelines = [
+            item
+            for item in self.list_pipelines()
+            if str(item.get("created_at") or item.get("updated_at") or "").startswith(month)
+        ]
+        ai_images = 0
+        for item in monthly_pipelines:
+            pipeline_id = item.get("pipeline_id")
+            if not pipeline_id or not self.path(str(pipeline_id), 3).exists():
+                continue
+            try:
+                localized = self.read_artifact(str(pipeline_id), 3).get("localized_images") or []
+            except PipelineError:
+                continue
+            for image in localized:
+                if not isinstance(image, Mapping):
+                    continue
+                action = str(image.get("plan_action") or image.get("action") or "")
+                if action in {"reference_8", "sku_main", "ai_generate"}:
+                    ai_images += 1
+        safe_username = re.sub(r"[^A-Za-z0-9_.@-]", "", username)[:64] or "admin"
+        limits = dict(plan["limits"])
+        usage = {
+            "products": len(monthly_pipelines),
+            "stores": len(self.list_stores()),
+            "ai_images": ai_images,
+            "members": 1,
+        }
+        return {
+            "schema_version": "1.0",
+            "workspace": {"name": "Northstar Workspace", "id": "default"},
+            "identity": {
+                "username": safe_username,
+                "display_name": safe_username,
+                "role": "owner",
+                "role_name": "所有者",
+                "permissions": [
+                    "商品管理",
+                    "店铺授权",
+                    "真实上架",
+                    "团队与账单",
+                ],
+            },
+            "plan": {
+                "code": plan_code,
+                "name": plan["name"],
+                "monthly_price_cny": plan["monthly_price_cny"],
+                "limits": limits,
+            },
+            "usage": usage,
+            "period": month,
+        }
+
+    def ensure_product_quota(self) -> None:
+        account = self.commercial_status()
+        used = int(account["usage"]["products"])
+        limit = int(account["plan"]["limits"]["products"])
+        if used >= limit:
+            raise PipelineError(
+                f"本月商品任务额度已用完（{used}/{limit}），请升级套餐后继续",
+                status=402,
+            )
+
     def authorize_store(self, value: Mapping[str, Any]) -> dict[str, Any]:
         try:
             return self.stores.authorize(value)
@@ -886,6 +974,8 @@ class PipelineService:
             pipeline_id = _safe_pipeline_id(extract_offer_id(offer_id))
         except ValueError as exc:
             raise PipelineError(str(exc)) from exc
+        if not self._state_path(pipeline_id).exists():
+            self.ensure_product_quota()
         alpha_access_key = os.environ.get("ALPHASHOP_ACCESS_KEY")
         alpha_secret_key = os.environ.get("ALPHASHOP_SECRET_KEY")
         missing = []

@@ -18,6 +18,7 @@
       <button class="nav-item" type="button" disabled><span>数据</span>经营分析<small>即将推出</small></button>
     </nav>
     <div class="top-actions">
+      <button id="accountBtn" class="account-btn" title="账户、权限与套餐"><span id="accountAvatar">A</span><span class="account-copy"><b id="accountName">账户</b><small id="accountPlan">加载中</small></span></button>
       <button id="aiProviderBtn" class="store-btn"><span id="aiProviderState">0</span> AI 服务</button>
       <button id="storesBtn" class="store-btn"><span id="storeCount">0</span> OZON 店铺</button>
       <span id="modeBadge" class="badge safe">DRY RUN</span>
@@ -157,6 +158,20 @@
       <div class="image-toolbar"><strong id="imageSelectionCount">正在读取…</strong><button id="selectMainImagesBtn" type="button" class="ghost">第一张主图生成八图</button></div>
       <div id="imageGallery" class="image-gallery"></div>
       <div class="dialog-actions"><button id="cancelImagesBtn" type="button" class="ghost">取消</button><button id="saveImagesBtn" type="button" class="primary">保存图片清单</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="accountDialog">
+    <div class="dialog-card account-dialog">
+      <div class="dialog-head"><div><span class="eyebrow">WORKSPACE & BILLING</span><h3>账户与套餐</h3></div><button id="closeAccountBtn" class="close" type="button">×</button></div>
+      <div class="account-hero">
+        <div><span id="accountDialogAvatar">A</span><div><b id="accountDialogName">admin</b><small id="accountRole">所有者</small></div></div>
+        <div class="plan-price"><b id="planName">企业版</b><span id="planPrice">¥1,999 / 月</span></div>
+      </div>
+      <div class="section-heading compact"><div><span class="eyebrow">USAGE</span><h3>本月用量</h3></div><p id="billingPeriod"></p></div>
+      <div id="usageGrid" class="usage-grid"></div>
+      <div class="permissions-card"><span class="section-label">当前权限</span><div id="permissionList" class="permission-list"></div></div>
+      <p class="dialog-note account-note">账号由服务器 HTTPS 登录层验证；应用仅接收已验证的用户名，不保存登录密码。套餐可通过服务器配置切换。</p>
     </div>
   </dialog>
 

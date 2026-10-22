@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .service import PipelineError, PipelineService
+from .service import PLAN_CATALOG, PipelineError, PipelineService
 
 
 _PIPELINE_ROUTE = re.compile(r"^/api/pipelines/([^/]+)$")
@@ -22,6 +22,8 @@ _STORE_ROUTE = re.compile(r"^/api/stores/([^/]+)$")
 _STORE_VERIFY_ROUTE = re.compile(r"^/api/stores/([^/]+)/verify$")
 _AI_PROVIDER_ROUTE = "/api/ai-provider"
 _DASHBOARD_ROUTE = "/api/dashboard"
+_ACCOUNT_ROUTE = "/api/account"
+_PLANS_ROUTE = "/api/plans"
 _IMAGES_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/images$")
 _REQUIRED_ATTRIBUTES_ROUTE = re.compile(
     r"^/api/pipelines/([^/]+)/required-attributes$"
@@ -116,6 +118,14 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._json({"pipelines": self.service.list_pipelines()})
             elif path == _DASHBOARD_ROUTE:
                 self._json(self.service.dashboard())
+            elif path == _ACCOUNT_ROUTE:
+                self._json(
+                    self.service.commercial_status(
+                        self.headers.get("X-ERP-User", "")
+                    )
+                )
+            elif path == _PLANS_ROUTE:
+                self._json({"plans": PLAN_CATALOG})
             elif path == "/api/stores":
                 self._json({"stores": self.service.list_stores()})
             elif path == _AI_PROVIDER_ROUTE:

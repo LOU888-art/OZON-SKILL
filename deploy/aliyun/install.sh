@@ -47,16 +47,22 @@ python3.11 -m venv "$venv_dir"
 "$venv_dir/bin/python" -m pip install --no-build-isolation --force-reinstall "$app_dir"
 
 dry_run=true
+erp_plan=business
 if [ -r "$config_dir/erp.env" ]; then
   previous_dry_run=$(sed -n 's/^[[:space:]]*DRY_RUN[[:space:]]*=[[:space:]]*//p' "$config_dir/erp.env" | tail -n 1 | tr -d '\r')
   case "$previous_dry_run" in
     true|false) dry_run=$previous_dry_run ;;
+  esac
+  previous_erp_plan=$(sed -n 's/^[[:space:]]*ERP_PLAN[[:space:]]*=[[:space:]]*//p' "$config_dir/erp.env" | tail -n 1 | tr -d '\r')
+  case "$previous_erp_plan" in
+    starter|growth|business) erp_plan=$previous_erp_plan ;;
   esac
 fi
 cat >"$config_dir/erp.env" <<EOF
 ALPHASHOP_ACCESS_KEY=$access_key
 ALPHASHOP_SECRET_KEY=$secret_key
 DRY_RUN=$dry_run
+ERP_PLAN=$erp_plan
 EOF
 chmod 600 "$config_dir/erp.env"
 unset access_key secret_key
@@ -126,6 +132,7 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-ERP-User $remote_user;
         proxy_read_timeout 300s;
     }
 }
