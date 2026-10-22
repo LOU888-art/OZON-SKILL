@@ -52,6 +52,7 @@ from ozon_skill.upload.workflow import run_upload_workflow
 
 from .ai_provider import AiProviderConfigurationError, AiProviderRegistry
 from .stores import StoreAuthorizationError, StoreRegistry
+from .team import TeamError, TeamRegistry
 
 
 STAGE_FILES = {
@@ -495,6 +496,7 @@ class PipelineService:
         self._background_jobs: dict[tuple[str, int], threading.Thread] = {}
         self.stores = StoreRegistry(self.work_root / ".ozon-stores.json")
         self.ai_provider = AiProviderRegistry(self.work_root / ".ai-provider.json")
+        self.team = TeamRegistry(self.work_root / ".team.json")
         self._recover_interrupted_jobs()
 
     def _recover_interrupted_jobs(self) -> None:
@@ -562,27 +564,34 @@ class PipelineService:
                 action = str(image.get("plan_action") or image.get("action") or "")
                 if action in {"reference_8", "sku_main", "ai_generate"}:
                     ai_images += 1
-        safe_username = re.sub(r"[^A-Za-z0-9_.@-]", "", username)[:64] or "admin"
+        try:
+            identity = self.team.identity(username)
+            team = self.team.list_public(username)
+        except TeamError as exc:
+            raise PipelineError(str(exc), status=exc.status) from exc
         limits = dict(plan["limits"])
         usage = {
             "products": len(monthly_pipelines),
             "stores": len(self.list_stores()),
             "ai_images": ai_images,
-            "members": 1,
+            "members": len(team["members"]),
         }
         return {
             "schema_version": "1.0",
             "workspace": {"name": "Northstar Workspace", "id": "default"},
             "identity": {
-                "username": safe_username,
-                "display_name": safe_username,
-                "role": "owner",
-                "role_name": "所有者",
-                "permissions": [
-                    "商品管理",
-                    "店铺授权",
-                    "真实上架",
-                    "团队与账单",
+                **identity,
+                "permission_labels": [
+                    label
+                    for permission, label in {
+                        "pipeline.create": "商品管理",
+                        "stores.manage": "店铺授权",
+                        "listing.publish": "真实上架",
+                        "team.manage": "团队管理",
+                        "billing.view": "账单管理",
+                        "images.manage": "图片设计",
+                    }.items()
+                    if permission in identity["permissions"]
                 ],
             },
             "plan": {
@@ -595,10 +604,52 @@ class PipelineService:
             "period": month,
         }
 
+    def require_permission(self, username: str, permission: str) -> dict[str, Any]:
+        try:
+            return self.team.require(username, permission)
+        except TeamError as exc:
+            raise PipelineError(str(exc), status=exc.status) from exc
+
+    def team_status(self, username: str) -> dict[str, Any]:
+        try:
+            return self.team.list_public(username)
+        except TeamError as exc:
+            raise PipelineError(str(exc), status=exc.status) from exc
+
+    def save_team_member(self, username: str, value: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            team = self.team.list_public(username)
+            target = str(value.get("username") or "").strip().casefold()
+            exists = any(
+                str(item.get("username") or "").casefold() == target
+                for item in team["members"]
+            )
+            account = self.commercial_status(username)
+            if not exists and len(team["members"]) >= int(account["plan"]["limits"]["members"]):
+                raise PipelineError(
+                    f"团队成员额度已用完（{len(team['members'])}/{account['plan']['limits']['members']}），请升级套餐后继续",
+                    status=402,
+                )
+            return self.team.save_member(username, value)
+        except TeamError as exc:
+            raise PipelineError(str(exc), status=exc.status) from exc
+
+    def delete_team_member(self, username: str, target: str) -> None:
+        try:
+            self.team.delete_member(username, target)
+        except TeamError as exc:
+            raise PipelineError(str(exc), status=exc.status) from exc
+
     def ensure_product_quota(self) -> None:
-        account = self.commercial_status()
-        used = int(account["usage"]["products"])
-        limit = int(account["plan"]["limits"]["products"])
+        plan_code = str(os.environ.get("ERP_PLAN") or "business").strip().lower()
+        plan = PLAN_CATALOG.get(plan_code, PLAN_CATALOG["business"])
+        month = datetime.now(timezone.utc).strftime("%Y-%m")
+        used = sum(
+            1
+            for item in self.list_pipelines()
+            if str(item.get("created_at") or item.get("updated_at") or "").startswith(month)
+        )
+        limit = int(plan["limits"]["products"])
         if used >= limit:
             raise PipelineError(
                 f"本月商品任务额度已用完（{used}/{limit}），请升级套餐后继续",

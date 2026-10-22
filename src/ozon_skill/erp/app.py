@@ -24,6 +24,8 @@ _AI_PROVIDER_ROUTE = "/api/ai-provider"
 _DASHBOARD_ROUTE = "/api/dashboard"
 _ACCOUNT_ROUTE = "/api/account"
 _PLANS_ROUTE = "/api/plans"
+_TEAM_ROUTE = "/api/team"
+_TEAM_MEMBER_ROUTE = re.compile(r"^/api/team/([^/]+)$")
 _IMAGES_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/images$")
 _REQUIRED_ATTRIBUTES_ROUTE = re.compile(
     r"^/api/pipelines/([^/]+)/required-attributes$"
@@ -43,6 +45,12 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
     @property
     def service(self) -> PipelineService:
         return self.server.pipeline_service  # type: ignore[attr-defined]
+
+    def _username(self) -> str:
+        return self.headers.get("X-ERP-User", "")
+
+    def _require(self, permission: str) -> None:
+        self.service.require_permission(self._username(), permission)
 
     def log_message(self, format: str, *args: Any) -> None:
         super().log_message(format, *args)
@@ -110,6 +118,13 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path
         query = parse_qs(parsed.query)
         try:
+            if path.startswith("/api/") and path not in {
+                "/api/health",
+                _ACCOUNT_ROUTE,
+                _PLANS_ROUTE,
+                _TEAM_ROUTE,
+            }:
+                self._require("workspace.read")
             if path == "/api/health":
                 self._json({"status": "ok", "service": "1688-to-ozon-erp"})
             elif path == "/api/config-status":
@@ -121,11 +136,13 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
             elif path == _ACCOUNT_ROUTE:
                 self._json(
                     self.service.commercial_status(
-                        self.headers.get("X-ERP-User", "")
+                        self._username()
                     )
                 )
             elif path == _PLANS_ROUTE:
                 self._json({"plans": PLAN_CATALOG})
+            elif path == _TEAM_ROUTE:
+                self._json(self.service.team_status(self._username()))
             elif path == "/api/stores":
                 self._json({"stores": self.service.list_stores()})
             elif path == _AI_PROVIDER_ROUTE:
@@ -171,23 +188,34 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             body = self._body()
+            if path == _TEAM_ROUTE:
+                self._json(
+                    {"member": self.service.save_team_member(self._username(), body)},
+                    201,
+                )
+                return
             if path == "/api/stores":
+                self._require("stores.manage")
                 self._json({"store": self.service.authorize_store(body)}, 201)
                 return
             if path == _AI_PROVIDER_ROUTE:
+                self._require("ai.manage")
                 self._json(
                     {"provider": self.service.configure_ai_provider(body)}, 201
                 )
                 return
             if store_match := _STORE_VERIFY_ROUTE.fullmatch(path):
+                self._require("stores.manage")
                 self._json(
                     {"store": self.service.verify_store(unquote(store_match.group(1)))}
                 )
                 return
             if path == "/api/pipelines":
+                self._require("pipeline.create")
                 self._json(self.service.run_stage_1(body.get("offer_id")), 201)
                 return
             if image_match := _IMAGES_ROUTE.fullmatch(path):
+                self._require("images.manage")
                 self._json(
                     self.service.save_image_selection(
                         unquote(image_match.group(1)), body.get("image_plan")
@@ -200,6 +228,14 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 return
             pipeline_id = unquote(match.group(1))
             stage = int(match.group(2))
+            if stage == 1:
+                self._require("pipeline.create")
+            elif stage == 3:
+                self._require("images.manage")
+            elif stage == 5:
+                self._require("listing.publish")
+            else:
+                self._require("stage.run")
             if stage == 1:
                 result = self.service.run_stage_1(pipeline_id)
             elif stage == 2:
@@ -237,13 +273,21 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             if path == _AI_PROVIDER_ROUTE:
+                self._require("ai.manage")
                 self.service.delete_ai_provider()
+                self._json({"status": "deleted"})
+                return
+            if team_match := _TEAM_MEMBER_ROUTE.fullmatch(path):
+                self.service.delete_team_member(
+                    self._username(), unquote(team_match.group(1))
+                )
                 self._json({"status": "deleted"})
                 return
             match = _STORE_ROUTE.fullmatch(path)
             if not match:
                 self._error("Not found", 404)
                 return
+            self._require("stores.manage")
             self.service.delete_store(unquote(match.group(1)))
             self._json({"status": "deleted"})
         except PipelineError as exc:

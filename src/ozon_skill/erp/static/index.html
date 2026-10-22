@@ -171,7 +171,19 @@
       <div class="section-heading compact"><div><span class="eyebrow">USAGE</span><h3>本月用量</h3></div><p id="billingPeriod"></p></div>
       <div id="usageGrid" class="usage-grid"></div>
       <div class="permissions-card"><span class="section-label">当前权限</span><div id="permissionList" class="permission-list"></div></div>
-      <p class="dialog-note account-note">账号由服务器 HTTPS 登录层验证；应用仅接收已验证的用户名，不保存登录密码。套餐可通过服务器配置切换。</p>
+      <div class="team-section">
+        <div class="section-heading compact"><div><span class="eyebrow">TEAM</span><h3>团队成员</h3></div><p id="teamCount">0 人</p></div>
+        <div id="teamList" class="team-list"></div>
+        <form id="teamForm" class="team-form hidden">
+          <div class="field-grid">
+            <div class="field"><label for="memberUsername">登录用户名</label><input id="memberUsername" required pattern="[A-Za-z0-9._@-]{1,64}" placeholder="例如 operator01"></div>
+            <div class="field"><label for="memberDisplayName">成员姓名</label><input id="memberDisplayName" required placeholder="例如 王小明"></div>
+          </div>
+          <div class="field"><label for="memberRole">角色</label><select id="memberRole"><option value="admin">管理员</option><option value="operator" selected>运营</option><option value="designer">设计</option><option value="reviewer">审核</option><option value="viewer">只读</option></select></div>
+          <div class="dialog-actions"><button type="submit" class="primary">添加或更新成员</button></div>
+        </form>
+      </div>
+      <p class="dialog-note account-note">账号由服务器 HTTPS 登录层验证，应用不保存密码。添加成员后，由服务器管理员执行 <code>bash deploy/aliyun/add-login-user.sh 用户名</code> 创建登录凭证。</p>
     </div>
   </dialog>
 
