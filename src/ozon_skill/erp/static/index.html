@@ -10,7 +10,13 @@
 <body>
   <div class="noise"></div>
   <header class="topbar">
-    <a class="brand" href="#"><span class="brand-mark">N</span><span>Northstar</span></a>
+    <a class="brand" href="#"><span class="brand-mark">N</span><span class="brand-copy"><b>Northstar</b><small>Commerce OS</small></span></a>
+    <nav class="main-nav" aria-label="主导航">
+      <button class="nav-item active" type="button"><span>商品</span>商品工作台</button>
+      <button class="nav-item" type="button" disabled><span>店铺</span>店铺资产<small>即将推出</small></button>
+      <button class="nav-item" type="button" disabled><span>订单</span>订单履约<small>即将推出</small></button>
+      <button class="nav-item" type="button" disabled><span>数据</span>经营分析<small>即将推出</small></button>
+    </nav>
     <div class="top-actions">
       <button id="aiProviderBtn" class="store-btn"><span id="aiProviderState">0</span> AI 服务</button>
       <button id="storesBtn" class="store-btn"><span id="storeCount">0</span> OZON 店铺</button>
@@ -23,9 +29,10 @@
     <aside class="sidebar">
       <div class="eyebrow">跨境商品工作台</div>
       <h1>把复杂上架<br><em>变成五步。</em></h1>
-      <p class="intro">官方 API 采集、实时类目映射、俄语本地化、载荷校验与安全提交，每一步都有门禁和可追溯产物。</p>
+      <p class="intro">从 1688 商品源到 Ozon 在售卡片，全链路可审查、可恢复、可追踪。</p>
 
       <form id="createForm" class="create-card">
+        <div class="create-card-head"><span>创建上架任务</span><b>01</b></div>
         <label for="offerId">1688 商品 ID</label>
         <div class="input-row">
           <input id="offerId" name="offer_id" autocomplete="off" placeholder="输入 offer_id / num_iid" required>
@@ -34,7 +41,7 @@
         <small>仅调用 1688 开放平台，不使用网页爬虫。</small>
       </form>
 
-      <div class="section-label">商品工作区</div>
+      <div class="list-head"><div><span class="section-label">商品工作区</span><small id="pipelineCount">0 个任务</small></div><span class="live-dot">实时</span></div>
       <div id="pipelineList" class="pipeline-list"><div class="empty">暂无商品</div></div>
     </aside>
 
@@ -52,17 +59,25 @@
             <h2 id="productTitle">商品流水线</h2>
             <code id="productId"></code>
           </div>
-          <button id="auditBtn" class="secondary">全链路审查</button>
+          <div class="detail-actions"><span id="overallState" class="health-pill">等待运行</span><button id="auditBtn" class="secondary">全链路审查</button></div>
         </div>
+
+        <section class="overview-grid" aria-label="任务概览">
+          <article><span>流程进度</span><strong id="progressMetric">0 / 5</strong><small id="progressHint">等待开始</small></article>
+          <article><span>目标店铺</span><strong id="storeMetric">—</strong><small>Seller API 已授权</small></article>
+          <article><span>运行环境</span><strong id="modeMetric">DRY RUN</strong><small id="modeHint">安全预演</small></article>
+          <article><span>最后更新</span><strong id="updatedMetric">—</strong><small>服务器时间</small></article>
+        </section>
 
         <div id="configStrip" class="config-strip"></div>
 
+        <div class="section-heading"><div><span class="eyebrow">WORKFLOW</span><h3>上架流程</h3></div><p>按顺序完成，每一步都有独立校验门禁</p></div>
         <div id="stageGrid" class="stages"></div>
 
         <section class="console-card">
           <div class="console-head">
             <div>
-              <span class="section-label">ARTIFACT VIEWER</span>
+              <span class="section-label">运行记录 · ARTIFACT VIEWER</span>
               <h3 id="artifactTitle">运行结果</h3>
             </div>
             <button id="copyBtn" class="ghost">复制 JSON</button>
