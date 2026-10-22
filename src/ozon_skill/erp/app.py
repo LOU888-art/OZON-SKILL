@@ -30,6 +30,8 @@ _OPERATIONS_ROUTE = "/api/operations"
 _FINANCE_SETTINGS_ROUTE = "/api/finance-settings"
 _PRICING_ROUTE = "/api/pricing/calculate"
 _ACTIVITY_ROUTE = "/api/activity"
+_NOTIFICATIONS_ROUTE = "/api/notifications"
+_NOTIFICATIONS_READ_ROUTE = "/api/notifications/read"
 _IMAGES_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/images$")
 _REQUIRED_ATTRIBUTES_ROUTE = re.compile(
     r"^/api/pipelines/([^/]+)/required-attributes$"
@@ -191,6 +193,8 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._json(
                     self.service.activity_log((query.get("limit") or ["100"])[0])
                 )
+            elif path == _NOTIFICATIONS_ROUTE:
+                self._json(self.service.notification_center(self._username()))
             elif path == "/api/stores":
                 self._json({"stores": self.service.list_stores()})
             elif path == _AI_PROVIDER_ROUTE:
@@ -237,6 +241,11 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
         self._begin_activity(path)
         try:
             body = self._body()
+            if path == _NOTIFICATIONS_READ_ROUTE:
+                self._json(
+                    self.service.mark_notifications_read(self._username(), body)
+                )
+                return
             if path == _TEAM_ROUTE:
                 self._json(
                     {"member": self.service.save_team_member(self._username(), body)},

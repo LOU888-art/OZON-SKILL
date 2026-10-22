@@ -54,6 +54,7 @@ from ozon_skill.upload.workflow import run_upload_workflow
 from .ai_provider import AiProviderConfigurationError, AiProviderRegistry
 from .activity import ActivityRegistry
 from .finance import FinanceSettingsError, FinanceSettingsRegistry
+from .notifications import NotificationRegistry
 from .operations import OzonOperationsClient, OzonOperationsError
 from .pricing import PricingError, calculate_pricing, calculate_target_pricing
 from .stores import StoreAuthorizationError, StoreRegistry
@@ -504,6 +505,7 @@ class PipelineService:
         self.team = TeamRegistry(self.work_root / ".team.json")
         self.finance = FinanceSettingsRegistry(self.work_root / ".finance-settings.json")
         self.activity = ActivityRegistry(self.work_root / ".activity.jsonl")
+        self.notifications = NotificationRegistry(self.work_root / ".notifications.json")
         self._recover_interrupted_jobs()
 
     def _recover_interrupted_jobs(self) -> None:
@@ -1285,6 +1287,59 @@ class PipelineService:
             "issues": issues[:100],
             "generated_at": _now(),
         }
+
+    def notification_center(self, username: Any) -> dict[str, Any]:
+        """Build actionable notifications from current failures and personal read state."""
+
+        identity = self.team.require(username, "workspace.read")
+        items: list[dict[str, Any]] = []
+        for issue in self.dashboard()["issues"]:
+            pipeline_id = str(issue.get("pipeline_id") or "")
+            stage = int(issue.get("stage") or 0)
+            message = str(issue.get("message") or "")
+            digest = hashlib.sha256(
+                f"{pipeline_id}\0{stage}\0{message}".encode("utf-8")
+            ).hexdigest()[:24]
+            items.append(
+                {
+                    "notification_id": digest,
+                    "severity": "ERROR",
+                    "title": f"商品 {pipeline_id} · 阶段 {stage} 门禁失败",
+                    "message": message[:1000],
+                    "suggestion": issue.get("suggestion"),
+                    "pipeline_id": pipeline_id,
+                    "stage": stage,
+                    "created_at": issue.get("checked_at"),
+                    "requires_manual_confirmation": stage == 5,
+                }
+            )
+        decorated = self.notifications.decorate(identity["username"], items)
+        return {
+            "schema_version": "1.0",
+            "notifications": decorated,
+            "unread_count": sum(1 for item in decorated if not item["read"]),
+            "generated_at": _now(),
+        }
+
+    def mark_notifications_read(
+        self, username: Any, value: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        identity = self.team.require(username, "workspace.read")
+        current = self.notification_center(identity["username"])
+        current_ids = {
+            str(item["notification_id"]) for item in current["notifications"]
+        }
+        if value.get("all") is True:
+            selected = current_ids
+        else:
+            requested = value.get("notification_ids") or []
+            if not isinstance(requested, list):
+                raise PipelineError("notification_ids 必须是数组")
+            if len(requested) > 500:
+                raise PipelineError("单次最多处理 500 条通知")
+            selected = {str(item) for item in requested} & current_ids
+        self.notifications.mark_read(identity["username"], selected)
+        return self.notification_center(identity["username"])
 
     def get_pipeline(self, pipeline_id: Any) -> dict[str, Any]:
         pipeline_id = _safe_pipeline_id(pipeline_id)

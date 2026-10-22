@@ -20,6 +20,7 @@
       <button id="pricingNav" class="nav-item" type="button"><span>定价</span>定价工具</button>
     </nav>
     <div class="top-actions">
+      <button id="notificationBtn" class="notification-btn" type="button" title="失败通知"><span>通知</span><b id="notificationBadge">0</b></button>
       <button id="accountBtn" class="account-btn" title="账户、权限与套餐"><span id="accountAvatar">A</span><span class="account-copy"><b id="accountName">账户</b><small id="accountPlan">加载中</small></span></button>
       <button id="aiProviderBtn" class="store-btn"><span id="aiProviderState">0</span> AI 服务</button>
       <button id="storesBtn" class="store-btn"><span id="storeCount">0</span> OZON 店铺</button>
@@ -182,6 +183,15 @@
     </div>
     <section class="task-card task-table-card"><div class="task-card-head"><div><span class="eyebrow">PIPELINE QUEUE</span><h2>商品任务队列</h2></div><span id="taskCount">0</span></div><div class="table-wrap"><table><thead><tr><th>商品 ID</th><th>状态</th><th>进度</th><th>当前阶段</th><th>最新问题</th><th>更新时间</th><th></th></tr></thead><tbody id="taskTable"></tbody></table></div></section>
   </section>
+
+  <dialog id="notificationDialog">
+    <div class="dialog-card notification-dialog-card">
+      <div class="dialog-head"><div><span class="eyebrow">INBOX</span><h3>失败通知</h3></div><button id="closeNotificationBtn" class="close" type="button">×</button></div>
+      <p class="dialog-note">点击通知会进入对应阶段的修复表单，不会自动调用外部 API。第五阶段始终要求人工确认。</p>
+      <div id="notificationList" class="notification-list"><div class="empty">暂无失败通知</div></div>
+      <div class="dialog-actions"><button id="markNotificationsReadBtn" class="secondary" type="button">全部标记已读</button><button id="openTaskCenterBtn" class="primary" type="button">打开任务中心</button></div>
+    </div>
+  </dialog>
 
   <dialog id="financeDialog">
     <div class="dialog-card stores-dialog">

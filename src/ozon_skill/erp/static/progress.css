@@ -22,3 +22,112 @@ progress.usage-track::-moz-progress-bar {
   background: var(--green);
   border-radius: 9px;
 }
+
+.notification-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 9px 10px;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.notification-btn b {
+  min-width: 19px;
+  height: 19px;
+  display: grid;
+  place-items: center;
+  border-radius: 99px;
+  background: #e8ece8;
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.notification-btn b.has-unread {
+  background: var(--red);
+  color: white;
+}
+
+.notification-dialog-card {
+  max-height: 82vh;
+  overflow: auto;
+}
+
+.notification-list {
+  display: grid;
+  gap: 8px;
+  max-height: 50vh;
+  overflow: auto;
+}
+
+.notification-item {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 9px 1fr;
+  gap: 11px;
+  align-items: start;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 13px;
+  background: var(--panel-soft);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.notification-item:hover {
+  border-color: var(--line-dark);
+  box-shadow: var(--shadow-sm);
+}
+
+.notification-item > i {
+  width: 8px;
+  height: 8px;
+  margin-top: 3px;
+  border-radius: 50%;
+  background: var(--red);
+}
+
+.notification-item.read {
+  opacity: .62;
+}
+
+.notification-item.read > i {
+  background: var(--muted-2);
+}
+
+.notification-item span,
+.notification-item b,
+.notification-item small,
+.notification-item em {
+  display: block;
+}
+
+.notification-item b {
+  font-size: 11px;
+}
+
+.notification-item small {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.notification-item em {
+  margin-top: 6px;
+  color: var(--green);
+  font-size: 9px;
+  font-style: normal;
+}
+
+@media (max-width: 760px) {
+  .notification-btn span {
+    display: none;
+  }
+}
