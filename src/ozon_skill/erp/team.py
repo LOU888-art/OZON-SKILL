@@ -16,11 +16,11 @@ _USERNAME = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 ROLE_DEFINITIONS = {
     "owner": {
         "name": "所有者",
-        "permissions": ["workspace.read", "orders.read", "inventory.read", "finance.read", "finance.manage", "pipeline.create", "stage.run", "images.manage", "listing.publish", "stores.manage", "ai.manage", "team.manage", "billing.view", "audit.read"],
+        "permissions": ["workspace.read", "orders.read", "inventory.read", "finance.read", "finance.manage", "pipeline.create", "stage.run", "images.manage", "listing.publish", "stores.manage", "ai.manage", "storage.manage", "team.manage", "billing.view", "audit.read"],
     },
     "admin": {
         "name": "管理员",
-        "permissions": ["workspace.read", "orders.read", "inventory.read", "finance.read", "finance.manage", "pipeline.create", "stage.run", "images.manage", "listing.publish", "stores.manage", "ai.manage", "team.manage", "audit.read"],
+        "permissions": ["workspace.read", "orders.read", "inventory.read", "finance.read", "finance.manage", "pipeline.create", "stage.run", "images.manage", "listing.publish", "stores.manage", "ai.manage", "storage.manage", "team.manage", "audit.read"],
     },
     "operator": {
         "name": "运营",

@@ -23,6 +23,7 @@
       <button id="notificationBtn" class="notification-btn" type="button" title="失败通知"><span>通知</span><b id="notificationBadge">0</b></button>
       <button id="accountBtn" class="account-btn" title="账户、权限与套餐"><span id="accountAvatar">A</span><span class="account-copy"><b id="accountName">账户</b><small id="accountPlan">加载中</small></span></button>
       <button id="aiProviderBtn" class="store-btn"><span id="aiProviderState">0</span> AI 服务</button>
+      <button id="objectStorageBtn" class="store-btn"><span id="objectStorageState">0</span> 图片存储</button>
       <button id="storesBtn" class="store-btn"><span id="storeCount">0</span> OZON 店铺</button>
       <span id="modeBadge" class="badge safe">DRY RUN</span>
       <button id="refreshBtn" class="icon-btn" title="刷新">↻</button>
@@ -190,6 +191,21 @@
       <p class="dialog-note">点击通知会进入对应阶段的修复表单，不会自动调用外部 API。第五阶段始终要求人工确认。</p>
       <div id="notificationList" class="notification-list"><div class="empty">暂无失败通知</div></div>
       <div class="dialog-actions"><button id="markNotificationsReadBtn" class="secondary" type="button">全部标记已读</button><button id="openTaskCenterBtn" class="primary" type="button">打开任务中心</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="objectStorageDialog">
+    <div class="dialog-card stores-dialog">
+      <div class="dialog-head"><div><span class="eyebrow">IMAGE ASSET DELIVERY</span><h3>阿里云 OSS / CDN</h3></div><button id="closeObjectStorageBtn" class="close" type="button">×</button></div>
+      <p class="dialog-note">第三阶段完成后，将 AI 图和翻译图复制到自有 OSS，再把稳定 HTTPS 地址提交给 Ozon。保存时会上传一张 1×1 验证图；AccessKey Secret 仅保存在服务器且永不回显。</p>
+      <form id="objectStorageForm">
+        <div class="field"><label for="ossEndpoint">OSS Endpoint</label><input id="ossEndpoint" type="url" placeholder="https://oss-cn-hongkong.aliyuncs.com" required><small>填写地域 Endpoint，不要包含 Bucket 名称。</small></div>
+        <div class="field-grid"><div class="field"><label for="ossBucket">Bucket</label><input id="ossBucket" placeholder="northstar-images" required></div><div class="field"><label for="ossPrefix">对象目录</label><input id="ossPrefix" value="northstar" placeholder="northstar"></div></div>
+        <div class="field"><label for="ossPublicBaseUrl">公开访问或 CDN 地址</label><input id="ossPublicBaseUrl" type="url" placeholder="https://northstar-images.oss-cn-hongkong.aliyuncs.com" required><small>必须使用浏览器和 Ozon 均可直接访问、无需签名且证书可信的 HTTPS 地址。</small></div>
+        <div class="field-grid"><div class="field"><label for="ossAccessKeyId">AccessKey ID</label><input id="ossAccessKeyId" autocomplete="off" required></div><div class="field"><label for="ossAccessKeySecret">AccessKey Secret</label><input id="ossAccessKeySecret" type="password" autocomplete="new-password" placeholder="已配置时留空可保持不变"></div></div>
+        <div class="warning">建议创建仅允许当前 Bucket PutObject 的 RAM 子账号，不要使用阿里云主账号 AccessKey。Bucket 需允许对象设置为 public-read，或配置能公开回源的 CDN。</div>
+        <div class="dialog-actions"><button id="deleteObjectStorageBtn" class="secondary" type="button">删除配置</button><button class="primary" type="submit">验证并保存</button></div>
+      </form>
     </div>
   </dialog>
 

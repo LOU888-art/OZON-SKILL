@@ -55,6 +55,7 @@ from .ai_provider import AiProviderConfigurationError, AiProviderRegistry
 from .activity import ActivityRegistry
 from .finance import FinanceSettingsError, FinanceSettingsRegistry
 from .notifications import NotificationRegistry
+from .object_storage import ObjectStorageError, ObjectStorageRegistry
 from .operations import OzonOperationsClient, OzonOperationsError
 from .pricing import PricingError, calculate_pricing, calculate_target_pricing
 from .stores import StoreAuthorizationError, StoreRegistry
@@ -506,6 +507,7 @@ class PipelineService:
         self.finance = FinanceSettingsRegistry(self.work_root / ".finance-settings.json")
         self.activity = ActivityRegistry(self.work_root / ".activity.jsonl")
         self.notifications = NotificationRegistry(self.work_root / ".notifications.json")
+        self.object_storage = ObjectStorageRegistry(self.work_root / ".object-storage.json")
         self._recover_interrupted_jobs()
 
     def _recover_interrupted_jobs(self) -> None:
@@ -532,6 +534,50 @@ class PipelineService:
 
     def ai_provider_status(self) -> dict[str, Any]:
         return self.ai_provider.public_status()
+
+    def object_storage_status(self) -> dict[str, Any]:
+        return self.object_storage.public_status()
+
+    def configure_object_storage(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            return self.object_storage.save(value)
+        except ObjectStorageError as exc:
+            raise PipelineError(str(exc), status=422) from exc
+
+    def delete_object_storage(self) -> None:
+        self.object_storage.delete()
+
+    def _mirror_generated_images(
+        self, pipeline_id: str, inspection: Any
+    ) -> list[dict[str, Any]]:
+        client = self.object_storage.client()
+        rows = [dict(item) for item in inspection if isinstance(item, Mapping)]
+        if client is None:
+            return rows
+        cache: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            source = str(row.get("final_public_url") or "").strip()
+            if not source:
+                continue
+            row["upstream_public_url"] = source
+            if source.startswith(f"{client.public_base_url}/"):
+                row["storage_status"] = "ALREADY_MIRRORED"
+                continue
+            try:
+                stored = cache.get(source)
+                if stored is None:
+                    stored = client.mirror(source, pipeline_id)
+                    cache[source] = stored
+                row["final_public_url"] = stored["public_url"]
+                row["storage_status"] = "MIRRORED"
+                row["storage_object_key"] = stored["object_key"]
+                row["storage_sha256"] = stored["sha256"]
+                row["storage_size_bytes"] = stored["size_bytes"]
+            except (ObjectStorageError, ValueError) as exc:
+                row["final_public_url"] = None
+                row["storage_status"] = "FAILED"
+                row["error"] = f"图片固化到 OSS 失败：{str(exc)[:400]}"
+        return rows
 
     def record_activity(
         self,
@@ -873,6 +919,7 @@ class PipelineService:
                         "team.manage": "团队管理",
                         "billing.view": "账单管理",
                         "images.manage": "图片设计",
+                        "storage.manage": "图片存储管理",
                         "audit.read": "操作审计",
                     }.items()
                     if permission in identity["permissions"]
@@ -1711,6 +1758,7 @@ class PipelineService:
                 failures = [f"{exc}{progress_note}"]
                 self._record(pipeline_id, 3, False, failures)
                 raise PipelineError(failures[0], status=502) from exc
+            inspection = self._mirror_generated_images(pipeline_id, inspection)
             generated_copy = None
             copy_fallback_reason = None
             if text_mode == "ai_generate":
@@ -1737,6 +1785,7 @@ class PipelineService:
                 ),
                 "copy_fallback_reason": copy_fallback_reason,
                 "ai_relay": self.ai_provider.public_status(),
+                "object_storage": self.object_storage.public_status(),
             }
             final["localized_images"] = [
                 {
@@ -1750,6 +1799,11 @@ class PipelineService:
                     "sku_id": item.get("sku_id"),
                     "shared_across_skus": item.get("shared_across_skus"),
                     "error": item.get("error"),
+                    "upstream_public_url": item.get("upstream_public_url"),
+                    "storage_status": item.get("storage_status"),
+                    "storage_object_key": item.get("storage_object_key"),
+                    "storage_sha256": item.get("storage_sha256"),
+                    "storage_size_bytes": item.get("storage_size_bytes"),
                 }
                 for item in inspection
             ]

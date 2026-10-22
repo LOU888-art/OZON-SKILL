@@ -21,6 +21,7 @@ _AUDIT_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/audit$")
 _STORE_ROUTE = re.compile(r"^/api/stores/([^/]+)$")
 _STORE_VERIFY_ROUTE = re.compile(r"^/api/stores/([^/]+)/verify$")
 _AI_PROVIDER_ROUTE = "/api/ai-provider"
+_OBJECT_STORAGE_ROUTE = "/api/object-storage"
 _DASHBOARD_ROUTE = "/api/dashboard"
 _ACCOUNT_ROUTE = "/api/account"
 _PLANS_ROUTE = "/api/plans"
@@ -199,6 +200,8 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._json({"stores": self.service.list_stores()})
             elif path == _AI_PROVIDER_ROUTE:
                 self._json({"provider": self.service.ai_provider_status()})
+            elif path == _OBJECT_STORAGE_ROUTE:
+                self._json({"storage": self.service.object_storage_status()})
             elif match := _PIPELINE_ROUTE.fullmatch(path):
                 self._json(self.service.get_pipeline(unquote(match.group(1))))
             elif match := _ARTIFACT_ROUTE.fullmatch(path):
@@ -260,6 +263,12 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._require("ai.manage")
                 self._json(
                     {"provider": self.service.configure_ai_provider(body)}, 201
+                )
+                return
+            if path == _OBJECT_STORAGE_ROUTE:
+                self._require("storage.manage")
+                self._json(
+                    {"storage": self.service.configure_object_storage(body)}, 201
                 )
                 return
             if path == _FINANCE_SETTINGS_ROUTE:
@@ -349,6 +358,11 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
             if path == _AI_PROVIDER_ROUTE:
                 self._require("ai.manage")
                 self.service.delete_ai_provider()
+                self._json({"status": "deleted"})
+                return
+            if path == _OBJECT_STORAGE_ROUTE:
+                self._require("storage.manage")
+                self.service.delete_object_storage()
                 self._json({"status": "deleted"})
                 return
             if team_match := _TEAM_MEMBER_ROUTE.fullmatch(path):

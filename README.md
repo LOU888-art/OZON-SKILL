@@ -22,6 +22,8 @@ python3 -m venv --system-site-packages /workspace/.venv
 
 顶部“通知”按当前登录成员保存门禁失败的已读状态。通知和任务中心的“修复 / 重试”只会打开对应阶段的修复表单，不会自动调用 AlphaShop、AI 或 Ozon；任何可能产生费用的操作仍需人工提交，第五阶段还必须再次勾选真实上架确认。
 
+顶部“图片存储”可配置阿里云 OSS 与公开 CDN 地址。配置通过后，第三阶段会下载已经生成或翻译完成的图片，校验真实 PNG/JPEG/WebP 内容，按 SHA-256 去重上传到自有 Bucket，并把商品图和 Rich Content 中的临时外链替换为稳定 HTTPS 地址。保存配置时会上传并公开读取一张 1×1 验证图；建议使用仅有目标 Bucket `PutObject` 权限的 RAM 子账号，并允许对象级 `public-read` 或配置公开 CDN 回源。
+
 常用环境变量：
 
 - AlphaShop 商品详情、类目映射和图片翻译：`ALPHASHOP_ACCESS_KEY`、`ALPHASHOP_SECRET_KEY`。
