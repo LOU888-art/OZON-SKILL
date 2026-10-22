@@ -42,6 +42,16 @@
       </form>
 
       <div class="list-head"><div><span class="section-label">商品工作区</span><small id="pipelineCount">0 个任务</small></div><span class="live-dot">实时</span></div>
+      <div class="pipeline-tools">
+        <input id="pipelineSearch" type="search" placeholder="搜索商品 ID">
+        <select id="pipelineFilter" aria-label="任务状态筛选">
+          <option value="all">全部状态</option>
+          <option value="failed">需要处理</option>
+          <option value="running">正在运行</option>
+          <option value="completed">已完成</option>
+          <option value="draft">进行中</option>
+        </select>
+      </div>
       <div id="pipelineList" class="pipeline-list"><div class="empty">暂无商品</div></div>
     </aside>
 
@@ -83,6 +93,11 @@
             <button id="copyBtn" class="ghost">复制 JSON</button>
           </div>
           <pre id="console">选择阶段查看产物。</pre>
+        </section>
+
+        <section id="diagnosisCard" class="diagnosis-card hidden">
+          <div class="diagnosis-head"><div><span class="eyebrow">ISSUE CENTER</span><h3>中文错误诊断</h3></div><span id="diagnosisCount">0 项</span></div>
+          <div id="diagnosisList" class="diagnosis-list"></div>
         </section>
       </div>
     </section>

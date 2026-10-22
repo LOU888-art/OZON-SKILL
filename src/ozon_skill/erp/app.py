@@ -21,6 +21,7 @@ _AUDIT_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/audit$")
 _STORE_ROUTE = re.compile(r"^/api/stores/([^/]+)$")
 _STORE_VERIFY_ROUTE = re.compile(r"^/api/stores/([^/]+)/verify$")
 _AI_PROVIDER_ROUTE = "/api/ai-provider"
+_DASHBOARD_ROUTE = "/api/dashboard"
 _IMAGES_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/images$")
 _REQUIRED_ATTRIBUTES_ROUTE = re.compile(
     r"^/api/pipelines/([^/]+)/required-attributes$"
@@ -113,6 +114,8 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._json(self.service.config_status())
             elif path == "/api/pipelines":
                 self._json({"pipelines": self.service.list_pipelines()})
+            elif path == _DASHBOARD_ROUTE:
+                self._json(self.service.dashboard())
             elif path == "/api/stores":
                 self._json({"stores": self.service.list_stores()})
             elif path == _AI_PROVIDER_ROUTE:

@@ -796,6 +796,75 @@ class PipelineService:
                     continue
         return result
 
+    @staticmethod
+    def _failure_diagnosis(message: str) -> tuple[str, str]:
+        text = message.lower()
+        if any(key in text for key in ("图片", "image", "photo", "rich content", "富内容")):
+            return "MEDIA", "检查图片格式、公共访问地址和 Ozon 托管状态后重试"
+        if any(key in text for key in ("类目", "category", "type_id", "商品类型")):
+            return "CATEGORY", "重新搜索并人工确认 Ozon 官方类目与商品类型"
+        if any(key in text for key in ("属性", "attribute", "dictionary", "特征")):
+            return "ATTRIBUTE", "打开第四阶段，补充或更正对应的 Ozon 特征值"
+        if any(key in text for key in ("价格", "price", "cny", "rub", "汇率")):
+            return "PRICING", "核对 SKU 采购价、币种和汇率，确保售价大于零"
+        if any(key in text for key in ("ai ", "模型", "中转站", "relay")):
+            return "AI", "验证 AI 模型名称、密钥余额和服务通道后从第三阶段续跑"
+        if any(key in text for key in ("http", "api", "task_id", "ozon")):
+            return "API", "查看 Ozon 返回详情；确认接口版本、凭证、限流和任务状态"
+        return "VALIDATION", "查看阶段产物中的门禁详情，修正数据后只重跑失败阶段"
+
+    def dashboard(self) -> dict[str, Any]:
+        """Return commercial workbench counters and actionable failures."""
+
+        pipelines = self.list_pipelines()
+        counters = {
+            "total": len(pipelines),
+            "completed": 0,
+            "running": 0,
+            "failed": 0,
+            "draft": 0,
+        }
+        issues: list[dict[str, Any]] = []
+        for pipeline in pipelines:
+            stage_rows = pipeline.get("stages") or {}
+            statuses = [
+                str(stage.get("status") or "LOCKED")
+                for stage in stage_rows.values()
+                if isinstance(stage, Mapping)
+            ]
+            if sum(1 for status in statuses if status == "PASS") == 5:
+                counters["completed"] += 1
+            elif "RUNNING" in statuses:
+                counters["running"] += 1
+            elif "FAIL" in statuses:
+                counters["failed"] += 1
+            else:
+                counters["draft"] += 1
+            for stage_number, stage in stage_rows.items():
+                if not isinstance(stage, Mapping) or stage.get("status") != "FAIL":
+                    continue
+                failures = [str(item) for item in stage.get("failures") or [] if item]
+                for failure in failures[:5]:
+                    category, suggestion = self._failure_diagnosis(failure)
+                    issues.append(
+                        {
+                            "pipeline_id": pipeline.get("pipeline_id"),
+                            "stage": int(stage_number),
+                            "category": category,
+                            "message": failure[:1000],
+                            "suggestion": suggestion,
+                            "checked_at": stage.get("checked_at"),
+                        }
+                    )
+        issues.sort(key=lambda item: str(item.get("checked_at") or ""), reverse=True)
+        return {
+            "schema_version": "1.0",
+            "counters": counters,
+            "open_issue_count": len(issues),
+            "issues": issues[:100],
+            "generated_at": _now(),
+        }
+
     def get_pipeline(self, pipeline_id: Any) -> dict[str, Any]:
         pipeline_id = _safe_pipeline_id(pipeline_id)
         path = self._state_path(pipeline_id)
