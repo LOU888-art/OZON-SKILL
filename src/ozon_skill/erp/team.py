@@ -16,15 +16,15 @@ _USERNAME = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 ROLE_DEFINITIONS = {
     "owner": {
         "name": "所有者",
-        "permissions": ["workspace.read", "orders.read", "inventory.read", "pipeline.create", "stage.run", "images.manage", "listing.publish", "stores.manage", "ai.manage", "team.manage", "billing.view"],
+        "permissions": ["workspace.read", "orders.read", "inventory.read", "finance.read", "finance.manage", "pipeline.create", "stage.run", "images.manage", "listing.publish", "stores.manage", "ai.manage", "team.manage", "billing.view"],
     },
     "admin": {
         "name": "管理员",
-        "permissions": ["workspace.read", "orders.read", "inventory.read", "pipeline.create", "stage.run", "images.manage", "listing.publish", "stores.manage", "ai.manage", "team.manage"],
+        "permissions": ["workspace.read", "orders.read", "inventory.read", "finance.read", "finance.manage", "pipeline.create", "stage.run", "images.manage", "listing.publish", "stores.manage", "ai.manage", "team.manage"],
     },
     "operator": {
         "name": "运营",
-        "permissions": ["workspace.read", "orders.read", "inventory.read", "pipeline.create", "stage.run", "images.manage", "listing.publish"],
+        "permissions": ["workspace.read", "orders.read", "inventory.read", "finance.read", "finance.manage", "pipeline.create", "stage.run", "images.manage", "listing.publish"],
     },
     "designer": {
         "name": "设计",
@@ -32,9 +32,9 @@ ROLE_DEFINITIONS = {
     },
     "reviewer": {
         "name": "审核",
-        "permissions": ["workspace.read", "orders.read", "inventory.read", "stage.run"],
+        "permissions": ["workspace.read", "orders.read", "inventory.read", "finance.read", "stage.run"],
     },
-    "viewer": {"name": "只读", "permissions": ["workspace.read", "orders.read", "inventory.read"]},
+    "viewer": {"name": "只读", "permissions": ["workspace.read", "orders.read", "inventory.read", "finance.read"]},
 }
 
 

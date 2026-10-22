@@ -27,6 +27,7 @@ _PLANS_ROUTE = "/api/plans"
 _TEAM_ROUTE = "/api/team"
 _TEAM_MEMBER_ROUTE = re.compile(r"^/api/team/([^/]+)$")
 _OPERATIONS_ROUTE = "/api/operations"
+_FINANCE_SETTINGS_ROUTE = "/api/finance-settings"
 _IMAGES_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/images$")
 _REQUIRED_ATTRIBUTES_ROUTE = re.compile(
     r"^/api/pipelines/([^/]+)/required-attributes$"
@@ -153,6 +154,15 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                         days=(query.get("days") or ["30"])[0],
                     )
                 )
+            elif path == _FINANCE_SETTINGS_ROUTE:
+                self._require("finance.read")
+                self._json(
+                    {
+                        "settings": self.service.finance_settings(
+                            str((query.get("store_id") or [""])[0])
+                        )
+                    }
+                )
             elif path == "/api/stores":
                 self._json({"stores": self.service.list_stores()})
             elif path == _AI_PROVIDER_ROUTE:
@@ -212,6 +222,17 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._require("ai.manage")
                 self._json(
                     {"provider": self.service.configure_ai_provider(body)}, 201
+                )
+                return
+            if path == _FINANCE_SETTINGS_ROUTE:
+                self._require("finance.manage")
+                store_id = str(body.get("store_id") or "").strip()
+                self._json(
+                    {
+                        "settings": self.service.save_finance_settings(
+                            store_id, body.get("settings") or {}
+                        )
+                    }
                 )
                 return
             if store_match := _STORE_VERIFY_ROUTE.fullmatch(path):

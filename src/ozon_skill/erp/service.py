@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import tempfile
@@ -51,6 +52,7 @@ from ozon_skill.upload.log import UploadLog
 from ozon_skill.upload.workflow import run_upload_workflow
 
 from .ai_provider import AiProviderConfigurationError, AiProviderRegistry
+from .finance import FinanceSettingsError, FinanceSettingsRegistry
 from .operations import OzonOperationsClient, OzonOperationsError
 from .stores import StoreAuthorizationError, StoreRegistry
 from .team import TeamError, TeamRegistry
@@ -498,6 +500,7 @@ class PipelineService:
         self.stores = StoreRegistry(self.work_root / ".ozon-stores.json")
         self.ai_provider = AiProviderRegistry(self.work_root / ".ai-provider.json")
         self.team = TeamRegistry(self.work_root / ".team.json")
+        self.finance = FinanceSettingsRegistry(self.work_root / ".finance-settings.json")
         self._recover_interrupted_jobs()
 
     def _recover_interrupted_jobs(self) -> None:
@@ -537,6 +540,44 @@ class PipelineService:
     def list_stores(self) -> list[dict[str, Any]]:
         return self.stores.list_public()
 
+    def finance_settings(self, store_id: str) -> dict[str, Any]:
+        if not any(item["store_id"] == store_id for item in self.list_stores()):
+            raise PipelineError("未找到对应的 Ozon 店铺", status=404)
+        return self.finance.get(store_id)
+
+    def save_finance_settings(self, store_id: str, value: Mapping[str, Any]) -> dict[str, Any]:
+        if not any(item["store_id"] == store_id for item in self.list_stores()):
+            raise PipelineError("未找到对应的 Ozon 店铺", status=404)
+        try:
+            return self.finance.save(store_id, value)
+        except FinanceSettingsError as exc:
+            raise PipelineError(str(exc), status=422) from exc
+
+    def _purchase_cost_index(self, store_id: str) -> dict[str, Decimal]:
+        result: dict[str, Decimal] = {}
+        for pipeline in self.list_pipelines():
+            pipeline_id = str(pipeline.get("pipeline_id") or "")
+            if not pipeline_id or not self.path(pipeline_id, 1).exists() or not self.path(pipeline_id, 4).exists():
+                continue
+            try:
+                source = self.read_artifact(pipeline_id, 1)
+                payload = self.read_artifact(pipeline_id, 4)
+            except PipelineError:
+                continue
+            sku_rows = [item for item in source.get("sku_list") or [] if isinstance(item, Mapping)] or [{}]
+            items = [item for item in payload.get("items") or [] if isinstance(item, Mapping)]
+            for sku, item in zip(sku_rows, items):
+                offer_id = str(item.get("offer_id") or "")
+                if not offer_id.startswith(f"{store_id}-"):
+                    continue
+                try:
+                    cost = Decimal(str(sku.get("purchase_price_cny")))
+                except (InvalidOperation, TypeError, ValueError):
+                    continue
+                if cost > 0:
+                    result[offer_id] = cost
+        return result
+
     def operations_dashboard(self, store_id: str = "", days: int = 30) -> dict[str, Any]:
         try:
             days = max(1, min(90, int(days)))
@@ -565,14 +606,94 @@ class PipelineService:
             for item in orders
             if str(item.get("status") or "").lower() in exception_statuses
         ]
+        commercial_orders = [
+            order
+            for order in orders
+            if str(order.get("status") or "").lower() not in {"cancelled", "canceled"}
+        ]
         revenue_by_currency: dict[str, Decimal] = {}
-        for order in orders:
+        for order in commercial_orders:
             currency = str(order.get("currency_code") or "RUB")
             try:
                 amount = Decimal(str(order.get("revenue") or "0"))
             except InvalidOperation:
                 amount = Decimal("0")
             revenue_by_currency[currency] = revenue_by_currency.get(currency, Decimal("0")) + amount
+        settings = self.finance.get(selected_id)
+        cost_index = self._purchase_cost_index(selected_id)
+        units_by_offer: dict[str, int] = {}
+        purchase_cost_rub = Decimal("0")
+        missing_costs: set[str] = set()
+        for order in commercial_orders:
+            for product in order.get("products") or []:
+                if not isinstance(product, Mapping):
+                    continue
+                offer_id = str(product.get("offer_id") or "")
+                quantity = int(product.get("quantity") or 0)
+                units_by_offer[offer_id] = units_by_offer.get(offer_id, 0) + quantity
+                if offer_id in {"", "—"}:
+                    continue
+                if offer_id in cost_index:
+                    purchase_cost_rub += cost_index[offer_id] * Decimal(str(settings["cny_to_rub_rate"])) * quantity
+                elif offer_id:
+                    missing_costs.add(offer_id)
+        procurement: list[dict[str, Any]] = []
+        stock_by_offer = {
+            str(item.get("offer_id") or ""): item
+            for item in stocks
+            if str(item.get("offer_id") or "") not in {"", "—"}
+        }
+        target_days = int(settings["lead_time_days"]) + int(settings["safety_stock_days"])
+        for offer_id, stock in stock_by_offer.items():
+            sold = units_by_offer.get(offer_id, 0)
+            daily_sales = sold / days
+            target_stock = max(low_stock_threshold * 2, math.ceil(daily_sales * target_days))
+            reorder_quantity = max(0, target_stock - int(stock.get("available") or 0))
+            if reorder_quantity <= 0:
+                continue
+            unit_cost = cost_index.get(offer_id)
+            procurement.append(
+                {
+                    "offer_id": offer_id,
+                    "available": stock.get("available"),
+                    "sold_units": sold,
+                    "daily_sales": round(daily_sales, 2),
+                    "target_stock": target_stock,
+                    "reorder_quantity": reorder_quantity,
+                    "unit_cost_cny": str(unit_cost) if unit_cost is not None else None,
+                    "purchase_total_cny": str((unit_cost * reorder_quantity).quantize(Decimal("0.01"))) if unit_cost is not None else None,
+                }
+            )
+        procurement.sort(key=lambda item: int(item["reorder_quantity"]), reverse=True)
+        final_statuses = {"delivered", "cancelled", "canceled", "delivering"}
+        logistics_alerts: list[dict[str, Any]] = []
+        current = datetime.now(timezone.utc)
+        for order in orders:
+            shipment = str(order.get("shipment_date") or "")
+            if not shipment or str(order.get("status") or "").lower() in final_statuses:
+                continue
+            try:
+                deadline = datetime.fromisoformat(shipment.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            hours_left = (deadline - current).total_seconds() / 3600
+            if hours_left <= 24:
+                logistics_alerts.append({**order, "hours_left": round(hours_left, 1), "severity": "overdue" if hours_left < 0 else "urgent"})
+        profit_status = "READY"
+        profit_reason = ""
+        estimated_profit: Decimal | None = None
+        if not settings["configured"]:
+            profit_status, profit_reason = "NEEDS_CONFIGURATION", "请先填写真实佣金、税率、物流费和汇率"
+        elif missing_costs:
+            profit_status, profit_reason = "NEEDS_COST", "部分订单商品缺少人民币采购成本"
+        elif set(revenue_by_currency) - {"RUB"}:
+            profit_status, profit_reason = "UNSUPPORTED_CURRENCY", "当前仅支持 RUB 利润核算"
+        else:
+            revenue_rub = revenue_by_currency.get("RUB", Decimal("0"))
+            commission = revenue_rub * Decimal(str(settings["commission_percent"])) / 100
+            tax = revenue_rub * Decimal(str(settings["tax_percent"])) / 100
+            logistics = Decimal(str(settings["logistics_per_order_rub"])) * len(commercial_orders)
+            estimated_profit = revenue_rub - purchase_cost_rub - commission - tax - logistics
         return {
             "schema_version": "1.0",
             "store_id": selected_id,
@@ -590,6 +711,16 @@ class PipelineService:
             "exceptions": exceptions,
             "stocks": stocks,
             "low_stocks": low_stocks,
+            "procurement": procurement,
+            "logistics_alerts": logistics_alerts,
+            "profit": {
+                "status": profit_status,
+                "reason": profit_reason,
+                "estimated_profit_rub": str(estimated_profit.quantize(Decimal("0.01"))) if estimated_profit is not None else None,
+                "purchase_cost_rub": str(purchase_cost_rub.quantize(Decimal("0.01"))),
+                "missing_cost_offer_ids": sorted(missing_costs),
+                "settings": settings,
+            },
             "warnings": warnings,
             "refreshed_at": _now(),
         }

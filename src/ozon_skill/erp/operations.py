@@ -59,6 +59,8 @@ def normalize_postings(value: Mapping[str, Any], scheme: str) -> list[dict[str, 
                         "offer_id": item.get("offer_id"),
                         "name": item.get("name"),
                         "quantity": int(item.get("quantity") or 0),
+                        "price": str(item.get("price") or "0"),
+                        "currency_code": item.get("currency_code") or "RUB",
                     }
                     for item in products
                 ],

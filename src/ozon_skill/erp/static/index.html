@@ -107,7 +107,7 @@
   <section id="operationsView" class="operations-view hidden">
     <div class="operations-head">
       <div><span class="eyebrow">OZON OPERATIONS</span><h1>订单与库存中心</h1><p>读取 Ozon FBS/FBO 订单和库存，集中发现异常订单与低库存 SKU。</p></div>
-      <div class="operations-controls"><select id="operationsStore" aria-label="Ozon 店铺"></select><select id="operationsDays"><option value="7">最近 7 天</option><option value="30" selected>最近 30 天</option><option value="90">最近 90 天</option></select><button id="refreshOperationsBtn" class="primary">同步最新数据</button></div>
+      <div class="operations-controls"><select id="operationsStore" aria-label="Ozon 店铺"></select><select id="operationsDays"><option value="7">最近 7 天</option><option value="30" selected>最近 30 天</option><option value="90">最近 90 天</option></select><button id="financeSettingsBtn" class="secondary" type="button">经营参数</button><button id="refreshOperationsBtn" class="primary">同步最新数据</button></div>
     </div>
     <div id="operationsEmpty" class="operations-empty">选择店铺并点击“同步最新数据”。本页面只读取数据，不会修改订单或库存。</div>
     <div id="operationsContent" class="hidden">
@@ -117,10 +117,37 @@
         <section class="data-card exception-card"><div class="data-card-head"><div><span class="eyebrow">EXCEPTIONS</span><h2>异常订单</h2></div><span id="exceptionCount">0</span></div><div id="exceptionList" class="exception-list"></div></section>
         <section class="data-card"><div class="data-card-head"><div><span class="eyebrow">LOW STOCK</span><h2>低库存预警</h2></div><span id="lowStockCount">0</span></div><div class="table-wrap"><table><thead><tr><th>Offer ID</th><th>现货</th><th>预留</th><th>可售</th></tr></thead><tbody id="lowStockTable"></tbody></table></div></section>
       </div>
+      <div class="operations-grid decision-grid">
+        <section id="profitCard" class="data-card profit-card"></section>
+        <section class="data-card"><div class="data-card-head"><div><span class="eyebrow">LOGISTICS SLA</span><h2>发货时效预警</h2></div><span id="logisticsCount">0</span></div><div id="logisticsList" class="exception-list"></div></section>
+      </div>
+      <section class="data-card procurement-card"><div class="data-card-head"><div><span class="eyebrow">REPLENISHMENT</span><h2>采购补货建议</h2></div><span id="procurementCount">0</span></div><div class="table-wrap"><table><thead><tr><th>Offer ID</th><th>周期销量</th><th>日均</th><th>当前可售</th><th>目标库存</th><th>建议采购</th><th>采购预算</th></tr></thead><tbody id="procurementTable"></tbody></table></div></section>
       <section class="data-card order-card"><div class="data-card-head"><div><span class="eyebrow">ORDERS</span><h2>最新订单</h2></div><span id="orderCount">0</span></div><div class="table-wrap"><table><thead><tr><th>订单号</th><th>模式</th><th>状态</th><th>商品</th><th>仓库</th><th>金额</th><th>创建时间</th></tr></thead><tbody id="ordersTable"></tbody></table></div></section>
       <section class="data-card inventory-card"><div class="data-card-head"><div><span class="eyebrow">INVENTORY</span><h2>SKU 库存</h2></div><span id="stockCount">0</span></div><div class="table-wrap"><table><thead><tr><th>Offer ID</th><th>Product ID</th><th>SKU</th><th>仓库数</th><th>现货</th><th>预留</th><th>可售</th></tr></thead><tbody id="stocksTable"></tbody></table></div></section>
     </div>
   </section>
+
+  <dialog id="financeDialog">
+    <div class="dialog-card stores-dialog">
+      <div class="dialog-head"><div><span class="eyebrow">BUSINESS SETTINGS</span><h3>利润与补货参数</h3></div><button id="closeFinanceBtn" class="close" type="button">×</button></div>
+      <p class="dialog-note">参数按店铺保存。利润仅使用 Ozon 订单金额、ERP 真实采购价和下列参数计算；缺少成本时不会伪造结果。</p>
+      <form id="financeForm">
+        <div class="field-grid">
+          <div class="field"><label for="financeRate">CNY → RUB 汇率</label><input id="financeRate" type="number" min="0.01" step="0.01" required></div>
+          <div class="field"><label for="financeCommission">Ozon 佣金（%）</label><input id="financeCommission" type="number" min="0" max="100" step="0.01" required></div>
+        </div>
+        <div class="field-grid">
+          <div class="field"><label for="financeTax">税率（%）</label><input id="financeTax" type="number" min="0" max="100" step="0.01" required></div>
+          <div class="field"><label for="financeLogistics">每单物流费（RUB）</label><input id="financeLogistics" type="number" min="0" step="0.01" required></div>
+        </div>
+        <div class="field-grid">
+          <div class="field"><label for="financeLeadTime">采购交付周期（天）</label><input id="financeLeadTime" type="number" min="1" max="365" step="1" required></div>
+          <div class="field"><label for="financeSafetyStock">安全库存（天）</label><input id="financeSafetyStock" type="number" min="0" max="365" step="1" required></div>
+        </div>
+        <div class="dialog-actions"><button id="saveFinanceBtn" type="submit" class="primary">保存并重新计算</button></div>
+      </form>
+    </div>
+  </dialog>
 
   <dialog id="stageDialog">
     <form method="dialog" class="dialog-card">
