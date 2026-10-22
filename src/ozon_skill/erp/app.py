@@ -29,6 +29,7 @@ _TEAM_MEMBER_ROUTE = re.compile(r"^/api/team/([^/]+)$")
 _OPERATIONS_ROUTE = "/api/operations"
 _FINANCE_SETTINGS_ROUTE = "/api/finance-settings"
 _PRICING_ROUTE = "/api/pricing/calculate"
+_ACTIVITY_ROUTE = "/api/activity"
 _IMAGES_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/images$")
 _REQUIRED_ATTRIBUTES_ROUTE = re.compile(
     r"^/api/pipelines/([^/]+)/required-attributes$"
@@ -55,6 +56,26 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
     def _require(self, permission: str) -> None:
         self.service.require_permission(self._username(), permission)
 
+    def _begin_activity(self, path: str) -> None:
+        if path != _PRICING_ROUTE:
+            self._pending_activity = path
+
+    def _finish_activity(self, status: int) -> None:
+        path = getattr(self, "_pending_activity", None)
+        if not path:
+            return
+        self._pending_activity = None
+        try:
+            self.service.record_activity(
+                actor=self._username(),
+                method=self.command,
+                path=path,
+                status=status,
+                remote_address=self.headers.get("X-Real-IP") or self.client_address[0],
+            )
+        except Exception:
+            pass
+
     def log_message(self, format: str, *args: Any) -> None:
         super().log_message(format, *args)
 
@@ -74,6 +95,7 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _json(self, value: Any, status: int = 200) -> None:
+        self._finish_activity(status)
         body = json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8")
         self._headers(status, "application/json; charset=utf-8", len(body))
         self.wfile.write(body)
@@ -102,7 +124,7 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
 
     def _serve_static(self, relative: str) -> None:
         filename = relative or "index.html"
-        if filename not in {"index.html", "app.js", "styles.css"}:
+        if filename not in {"index.html", "app.js", "styles.css", "progress.css"}:
             self._error("Not found", 404)
             return
         path = _STATIC_ROOT / filename
@@ -164,6 +186,11 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                         )
                     }
                 )
+            elif path == _ACTIVITY_ROUTE:
+                self._require("audit.read")
+                self._json(
+                    self.service.activity_log((query.get("limit") or ["100"])[0])
+                )
             elif path == "/api/stores":
                 self._json({"stores": self.service.list_stores()})
             elif path == _AI_PROVIDER_ROUTE:
@@ -207,6 +234,7 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        self._begin_activity(path)
         try:
             body = self._body()
             if path == _TEAM_ROUTE:
@@ -307,6 +335,7 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        self._begin_activity(path)
         try:
             if path == _AI_PROVIDER_ROUTE:
                 self._require("ai.manage")

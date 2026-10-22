@@ -52,6 +52,7 @@ from ozon_skill.upload.log import UploadLog
 from ozon_skill.upload.workflow import run_upload_workflow
 
 from .ai_provider import AiProviderConfigurationError, AiProviderRegistry
+from .activity import ActivityRegistry
 from .finance import FinanceSettingsError, FinanceSettingsRegistry
 from .operations import OzonOperationsClient, OzonOperationsError
 from .pricing import PricingError, calculate_pricing, calculate_target_pricing
@@ -502,6 +503,7 @@ class PipelineService:
         self.ai_provider = AiProviderRegistry(self.work_root / ".ai-provider.json")
         self.team = TeamRegistry(self.work_root / ".team.json")
         self.finance = FinanceSettingsRegistry(self.work_root / ".finance-settings.json")
+        self.activity = ActivityRegistry(self.work_root / ".activity.jsonl")
         self._recover_interrupted_jobs()
 
     def _recover_interrupted_jobs(self) -> None:
@@ -528,6 +530,33 @@ class PipelineService:
 
     def ai_provider_status(self) -> dict[str, Any]:
         return self.ai_provider.public_status()
+
+    def record_activity(
+        self,
+        *,
+        actor: str,
+        method: str,
+        path: str,
+        status: int,
+        remote_address: str = "",
+    ) -> None:
+        self.activity.append(
+            actor=actor,
+            method=method,
+            path=path,
+            status=status,
+            remote_address=remote_address,
+        )
+
+    def activity_log(self, limit: Any = 100) -> dict[str, Any]:
+        try:
+            normalized_limit = int(limit)
+        except (TypeError, ValueError) as exc:
+            raise PipelineError("审计记录数量必须是整数") from exc
+        return {
+            "schema_version": "1.0",
+            "activities": self.activity.list(normalized_limit),
+        }
 
     def configure_ai_provider(self, value: Mapping[str, Any]) -> dict[str, Any]:
         try:
@@ -842,6 +871,7 @@ class PipelineService:
                         "team.manage": "团队管理",
                         "billing.view": "账单管理",
                         "images.manage": "图片设计",
+                        "audit.read": "操作审计",
                     }.items()
                     if permission in identity["permissions"]
                 ],
