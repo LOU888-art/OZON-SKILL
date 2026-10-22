@@ -15,7 +15,7 @@
       <button id="productNav" class="nav-item active" type="button"><span>商品</span>商品工作台</button>
       <button class="nav-item" type="button" disabled><span>店铺</span>店铺资产<small>即将推出</small></button>
       <button id="operationsNav" class="nav-item" type="button"><span>订单</span>订单与库存</button>
-      <button class="nav-item" type="button" disabled><span>数据</span>经营分析<small>即将推出</small></button>
+      <button id="pricingNav" class="nav-item" type="button"><span>定价</span>定价工具</button>
     </nav>
     <div class="top-actions">
       <button id="accountBtn" class="account-btn" title="账户、权限与套餐"><span id="accountAvatar">A</span><span class="account-copy"><b id="accountName">账户</b><small id="accountPlan">加载中</small></span></button>
@@ -127,18 +127,71 @@
     </div>
   </section>
 
+  <section id="pricingView" class="pricing-view hidden">
+    <div class="pricing-head">
+      <div><span class="eyebrow">OZON RFBS PRICING</span><h1>定价与单件利润</h1><p>严格按《最新定价工具表》的 OGL / 邮政规则，全部金额统一按人民币核算。</p></div>
+      <div class="pricing-source"><span>规则版本</span><b>China Post 2025-11-07</b><small>OGL 货值分档 · 尾程 15–200₽</small></div>
+    </div>
+    <form id="pricingForm" class="pricing-layout">
+      <section class="pricing-form-card">
+        <div class="pricing-section-head"><div><span class="eyebrow">INPUTS</span><h2>商品与费率</h2></div><select id="pricingStore" aria-label="读取店铺经营参数"></select></div>
+        <div class="field-grid three">
+          <div class="field"><label for="pricingSale">Ozon 售价（CNY）</label><input id="pricingSale" type="number" min="0.01" step="0.01" value="48" required></div>
+          <div class="field"><label for="pricingPurchase">采购成本（CNY）</label><input id="pricingPurchase" type="number" min="0" step="0.01" value="7.8" required></div>
+          <div class="field"><label for="pricingMisc">国内杂费（CNY）</label><input id="pricingMisc" type="number" min="0" step="0.01" value="0" required></div>
+        </div>
+        <div class="field-grid three">
+          <div class="field"><label for="pricingCommission">类目佣金 RFBS（%）</label><input id="pricingCommission" type="number" min="0" max="100" step="0.01" value="10" required></div>
+          <div class="field"><label for="pricingReturns">退货/取消损失（%）</label><input id="pricingReturns" type="number" min="0" max="100" step="0.01" value="3" required></div>
+          <div class="field"><label for="pricingWithdrawal">提现/结汇（%）</label><input id="pricingWithdrawal" type="number" min="0" max="100" step="0.01" value="1.2" required></div>
+        </div>
+        <div class="field-grid three">
+          <div class="field"><label for="pricingAdvertising">广告费（%）</label><input id="pricingAdvertising" type="number" min="0" max="100" step="0.01" value="5" required></div>
+          <div class="field"><label for="pricingLastMile">尾程配送（%）</label><input id="pricingLastMile" type="number" min="0" max="100" step="0.01" value="2" required></div>
+          <div class="field"><label for="pricingTarget">目标销售利润率（%）</label><input id="pricingTarget" type="number" min="0" max="100" step="0.01" value="30" required></div>
+        </div>
+        <div class="pricing-section-head divided"><div><span class="eyebrow">LOGISTICS</span><h2>重量、体积与物流</h2></div></div>
+        <div class="field-grid three">
+          <div class="field"><label for="pricingWeight">实重（g）</label><input id="pricingWeight" type="number" min="1" step="1" value="300" required></div>
+          <div class="field"><label for="pricingMode">物流方式</label><select id="pricingMode"><option value="OGL">OGL</option><option value="邮政">邮政 China Post</option></select></div>
+          <div class="field"><label for="pricingTransport">邮政运输</label><select id="pricingTransport"><option value="空运">空运</option><option value="陆运">陆运</option></select></div>
+        </div>
+        <div class="field-grid four">
+          <div class="field"><label for="pricingLength">长（cm）</label><input id="pricingLength" type="number" min="0" step="0.1" value="24"></div>
+          <div class="field"><label for="pricingWidth">宽（cm）</label><input id="pricingWidth" type="number" min="0" step="0.1" value="16"></div>
+          <div class="field"><label for="pricingHeight">高（cm）</label><input id="pricingHeight" type="number" min="0" step="0.1" value="20"></div>
+          <div class="field"><label for="pricingRate">1 CNY = ? RUB</label><input id="pricingRate" type="number" min="0.01" step="0.01" value="12.6" required></div>
+        </div>
+        <div class="pricing-actions"><button id="loadPricingSettingsBtn" type="button" class="secondary">读取店铺参数</button><button type="submit" class="primary">立即试算 <span>→</span></button></div>
+      </section>
+      <aside id="pricingResults" class="pricing-results"><div class="pricing-placeholder"><b>¥</b><h2>等待试算</h2><p>填写真实采购价、重量和费率后生成建议售价。</p></div></aside>
+    </form>
+  </section>
+
   <dialog id="financeDialog">
     <div class="dialog-card stores-dialog">
       <div class="dialog-head"><div><span class="eyebrow">BUSINESS SETTINGS</span><h3>利润与补货参数</h3></div><button id="closeFinanceBtn" class="close" type="button">×</button></div>
-      <p class="dialog-note">参数按店铺保存。利润仅使用 Ozon 订单金额、ERP 真实采购价和下列参数计算；缺少成本时不会伪造结果。</p>
+      <p class="dialog-note">参数按店铺保存，与定价工具表口径一致。订单利润按人民币核算；缺少采购价或重量时不会伪造结果。</p>
       <form id="financeForm">
         <div class="field-grid">
           <div class="field"><label for="financeRate">CNY → RUB 汇率</label><input id="financeRate" type="number" min="0.01" step="0.01" required></div>
           <div class="field"><label for="financeCommission">Ozon 佣金（%）</label><input id="financeCommission" type="number" min="0" max="100" step="0.01" required></div>
         </div>
         <div class="field-grid">
-          <div class="field"><label for="financeTax">税率（%）</label><input id="financeTax" type="number" min="0" max="100" step="0.01" required></div>
-          <div class="field"><label for="financeLogistics">每单物流费（RUB）</label><input id="financeLogistics" type="number" min="0" step="0.01" required></div>
+          <div class="field"><label for="financeReturns">退货/取消损失（%）</label><input id="financeReturns" type="number" min="0" max="100" step="0.01" required></div>
+          <div class="field"><label for="financeWithdrawal">提现/结汇（%）</label><input id="financeWithdrawal" type="number" min="0" max="100" step="0.01" required></div>
+        </div>
+        <div class="field-grid">
+          <div class="field"><label for="financeAdvertising">广告费（%）</label><input id="financeAdvertising" type="number" min="0" max="100" step="0.01" required></div>
+          <div class="field"><label for="financeLastMile">尾程配送（%，15–200₽）</label><input id="financeLastMile" type="number" min="0" max="100" step="0.01" required></div>
+        </div>
+        <div class="field-grid">
+          <div class="field"><label for="financeTarget">目标销售利润率（%）</label><input id="financeTarget" type="number" min="0" max="100" step="0.01" required></div>
+          <div class="field"><label for="financeMisc">每件国内杂费（CNY）</label><input id="financeMisc" type="number" min="0" step="0.01" required></div>
+        </div>
+        <div class="field-grid">
+          <div class="field"><label for="financeLogisticsMode">默认物流方式</label><select id="financeLogisticsMode"><option value="OGL">OGL</option><option value="邮政">邮政 China Post</option></select></div>
+          <div class="field"><label for="financePostalTransport">邮政运输</label><select id="financePostalTransport"><option value="空运">空运</option><option value="陆运">陆运</option></select></div>
         </div>
         <div class="field-grid">
           <div class="field"><label for="financeLeadTime">采购交付周期（天）</label><input id="financeLeadTime" type="number" min="1" max="365" step="1" required></div>

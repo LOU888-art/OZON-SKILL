@@ -11,10 +11,16 @@ from typing import Any, Mapping
 
 
 DEFAULT_FINANCE_SETTINGS = {
-    "cny_to_rub_rate": 12.5,
-    "commission_percent": 15.0,
-    "tax_percent": 6.0,
-    "logistics_per_order_rub": 250.0,
+    "cny_to_rub_rate": 12.6,
+    "commission_percent": 10.0,
+    "return_loss_percent": 3.0,
+    "withdrawal_percent": 1.2,
+    "advertising_percent": 5.0,
+    "last_mile_percent": 2.0,
+    "target_margin_percent": 30.0,
+    "domestic_misc_cny": 0.0,
+    "logistics_mode": "OGL",
+    "postal_transport": "空运",
     "lead_time_days": 15,
     "safety_stock_days": 7,
 }
@@ -69,8 +75,12 @@ class FinanceSettingsRegistry:
         bounds = {
             "cny_to_rub_rate": (0.01, 1000.0),
             "commission_percent": (0.0, 100.0),
-            "tax_percent": (0.0, 100.0),
-            "logistics_per_order_rub": (0.0, 1000000.0),
+            "return_loss_percent": (0.0, 100.0),
+            "withdrawal_percent": (0.0, 100.0),
+            "advertising_percent": (0.0, 100.0),
+            "last_mile_percent": (0.0, 100.0),
+            "target_margin_percent": (0.0, 100.0),
+            "domestic_misc_cny": (0.0, 1000000.0),
             "lead_time_days": (1, 365),
             "safety_stock_days": (0, 365),
         }
@@ -83,6 +93,28 @@ class FinanceSettingsRegistry:
             if number < minimum or number > maximum:
                 raise FinanceSettingsError(f"{key} 必须在 {minimum}–{maximum} 之间")
             normalized[key] = int(number) if key.endswith("_days") else round(number, 4)
+        logistics_mode = str(value.get("logistics_mode") or "").strip()
+        postal_transport = str(value.get("postal_transport") or "").strip()
+        if logistics_mode not in {"OGL", "邮政"}:
+            raise FinanceSettingsError("物流方式必须是 OGL 或邮政")
+        if postal_transport not in {"空运", "陆运"}:
+            raise FinanceSettingsError("邮政运输必须是空运或陆运")
+        normalized["logistics_mode"] = logistics_mode
+        normalized["postal_transport"] = postal_transport
+        variable_total = sum(
+            normalized[key]
+            for key in (
+                "commission_percent",
+                "return_loss_percent",
+                "withdrawal_percent",
+                "advertising_percent",
+                "last_mile_percent",
+            )
+        )
+        if variable_total >= 100:
+            raise FinanceSettingsError("佣金及各项比例费率合计必须小于 100%")
+        if variable_total + normalized["target_margin_percent"] >= 100:
+            raise FinanceSettingsError("费率与目标利润率合计必须小于 100%")
         with self._lock:
             document = self._read()
             document["stores"][store_id] = normalized

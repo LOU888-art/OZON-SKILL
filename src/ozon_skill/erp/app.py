@@ -28,6 +28,7 @@ _TEAM_ROUTE = "/api/team"
 _TEAM_MEMBER_ROUTE = re.compile(r"^/api/team/([^/]+)$")
 _OPERATIONS_ROUTE = "/api/operations"
 _FINANCE_SETTINGS_ROUTE = "/api/finance-settings"
+_PRICING_ROUTE = "/api/pricing/calculate"
 _IMAGES_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/images$")
 _REQUIRED_ATTRIBUTES_ROUTE = re.compile(
     r"^/api/pipelines/([^/]+)/required-attributes$"
@@ -234,6 +235,10 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                         )
                     }
                 )
+                return
+            if path == _PRICING_ROUTE:
+                self._require("finance.read")
+                self._json({"calculation": self.service.pricing_calculation(body)})
                 return
             if store_match := _STORE_VERIFY_ROUTE.fullmatch(path):
                 self._require("stores.manage")

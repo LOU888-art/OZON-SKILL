@@ -54,6 +54,7 @@ from ozon_skill.upload.workflow import run_upload_workflow
 from .ai_provider import AiProviderConfigurationError, AiProviderRegistry
 from .finance import FinanceSettingsError, FinanceSettingsRegistry
 from .operations import OzonOperationsClient, OzonOperationsError
+from .pricing import PricingError, calculate_pricing, calculate_target_pricing
 from .stores import StoreAuthorizationError, StoreRegistry
 from .team import TeamError, TeamRegistry
 
@@ -553,8 +554,14 @@ class PipelineService:
         except FinanceSettingsError as exc:
             raise PipelineError(str(exc), status=422) from exc
 
-    def _purchase_cost_index(self, store_id: str) -> dict[str, Decimal]:
-        result: dict[str, Decimal] = {}
+    def pricing_calculation(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            return calculate_pricing(value)
+        except PricingError as exc:
+            raise PipelineError(str(exc), status=422) from exc
+
+    def _product_cost_index(self, store_id: str) -> dict[str, dict[str, Any]]:
+        result: dict[str, dict[str, Any]] = {}
         for pipeline in self.list_pipelines():
             pipeline_id = str(pipeline.get("pipeline_id") or "")
             if not pipeline_id or not self.path(pipeline_id, 1).exists() or not self.path(pipeline_id, 4).exists():
@@ -574,9 +581,33 @@ class PipelineService:
                     cost = Decimal(str(sku.get("purchase_price_cny")))
                 except (InvalidOperation, TypeError, ValueError):
                     continue
-                if cost > 0:
-                    result[offer_id] = cost
+                if cost <= 0:
+                    continue
+                unit = str(item.get("dimension_unit") or "mm").lower()
+                length_factor = Decimal("0.1") if unit == "mm" else Decimal("1")
+                weight_unit = str(item.get("weight_unit") or "g").lower()
+                weight_factor = Decimal("1000") if weight_unit == "kg" else Decimal("1")
+                try:
+                    length = Decimal(str(item.get("depth") or 0)) * length_factor
+                    width = Decimal(str(item.get("width") or 0)) * length_factor
+                    height = Decimal(str(item.get("height") or 0)) * length_factor
+                    weight = Decimal(str(item.get("weight") or 0)) * weight_factor
+                except (InvalidOperation, TypeError, ValueError):
+                    continue
+                result[offer_id] = {
+                    "purchase_cost_cny": cost,
+                    "length_cm": length,
+                    "width_cm": width,
+                    "height_cm": height,
+                    "weight_g": weight,
+                }
         return result
+
+    def _purchase_cost_index(self, store_id: str) -> dict[str, Decimal]:
+        return {
+            offer_id: item["purchase_cost_cny"]
+            for offer_id, item in self._product_cost_index(store_id).items()
+        }
 
     def operations_dashboard(self, store_id: str = "", days: int = 30) -> dict[str, Any]:
         try:
@@ -620,23 +651,60 @@ class PipelineService:
                 amount = Decimal("0")
             revenue_by_currency[currency] = revenue_by_currency.get(currency, Decimal("0")) + amount
         settings = self.finance.get(selected_id)
-        cost_index = self._purchase_cost_index(selected_id)
+        product_cost_index = self._product_cost_index(selected_id)
+        cost_index = {
+            offer_id: item["purchase_cost_cny"]
+            for offer_id, item in product_cost_index.items()
+        }
         units_by_offer: dict[str, int] = {}
-        purchase_cost_rub = Decimal("0")
+        purchase_cost_cny = Decimal("0")
+        total_cost_cny = Decimal("0")
+        estimated_profit_cny = Decimal("0")
         missing_costs: set[str] = set()
+        pricing_failures: list[str] = []
         for order in commercial_orders:
             for product in order.get("products") or []:
                 if not isinstance(product, Mapping):
                     continue
                 offer_id = str(product.get("offer_id") or "")
                 quantity = int(product.get("quantity") or 0)
+                if quantity <= 0:
+                    continue
                 units_by_offer[offer_id] = units_by_offer.get(offer_id, 0) + quantity
                 if offer_id in {"", "—"}:
                     continue
-                if offer_id in cost_index:
-                    purchase_cost_rub += cost_index[offer_id] * Decimal(str(settings["cny_to_rub_rate"])) * quantity
-                elif offer_id:
+                economics = product_cost_index.get(offer_id)
+                if economics is None:
                     missing_costs.add(offer_id)
+                    continue
+                purchase_cost_cny += economics["purchase_cost_cny"] * quantity
+                currency = str(product.get("currency_code") or order.get("currency_code") or "RUB")
+                try:
+                    raw_price = Decimal(str(product.get("price") or "0"))
+                except InvalidOperation:
+                    pricing_failures.append(f"{offer_id} 的销售价无效")
+                    continue
+                exchange = Decimal(str(settings["cny_to_rub_rate"]))
+                if currency == "RUB":
+                    sale_cny = raw_price / exchange
+                elif currency == "CNY":
+                    sale_cny = raw_price
+                else:
+                    pricing_failures.append(f"{offer_id} 的币种 {currency} 暂不支持")
+                    continue
+                try:
+                    result = calculate_pricing(
+                        {
+                            **settings,
+                            **economics,
+                            "sale_price_cny": sale_cny,
+                        }
+                    )
+                except PricingError as exc:
+                    pricing_failures.append(f"{offer_id}：{exc}")
+                    continue
+                total_cost_cny += Decimal(result["total_cost_cny"]) * quantity
+                estimated_profit_cny += Decimal(result["unit_profit_cny"]) * quantity
         procurement: list[dict[str, Any]] = []
         stock_by_offer = {
             str(item.get("offer_id") or ""): item
@@ -681,19 +749,12 @@ class PipelineService:
                 logistics_alerts.append({**order, "hours_left": round(hours_left, 1), "severity": "overdue" if hours_left < 0 else "urgent"})
         profit_status = "READY"
         profit_reason = ""
-        estimated_profit: Decimal | None = None
         if not settings["configured"]:
-            profit_status, profit_reason = "NEEDS_CONFIGURATION", "请先填写真实佣金、税率、物流费和汇率"
+            profit_status, profit_reason = "NEEDS_CONFIGURATION", "请先填写表格中的佣金、退货、提现、广告、尾程、物流和汇率参数"
         elif missing_costs:
             profit_status, profit_reason = "NEEDS_COST", "部分订单商品缺少人民币采购成本"
-        elif set(revenue_by_currency) - {"RUB"}:
-            profit_status, profit_reason = "UNSUPPORTED_CURRENCY", "当前仅支持 RUB 利润核算"
-        else:
-            revenue_rub = revenue_by_currency.get("RUB", Decimal("0"))
-            commission = revenue_rub * Decimal(str(settings["commission_percent"])) / 100
-            tax = revenue_rub * Decimal(str(settings["tax_percent"])) / 100
-            logistics = Decimal(str(settings["logistics_per_order_rub"])) * len(commercial_orders)
-            estimated_profit = revenue_rub - purchase_cost_rub - commission - tax - logistics
+        elif pricing_failures:
+            profit_status, profit_reason = "NEEDS_INPUT", pricing_failures[0]
         return {
             "schema_version": "1.0",
             "store_id": selected_id,
@@ -716,9 +777,11 @@ class PipelineService:
             "profit": {
                 "status": profit_status,
                 "reason": profit_reason,
-                "estimated_profit_rub": str(estimated_profit.quantize(Decimal("0.01"))) if estimated_profit is not None else None,
-                "purchase_cost_rub": str(purchase_cost_rub.quantize(Decimal("0.01"))),
+                "estimated_profit_cny": str(estimated_profit_cny.quantize(Decimal("0.01"))) if profit_status == "READY" else None,
+                "total_cost_cny": str(total_cost_cny.quantize(Decimal("0.01"))),
+                "purchase_cost_cny": str(purchase_cost_cny.quantize(Decimal("0.01"))),
                 "missing_cost_offer_ids": sorted(missing_costs),
+                "pricing_failures": pricing_failures,
                 "settings": settings,
             },
             "warnings": warnings,
@@ -1735,6 +1798,49 @@ class PipelineService:
                         "source": "ERP_MANUAL_INPUT",
                     }
                 )
+            dimensions = store_config.get("dimension_defaults") or {}
+            if not isinstance(dimensions, Mapping):
+                raise PipelineError("尺寸与重量配置必须是对象")
+            try:
+                dimension_factor = Decimal("0.1") if str(dimensions.get("dimension_unit") or "mm").lower() == "mm" else Decimal("1")
+                weight_factor = Decimal("1000") if str(dimensions.get("weight_unit") or "g").lower() == "kg" else Decimal("1")
+                pricing_dimensions = {
+                    "length_cm": Decimal(str(dimensions.get("depth"))) * dimension_factor,
+                    "width_cm": Decimal(str(dimensions.get("width"))) * dimension_factor,
+                    "height_cm": Decimal(str(dimensions.get("height"))) * dimension_factor,
+                    "weight_g": Decimal(str(dimensions.get("weight"))) * weight_factor,
+                }
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise PipelineError("尺寸与重量必须是有效数字") from exc
+            pricing_settings = self.finance.get(str(authorized_store["store_id"]))
+            if ozon_currency != "CNY" and store_config.get("cny_to_rub_rate") not in (None, ""):
+                pricing_settings = {
+                    **pricing_settings,
+                    "cny_to_rub_rate": store_config.get("cny_to_rub_rate"),
+                }
+            pricing_provenance: list[dict[str, Any]] = []
+            for sku_id, sku in sku_by_id.items():
+                try:
+                    pricing = calculate_target_pricing(
+                        {
+                            **pricing_settings,
+                            **pricing_dimensions,
+                            "purchase_cost_cny": sku.get("purchase_price_cny"),
+                        }
+                    )
+                except PricingError as exc:
+                    raise PipelineError(f"SKU {sku_id} 自动定价失败：{exc}") from exc
+                sku["sale_price_cny"] = pricing["suggested_price_cny"]
+                pricing_provenance.append(
+                    {
+                        "sku_id": sku_id,
+                        "purchase_cost_cny": str(sku.get("purchase_price_cny")),
+                        "sale_price_cny": pricing["suggested_price_cny"],
+                        "channel": pricing["channel"],
+                        "target_margin_percent": pricing_settings["target_margin_percent"],
+                        "source": "WORKBOOK_TARGET_PRICING",
+                    }
+                )
             final = self.read_artifact(pipeline_id, 3)
             final, override_provenance = self._apply_required_attribute_overrides(
                 final,
@@ -1772,6 +1878,8 @@ class PipelineService:
                 "validation_errors": assembly.validation_errors,
                 "attribute_override_provenance": override_provenance,
                 "sku_price_override_provenance": price_override_provenance,
+                "target_pricing_provenance": pricing_provenance,
+                "finance_settings": pricing_settings,
             })
             self._record(pipeline_id, 4, not failures, failures)
             self._assign_store(pipeline_id, str(authorized_store["store_id"]))

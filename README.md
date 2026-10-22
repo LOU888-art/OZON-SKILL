@@ -16,6 +16,8 @@ python3 -m venv --system-site-packages /workspace/.venv
 
 浏览器打开 `http://127.0.0.1:8080`。AlphaShop 密钥必须在进程环境中配置。OZON Seller API 店铺可在网页的“店铺授权”中添加：ERP 会先通过只读类目树接口验证 Client-Id 与 Api-Key，再将凭证保存到权限为 `0600` 的服务端文件；Api-Key 不会通过网页或列表 API 回显。
 
+顶部“定价工具”按 `最新定价工具表.xlsx` 的人民币口径计算 OGL/邮政分档、计泡重量、头程、佣金、退货、提现、广告、尾程、保本价和目标利润建议价。店铺经营参数保存后，订单利润看板与第四阶段 SKU 自动上架价会复用同一套规则；采购成本和上架售价分开保存，不再把“采购价 × 汇率”误当作销售定价。
+
 常用环境变量：
 
 - AlphaShop 商品详情、类目映射和图片翻译：`ALPHASHOP_ACCESS_KEY`、`ALPHASHOP_SECRET_KEY`。

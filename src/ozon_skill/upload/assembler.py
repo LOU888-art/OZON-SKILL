@@ -495,6 +495,7 @@ def assemble_import_payload(
         offer_id = _offer_id(store.store_id, source_offer_id, sku_id)
         offer_ids.append(offer_id)
         purchase_price = sku.get("purchase_price_cny")
+        sale_price = sku.get("sale_price_cny")
         try:
             cny = Decimal(str(purchase_price))
             if not cny.is_finite() or cny <= 0:
@@ -503,7 +504,15 @@ def assemble_import_payload(
             errors.append(f"SKU {sku_id or 'default'} has no valid CNY purchase price")
             price = Decimal("0")
         else:
-            price = cny * store.cny_to_rub_rate
+            try:
+                sale_cny = Decimal(str(sale_price)) if sale_price not in (None, "") else cny
+                if not sale_cny.is_finite() or sale_cny <= 0:
+                    raise ValueError
+            except (ValueError, ArithmeticError):
+                errors.append(f"SKU {sku_id or 'default'} has no valid CNY sale price")
+                price = Decimal("0")
+            else:
+                price = sale_cny * store.cny_to_rub_rate
         item = {
             "offer_id": offer_id,
             "name": title,
