@@ -51,6 +51,7 @@ from ozon_skill.upload.log import UploadLog
 from ozon_skill.upload.workflow import run_upload_workflow
 
 from .ai_provider import AiProviderConfigurationError, AiProviderRegistry
+from .operations import OzonOperationsClient, OzonOperationsError
 from .stores import StoreAuthorizationError, StoreRegistry
 from .team import TeamError, TeamRegistry
 
@@ -535,6 +536,63 @@ class PipelineService:
 
     def list_stores(self) -> list[dict[str, Any]]:
         return self.stores.list_public()
+
+    def operations_dashboard(self, store_id: str = "", days: int = 30) -> dict[str, Any]:
+        try:
+            days = max(1, min(90, int(days)))
+        except (TypeError, ValueError) as exc:
+            raise PipelineError("订单时间范围必须是 1–90 天") from exc
+        stores = self.list_stores()
+        selected_id = str(store_id or (stores[0]["store_id"] if len(stores) == 1 else "")).strip()
+        if not selected_id:
+            raise PipelineError("请选择要读取订单与库存的 Ozon 店铺", status=409)
+        try:
+            credentials = self.stores.credentials(selected_id)
+        except StoreAuthorizationError as exc:
+            raise PipelineError(str(exc), status=404) from exc
+        client = OzonOperationsClient(credentials["client_id"], credentials["api_key"])
+        orders, warnings = client.orders(days=days)
+        try:
+            stocks = client.stocks()
+        except OzonOperationsError as exc:
+            stocks = []
+            warnings.append(f"库存读取失败：{exc}")
+        low_stock_threshold = max(0, int(os.environ.get("ERP_LOW_STOCK_THRESHOLD") or "5"))
+        low_stocks = [item for item in stocks if int(item.get("available") or 0) <= low_stock_threshold]
+        exception_statuses = {"cancelled", "canceled", "arbitration", "client_arbitration", "not_accepted"}
+        exceptions = [
+            item
+            for item in orders
+            if str(item.get("status") or "").lower() in exception_statuses
+        ]
+        revenue_by_currency: dict[str, Decimal] = {}
+        for order in orders:
+            currency = str(order.get("currency_code") or "RUB")
+            try:
+                amount = Decimal(str(order.get("revenue") or "0"))
+            except InvalidOperation:
+                amount = Decimal("0")
+            revenue_by_currency[currency] = revenue_by_currency.get(currency, Decimal("0")) + amount
+        return {
+            "schema_version": "1.0",
+            "store_id": selected_id,
+            "store_name": credentials.get("name"),
+            "period_days": days,
+            "low_stock_threshold": low_stock_threshold,
+            "summary": {
+                "orders": len(orders),
+                "exceptions": len(exceptions),
+                "stock_skus": len(stocks),
+                "low_stock": len(low_stocks),
+                "revenue": {key: str(value.quantize(Decimal("0.01"))) for key, value in revenue_by_currency.items()},
+            },
+            "orders": orders,
+            "exceptions": exceptions,
+            "stocks": stocks,
+            "low_stocks": low_stocks,
+            "warnings": warnings,
+            "refreshed_at": _now(),
+        }
 
     def commercial_status(self, username: str = "") -> dict[str, Any]:
         """Return the current workspace identity, plan and metered usage."""

@@ -26,6 +26,7 @@ _ACCOUNT_ROUTE = "/api/account"
 _PLANS_ROUTE = "/api/plans"
 _TEAM_ROUTE = "/api/team"
 _TEAM_MEMBER_ROUTE = re.compile(r"^/api/team/([^/]+)$")
+_OPERATIONS_ROUTE = "/api/operations"
 _IMAGES_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/images$")
 _REQUIRED_ATTRIBUTES_ROUTE = re.compile(
     r"^/api/pipelines/([^/]+)/required-attributes$"
@@ -143,6 +144,15 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._json({"plans": PLAN_CATALOG})
             elif path == _TEAM_ROUTE:
                 self._json(self.service.team_status(self._username()))
+            elif path == _OPERATIONS_ROUTE:
+                self._require("orders.read")
+                self._require("inventory.read")
+                self._json(
+                    self.service.operations_dashboard(
+                        store_id=str((query.get("store_id") or [""])[0]),
+                        days=(query.get("days") or ["30"])[0],
+                    )
+                )
             elif path == "/api/stores":
                 self._json({"stores": self.service.list_stores()})
             elif path == _AI_PROVIDER_ROUTE:
