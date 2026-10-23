@@ -150,6 +150,47 @@ class AliyunOssClient:
         validate_public_image_url(public_url)
         return public_url
 
+    def delete(self, key: str) -> None:
+        normalized = str(key or "").strip().lstrip("/")
+        if (
+            not normalized
+            or ".." in normalized.split("/")
+            or (self.prefix and not normalized.startswith(f"{self.prefix}/"))
+        ):
+            raise ObjectStorageError("只允许删除当前 Northstar 对象目录下的图片")
+        encoded_key = quote(normalized, safe="/-_.~")
+        date = formatdate(usegmt=True)
+        canonical_resource = f"/{self.bucket}/{encoded_key}"
+        string_to_sign = f"DELETE\n\n\n{date}\n{canonical_resource}"
+        signature = base64.b64encode(
+            hmac.new(
+                self._access_key_secret.encode("utf-8"),
+                string_to_sign.encode("utf-8"),
+                hashlib.sha1,
+            ).digest()
+        ).decode("ascii")
+        request = Request(
+            f"https://{self._host}/{encoded_key}",
+            method="DELETE",
+            headers={
+                "Authorization": f"OSS {self.access_key_id}:{signature}",
+                "Date": date,
+                "Host": self._host,
+                "User-Agent": "northstar-erp-object-storage/1.0",
+            },
+        )
+        try:
+            with urlopen(request, timeout=self.timeout_seconds) as response:
+                if response.status not in {200, 204}:
+                    raise ObjectStorageError(f"OSS 删除返回 HTTP {response.status}")
+        except HTTPError as exc:
+            preview = exc.read(500).decode("utf-8", errors="replace")
+            raise ObjectStorageError(
+                f"OSS 删除失败：HTTP {exc.code}；{preview[:300]}"
+            ) from exc
+        except (URLError, TimeoutError, OSError) as exc:
+            raise ObjectStorageError(f"OSS 删除网络请求失败：{exc}") from exc
+
     def mirror(self, source_url: str, pipeline_id: str) -> dict[str, Any]:
         validate_public_image_url(source_url)
         _reject_private_destination(source_url)

@@ -35,6 +35,8 @@ _NOTIFICATIONS_ROUTE = "/api/notifications"
 _NOTIFICATIONS_READ_ROUTE = "/api/notifications/read"
 _BATCH_IMPORTS_ROUTE = "/api/batch-imports"
 _BATCH_IMPORT_ROUTE = re.compile(r"^/api/batch-imports/([a-f0-9]{32})$")
+_ASSETS_ROUTE = "/api/assets"
+_ASSET_ROUTE = re.compile(r"^/api/assets/([a-f0-9]{24})$")
 _IMAGES_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/images$")
 _REQUIRED_ATTRIBUTES_ROUTE = re.compile(
     r"^/api/pipelines/([^/]+)/required-attributes$"
@@ -206,6 +208,8 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 )
             elif match := _BATCH_IMPORT_ROUTE.fullmatch(path):
                 self._json(self.service.batch_import_status(match.group(1)))
+            elif path == _ASSETS_ROUTE:
+                self._json(self.service.asset_library())
             elif path == "/api/stores":
                 self._json({"stores": self.service.list_stores()})
             elif path == _AI_PROVIDER_ROUTE:
@@ -375,6 +379,10 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._require("ai.manage")
                 self.service.delete_ai_provider()
                 self._json({"status": "deleted"})
+                return
+            if asset_match := _ASSET_ROUTE.fullmatch(path):
+                self._require("storage.manage")
+                self._json(self.service.delete_asset(asset_match.group(1)))
                 return
             if path == _OBJECT_STORAGE_ROUTE:
                 self._require("storage.manage")

@@ -53,6 +53,22 @@ class ObjectStorageTests(unittest.TestCase):
         self.assertTrue(request.get_header("Authorization").startswith("OSS test-access-id:"))
         self.assertNotIn("test-secret", str(request.header_items()))
 
+    def test_delete_is_signed_and_restricted_to_configured_prefix(self) -> None:
+        client = AliyunOssClient(CONFIG)
+        with patch("ozon_skill.erp.object_storage.urlopen", return_value=_Response()) as mocked:
+            client.delete("northstar/item/image.png")
+
+        request = mocked.call_args.args[0]
+        self.assertEqual(request.method, "DELETE")
+        self.assertEqual(
+            request.full_url,
+            "https://northstar-images.oss-cn-hongkong.aliyuncs.com/northstar/item/image.png",
+        )
+        self.assertTrue(request.get_header("Authorization").startswith("OSS test-access-id:"))
+        self.assertNotIn("test-secret", str(request.header_items()))
+        with self.assertRaisesRegex(ObjectStorageError, "Northstar"):
+            client.delete("another-prefix/image.png")
+
     def test_registry_hides_secret_and_uses_private_file_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / ".object-storage.json"
@@ -101,6 +117,8 @@ class ObjectStorageTests(unittest.TestCase):
     def test_pipeline_mirrors_duplicate_urls_only_once(self) -> None:
         class _Client:
             public_base_url = "https://cdn.example.com/assets"
+            bucket = "northstar-assets"
+            endpoint = "oss-cn-hongkong.aliyuncs.com"
 
             def __init__(self) -> None:
                 self.calls = 0

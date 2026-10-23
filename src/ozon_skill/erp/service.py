@@ -54,6 +54,7 @@ from ozon_skill.upload.workflow import run_upload_workflow
 
 from .ai_provider import AiProviderConfigurationError, AiProviderRegistry
 from .activity import ActivityRegistry
+from .assets import AssetRegistry, AssetRegistryError, asset_id, managed_asset_id
 from .finance import FinanceSettingsError, FinanceSettingsRegistry
 from .notifications import NotificationRegistry
 from .object_storage import ObjectStorageError, ObjectStorageRegistry
@@ -513,6 +514,7 @@ class PipelineService:
         self.activity = ActivityRegistry(self.work_root / ".activity.jsonl")
         self.notifications = NotificationRegistry(self.work_root / ".notifications.json")
         self.object_storage = ObjectStorageRegistry(self.work_root / ".object-storage.json")
+        self.assets = AssetRegistry(self.work_root / ".image-assets.json")
         self._recover_interrupted_jobs()
 
     def _recover_interrupted_jobs(self) -> None:
@@ -595,11 +597,260 @@ class PipelineService:
                 row["storage_object_key"] = stored["object_key"]
                 row["storage_sha256"] = stored["sha256"]
                 row["storage_size_bytes"] = stored["size_bytes"]
-            except (ObjectStorageError, ValueError) as exc:
+                self.assets.upsert(
+                    {
+                        "object_key": stored["object_key"],
+                        "public_url": stored["public_url"],
+                        "source_url": source,
+                        "sha256": stored["sha256"],
+                        "content_type": stored.get("content_type"),
+                        "size_bytes": stored["size_bytes"],
+                        "asset_type": (
+                            "ai_generated"
+                            if str(row.get("plan_action") or "")
+                            in {"reference_8", "sku_main", "ai_generate"}
+                            else "translated"
+                        ),
+                        "storage_bucket": client.bucket,
+                        "storage_endpoint": client.endpoint,
+                    }
+                )
+                row["storage_bucket"] = client.bucket
+                row["storage_endpoint"] = client.endpoint
+            except (ObjectStorageError, AssetRegistryError, ValueError) as exc:
                 row["final_public_url"] = None
                 row["storage_status"] = "FAILED"
                 row["error"] = f"图片固化到 OSS 失败：{str(exc)[:400]}"
         return rows
+
+    def asset_library(self) -> dict[str, Any]:
+        """Build a safe, cross-product view of source and managed image assets."""
+
+        with self._lock:
+            external: dict[str, dict[str, Any]] = {}
+            managed: dict[str, dict[str, Any]] = {}
+            public_base = str(
+                self.object_storage.public_status().get("public_base_url") or ""
+            ).rstrip("/")
+            storage_status = self.object_storage.public_status()
+            for pipeline in self.list_pipelines():
+                pipeline_id = str(pipeline.get("pipeline_id") or "")
+                if not pipeline_id:
+                    continue
+                stage5 = (pipeline.get("stages") or {}).get("5") or {}
+                published = isinstance(stage5, Mapping) and stage5.get("status") == "PASS"
+                if self.path(pipeline_id, 1).exists():
+                    try:
+                        raw = self.read_artifact(pipeline_id, 1)
+                    except PipelineError:
+                        raw = {}
+                    for item in _image_items(raw):
+                        url = str(item.get("url") or "").strip()
+                        if not url:
+                            continue
+                        identifier = asset_id(url)
+                        record = external.setdefault(
+                            identifier,
+                            {
+                                "asset_id": identifier,
+                                "public_url": url,
+                                "source_url": url,
+                                "asset_type": "source",
+                                "managed": False,
+                                "size_bytes": None,
+                                "references": [],
+                            },
+                        )
+                        record["references"].append(
+                            {
+                                "pipeline_id": pipeline_id,
+                                "stage": 1,
+                                "role": item.get("source_role"),
+                                "sku_id": item.get("sku_id"),
+                            }
+                        )
+                if not self.path(pipeline_id, 3).exists():
+                    continue
+                try:
+                    localized = self.read_artifact(pipeline_id, 3).get("localized_images") or []
+                except PipelineError:
+                    continue
+                for item in localized:
+                    if not isinstance(item, Mapping):
+                        continue
+                    url = str(item.get("final_public_url") or "").strip()
+                    if not url:
+                        continue
+                    object_key = str(item.get("storage_object_key") or "").strip().lstrip("/")
+                    if not object_key and public_base and url.startswith(f"{public_base}/"):
+                        object_key = url[len(public_base) + 1 :]
+                    action = str(item.get("plan_action") or "")
+                    kind = (
+                        "ai_generated"
+                        if action in {"reference_8", "sku_main", "ai_generate"}
+                        else "translated"
+                    )
+                    reference = {
+                        "pipeline_id": pipeline_id,
+                        "stage": 3,
+                        "role": item.get("source_role"),
+                        "sku_id": item.get("sku_id"),
+                        "module_number": item.get("module_number"),
+                    }
+                    if object_key:
+                        identifier = managed_asset_id(object_key, url)
+                        record = managed.setdefault(
+                            identifier,
+                            {
+                                "asset_id": identifier,
+                                "object_key": object_key,
+                                "public_url": url,
+                                "source_url": item.get("source_url"),
+                                "asset_type": kind,
+                                "managed": True,
+                                "sha256": item.get("storage_sha256"),
+                                "size_bytes": item.get("storage_size_bytes"),
+                                "references": [],
+                                "published": False,
+                                "storage_bucket": (
+                                    item.get("storage_bucket")
+                                    or (
+                                        storage_status.get("bucket")
+                                        if public_base and url.startswith(f"{public_base}/")
+                                        else None
+                                    )
+                                ),
+                                "storage_endpoint": (
+                                    item.get("storage_endpoint")
+                                    or (
+                                        storage_status.get("endpoint")
+                                        if public_base and url.startswith(f"{public_base}/")
+                                        else None
+                                    )
+                                ),
+                            },
+                        )
+                        record["references"].append(reference)
+                        record["published"] = bool(record.get("published") or published)
+                    else:
+                        identifier = asset_id(url)
+                        record = external.setdefault(
+                            identifier,
+                            {
+                                "asset_id": identifier,
+                                "public_url": url,
+                                "source_url": item.get("source_url"),
+                                "asset_type": kind,
+                                "managed": False,
+                                "size_bytes": None,
+                                "references": [],
+                            },
+                        )
+                        record["references"].append(reference)
+
+            managed_rows = self.assets.synchronize(managed)
+            external_rows = []
+            for record in external.values():
+                references = list(record.get("references") or [])
+                external_rows.append(
+                    {
+                        **record,
+                        "reference_count": len(references),
+                        "orphaned": False,
+                        "published": False,
+                        "can_delete": False,
+                    }
+                )
+            for record in managed_rows:
+                record["can_delete"] = bool(
+                    record.get("orphaned") and not record.get("published")
+                )
+            rows = managed_rows + external_rows
+            rows.sort(
+                key=lambda row: (
+                    not bool(row.get("orphaned")),
+                    str(row.get("asset_type") or ""),
+                    str(row.get("asset_id") or ""),
+                )
+            )
+            bytes_used = sum(int(row.get("size_bytes") or 0) for row in managed_rows)
+            orphaned_bytes = sum(
+                int(row.get("size_bytes") or 0)
+                for row in managed_rows
+                if row.get("orphaned")
+            )
+            return {
+                "schema_version": "1.0",
+                "summary": {
+                    "total": len(rows),
+                    "managed": len(managed_rows),
+                    "source": len(external_rows),
+                    "orphaned": sum(1 for row in managed_rows if row.get("orphaned")),
+                    "published": sum(1 for row in managed_rows if row.get("published")),
+                    "managed_bytes": bytes_used,
+                    "orphaned_bytes": orphaned_bytes,
+                },
+                "assets": rows,
+                "generated_at": _now(),
+            }
+
+    def delete_asset(self, identifier: Any) -> dict[str, Any]:
+        identifier = str(identifier or "").strip()
+        inventory = self.asset_library()
+        record = next(
+            (item for item in inventory["assets"] if item.get("asset_id") == identifier),
+            None,
+        )
+        if not record or not record.get("managed"):
+            raise PipelineError("只能删除由本系统托管的 OSS 图片资产", status=404)
+        if record.get("published"):
+            raise PipelineError("该图片曾进入成功上架记录，为防止在售商品丢图，禁止删除", status=409)
+        if int(record.get("reference_count") or 0) > 0:
+            raise PipelineError("该图片仍被商品任务引用，禁止删除", status=409)
+        client = self.object_storage.client()
+        if client is None:
+            raise PipelineError("请先配置阿里云 OSS 图片存储", status=409)
+        if record.get("storage_bucket") and record.get("storage_bucket") != client.bucket:
+            raise PipelineError("该图片属于历史 OSS Bucket，当前凭证不匹配，已禁止删除", status=409)
+        if record.get("storage_endpoint") and record.get("storage_endpoint") != client.endpoint:
+            raise PipelineError("该图片属于历史 OSS Endpoint，当前凭证不匹配，已禁止删除", status=409)
+        try:
+            client.delete(str(record.get("object_key") or ""))
+            self.assets.delete(identifier)
+        except (ObjectStorageError, AssetRegistryError) as exc:
+            raise PipelineError(str(exc), status=422) from exc
+        return self.asset_library()
+
+    def _protect_published_assets(self, pipeline_id: str) -> None:
+        """Persist a sticky protection bit as soon as Ozon verifies publication."""
+
+        if not self.path(pipeline_id, 3).exists():
+            return
+        final = self.read_artifact(pipeline_id, 3)
+        for item in final.get("localized_images") or []:
+            if not isinstance(item, Mapping):
+                continue
+            object_key = str(item.get("storage_object_key") or "").strip()
+            if not object_key:
+                continue
+            self.assets.upsert(
+                {
+                    "object_key": object_key,
+                    "public_url": item.get("final_public_url"),
+                    "source_url": item.get("source_url"),
+                    "sha256": item.get("storage_sha256"),
+                    "size_bytes": item.get("storage_size_bytes"),
+                    "asset_type": (
+                        "ai_generated"
+                        if str(item.get("plan_action") or "")
+                        in {"reference_8", "sku_main", "ai_generate"}
+                        else "translated"
+                    ),
+                    "published": True,
+                    "storage_bucket": item.get("storage_bucket"),
+                    "storage_endpoint": item.get("storage_endpoint"),
+                }
+            )
 
     def record_activity(
         self,
@@ -2024,6 +2275,8 @@ class PipelineService:
                     "storage_object_key": item.get("storage_object_key"),
                     "storage_sha256": item.get("storage_sha256"),
                     "storage_size_bytes": item.get("storage_size_bytes"),
+                    "storage_bucket": item.get("storage_bucket"),
+                    "storage_endpoint": item.get("storage_endpoint"),
                 }
                 for item in inspection
             ]
@@ -2675,6 +2928,13 @@ class PipelineService:
                     failures.append("执行模式缺少 attribute_verification 回查结果")
             passed = not failures
             self._record(pipeline_id, 5, passed, failures)
+            if passed:
+                # Ozon is already committed at this point. Asset index failures must
+                # never turn a successful external submission into a retryable upload.
+                try:
+                    self._protect_published_assets(pipeline_id)
+                except (AssetRegistryError, PipelineError, OSError):
+                    pass
             return {"stage": 5, "status": "PASS" if passed else "FAIL", "failures": failures, "executed": execute, "result": result, "artifact": STAGE_FILES[5]}
 
     def audit(self, pipeline_id: Any) -> dict[str, Any]:

@@ -16,6 +16,7 @@
     <nav class="main-nav" aria-label="主导航">
       <button id="productNav" class="nav-item active" type="button"><span>商品</span>商品工作台</button>
       <button id="taskNav" class="nav-item" type="button"><span>任务</span>任务中心</button>
+      <button id="assetNav" class="nav-item" type="button"><span>图片</span>图片资产</button>
       <button id="operationsNav" class="nav-item" type="button"><span>订单</span>订单与库存</button>
       <button id="pricingNav" class="nav-item" type="button"><span>定价</span>定价工具</button>
     </nav>
@@ -108,6 +109,21 @@
       </div>
     </section>
   </main>
+
+  <section id="assetView" class="asset-view hidden">
+    <div class="asset-head">
+      <div><span class="eyebrow">IMAGE ASSET LIBRARY</span><h1>图片资产库</h1><p>统一查看 1688 原图、翻译图、AI 图、OSS 托管状态和商品引用关系。</p></div>
+      <button id="refreshAssetsBtn" class="primary" type="button">刷新资产库</button>
+    </div>
+    <section id="assetMetrics" class="asset-metrics"></section>
+    <div class="asset-toolbar">
+      <input id="assetSearch" type="search" placeholder="搜索商品 ID、SKU 或图片地址">
+      <select id="assetTypeFilter"><option value="all">全部类型</option><option value="source">1688 原图</option><option value="translated">翻译图</option><option value="ai_generated">AI 生成图</option></select>
+      <select id="assetStatusFilter"><option value="all">全部状态</option><option value="managed">OSS 托管</option><option value="orphaned">可清理</option><option value="published">已上架保护</option><option value="external">外部图片</option></select>
+    </div>
+    <div id="assetEmpty" class="operations-empty hidden">暂无图片资产。完成第一或第三阶段后会自动出现。</div>
+    <div id="assetGrid" class="asset-grid"></div>
+  </section>
 
   <section id="operationsView" class="operations-view hidden">
     <div class="operations-head">
@@ -204,7 +220,7 @@
         <div class="field-grid"><div class="field"><label for="ossBucket">Bucket</label><input id="ossBucket" placeholder="northstar-images" required></div><div class="field"><label for="ossPrefix">对象目录</label><input id="ossPrefix" value="northstar" placeholder="northstar"></div></div>
         <div class="field"><label for="ossPublicBaseUrl">公开访问或 CDN 地址</label><input id="ossPublicBaseUrl" type="url" placeholder="https://northstar-images.oss-cn-hongkong.aliyuncs.com" required><small>必须使用浏览器和 Ozon 均可直接访问、无需签名且证书可信的 HTTPS 地址。</small></div>
         <div class="field-grid"><div class="field"><label for="ossAccessKeyId">AccessKey ID</label><input id="ossAccessKeyId" autocomplete="off" required></div><div class="field"><label for="ossAccessKeySecret">AccessKey Secret</label><input id="ossAccessKeySecret" type="password" autocomplete="new-password" placeholder="已配置时留空可保持不变"></div></div>
-        <div class="warning">建议创建仅允许当前 Bucket PutObject 的 RAM 子账号，不要使用阿里云主账号 AccessKey。Bucket 需允许对象设置为 public-read，或配置能公开回源的 CDN。</div>
+        <div class="warning">建议创建仅允许当前 Bucket PutObject 的 RAM 子账号；如需从资产库清理孤儿图片，再增加 DeleteObject 权限。不要使用阿里云主账号 AccessKey。Bucket 需允许对象设置为 public-read，或配置能公开回源的 CDN。</div>
         <div class="dialog-actions"><button id="deleteObjectStorageBtn" class="secondary" type="button">删除配置</button><button class="primary" type="submit">验证并保存</button></div>
       </form>
     </div>
