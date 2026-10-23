@@ -72,6 +72,8 @@ STAGE_FILES = {
     5: "05_upload_log.json",
 }
 IMAGE_SELECTION_FILE = "image-selection.json"
+PRODUCT_SETTINGS_FILE = "product-settings.json"
+PRODUCT_VERSIONS_FILE = "product-versions.json"
 IMAGE_ACTIONS = {"exclude", "translate", "reference_8", "sku_main"}
 _PIPELINE_ID = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 _BATCH_JOB_ID = re.compile(r"^[a-f0-9]{32}$")
@@ -1348,6 +1350,279 @@ class PipelineService:
     def _image_selection_path(self, pipeline_id: Any) -> Path:
         return self.directory(pipeline_id) / IMAGE_SELECTION_FILE
 
+    def _product_settings_path(self, pipeline_id: Any) -> Path:
+        return self.directory(pipeline_id) / PRODUCT_SETTINGS_FILE
+
+    def _product_versions_path(self, pipeline_id: Any) -> Path:
+        return self.directory(pipeline_id) / PRODUCT_VERSIONS_FILE
+
+    @staticmethod
+    def _public_product_settings(value: Mapping[str, Any]) -> dict[str, Any]:
+        dimensions = value.get("dimension_defaults") or {}
+        if not isinstance(dimensions, Mapping):
+            dimensions = {}
+        return {
+            "store_id": str(value.get("store_id") or ""),
+            "cny_to_rub_rate": str(value.get("cny_to_rub_rate") or ""),
+            "vat": str(value.get("vat") or "0"),
+            "dimension_defaults": {
+                "depth": dimensions.get("depth"),
+                "width": dimensions.get("width"),
+                "height": dimensions.get("height"),
+                "weight": dimensions.get("weight"),
+                "dimension_unit": str(dimensions.get("dimension_unit") or "mm"),
+                "weight_unit": str(dimensions.get("weight_unit") or "g"),
+            },
+        }
+
+    def product_settings(self, pipeline_id: Any) -> dict[str, Any]:
+        pipeline_id = _safe_pipeline_id(pipeline_id)
+        if not self._state_path(pipeline_id).exists():
+            raise PipelineError("商品工作区不存在", status=404)
+        path = self._product_settings_path(pipeline_id)
+        if path.exists():
+            return self._public_product_settings(_read_object(path))
+        context_path = self.directory(pipeline_id) / "04_context.json"
+        if context_path.exists():
+            context = _read_object(context_path)
+            store_config = context.get("store_config") or {}
+            if isinstance(store_config, Mapping):
+                return self._public_product_settings(store_config)
+        state = _read_object(self._state_path(pipeline_id))
+        return self._public_product_settings(
+            {
+                "store_id": state.get("store_id"),
+                "cny_to_rub_rate": "",
+                "vat": "0",
+                "dimension_defaults": {},
+            }
+        )
+
+    def _validate_product_settings_patch(
+        self, value: Any
+    ) -> dict[str, Any]:
+        if not isinstance(value, Mapping) or not value:
+            raise PipelineError("请至少选择一个需要批量修改的字段")
+        allowed = {"store_id", "cny_to_rub_rate", "vat", "dimension_defaults"}
+        unknown = sorted(set(map(str, value)) - allowed)
+        if unknown:
+            raise PipelineError(f"批量编辑包含不允许的字段：{', '.join(unknown)}")
+        patch: dict[str, Any] = {}
+        if "store_id" in value:
+            store_id = str(value.get("store_id") or "").strip()
+            if not store_id:
+                raise PipelineError("目标店铺不能为空")
+            self._selected_store("", store_id)
+            patch["store_id"] = store_id
+        if "cny_to_rub_rate" in value:
+            try:
+                rate = Decimal(str(value.get("cny_to_rub_rate") or "").strip())
+            except (InvalidOperation, ValueError) as exc:
+                raise PipelineError("汇率必须是有效数字") from exc
+            if not rate.is_finite() or rate <= 0:
+                raise PipelineError("汇率必须大于 0")
+            patch["cny_to_rub_rate"] = str(rate)
+        if "vat" in value:
+            vat = str(value.get("vat") or "0").strip()
+            if vat not in {"0", "0.05", "0.07", "0.1", "0.12", "0.2"}:
+                raise PipelineError("VAT 仅支持 Ozon 合法编码 0、0.05、0.07、0.1、0.12 或 0.2")
+            patch["vat"] = vat
+        if "dimension_defaults" in value:
+            dimensions = value.get("dimension_defaults")
+            if not isinstance(dimensions, Mapping):
+                raise PipelineError("默认尺寸重量必须是对象")
+            normalized: dict[str, Any] = {}
+            for key in ("depth", "width", "height", "weight"):
+                raw = dimensions.get(key)
+                try:
+                    number = Decimal(str(raw))
+                except (InvalidOperation, ValueError) as exc:
+                    raise PipelineError("默认尺寸和重量必须是有效数字") from exc
+                if not number.is_finite() or number <= 0 or number != number.to_integral_value():
+                    raise PipelineError("默认尺寸和重量必须是正整数")
+                normalized[key] = int(number)
+            dimension_unit = str(dimensions.get("dimension_unit") or "mm").lower()
+            weight_unit = str(dimensions.get("weight_unit") or "g").lower()
+            if dimension_unit not in {"mm", "cm"} or weight_unit not in {"g", "kg"}:
+                raise PipelineError("尺寸单位仅支持 mm/cm，重量单位仅支持 g/kg")
+            normalized["dimension_unit"] = dimension_unit
+            normalized["weight_unit"] = weight_unit
+            patch["dimension_defaults"] = normalized
+        return patch
+
+    def _product_versions_document(self, pipeline_id: str) -> dict[str, Any]:
+        path = self._product_versions_path(pipeline_id)
+        if not path.exists():
+            return {"schema_version": "1.0", "versions": []}
+        document = _read_object(path)
+        if not isinstance(document.get("versions"), list):
+            raise PipelineError("商品版本历史格式无效", status=500)
+        return document
+
+    def _append_product_version(
+        self,
+        pipeline_id: str,
+        settings: Mapping[str, Any],
+        *,
+        actor: str,
+        note: str,
+        source: str,
+    ) -> dict[str, Any]:
+        document = self._product_versions_document(pipeline_id)
+        version = {
+            "version_id": uuid4().hex[:24],
+            "created_at": _now(),
+            "actor": str(actor or "system")[:64],
+            "note": str(note or "")[:200],
+            "source": source,
+            "settings": self._public_product_settings(settings),
+        }
+        document["versions"] = [*document["versions"], version][-100:]
+        _atomic_json(self._product_versions_path(pipeline_id), document)
+        return version
+
+    def _apply_product_settings(
+        self,
+        pipeline_id: str,
+        settings: Mapping[str, Any],
+        *,
+        actor: str,
+        note: str,
+        source: str,
+    ) -> dict[str, Any]:
+        normalized = self._public_product_settings(settings)
+        current = self.product_settings(pipeline_id)
+        if normalized == current:
+            return {"changed": False, "settings": current, "version": None}
+        history = self._product_versions_document(pipeline_id)
+        if not history["versions"]:
+            self._append_product_version(
+                pipeline_id,
+                current,
+                actor=actor,
+                note="批量编辑前的初始版本",
+                source="BASELINE",
+            )
+        _atomic_json(
+            self._product_settings_path(pipeline_id),
+            {
+                "schema_version": "1.0",
+                **normalized,
+                "updated_at": _now(),
+                "updated_by": str(actor or "system")[:64],
+            },
+        )
+        version = self._append_product_version(
+            pipeline_id,
+            normalized,
+            actor=actor,
+            note=note,
+            source=source,
+        )
+        state_path = self._state_path(pipeline_id)
+        state = _read_object(state_path)
+        if normalized.get("store_id"):
+            state["store_id"] = normalized["store_id"]
+        for stage_number in (4, 5):
+            stage = (state.get("stages") or {}).get(str(stage_number))
+            if isinstance(stage, dict):
+                stage["status"] = "STALE"
+                stage["stale_after_product_edit"] = True
+                stage["checked_at"] = _now()
+        state["updated_at"] = _now()
+        _atomic_json(state_path, state)
+        return {"changed": True, "settings": normalized, "version": version}
+
+    def batch_edit_products(
+        self, value: Mapping[str, Any], actor: str = ""
+    ) -> dict[str, Any]:
+        requested = value.get("pipeline_ids") or []
+        if not isinstance(requested, list):
+            raise PipelineError("pipeline_ids 必须是数组")
+        pipeline_ids = list(dict.fromkeys(_safe_pipeline_id(item) for item in requested))
+        if not pipeline_ids or len(pipeline_ids) > _MAX_BATCH_PROCESS_ITEMS:
+            raise PipelineError("批量编辑每次必须选择 1–50 个商品")
+        patch = self._validate_product_settings_patch(value.get("patch"))
+        note = str(value.get("note") or "批量编辑商品上架参数").strip()[:200]
+        results: list[dict[str, Any]] = []
+        with self._lock:
+            for pipeline_id in pipeline_ids:
+                if not self._state_path(pipeline_id).exists():
+                    results.append(
+                        {"pipeline_id": pipeline_id, "status": "FAIL", "error": "商品工作区不存在"}
+                    )
+                    continue
+                try:
+                    current = self.product_settings(pipeline_id)
+                    merged = {**current, **patch}
+                    outcome = self._apply_product_settings(
+                        pipeline_id,
+                        merged,
+                        actor=actor,
+                        note=note,
+                        source="BATCH_EDIT",
+                    )
+                    results.append(
+                        {
+                            "pipeline_id": pipeline_id,
+                            "status": "UPDATED" if outcome["changed"] else "UNCHANGED",
+                            "version_id": (outcome.get("version") or {}).get("version_id"),
+                        }
+                    )
+                except PipelineError as exc:
+                    results.append(
+                        {"pipeline_id": pipeline_id, "status": "FAIL", "error": str(exc)}
+                    )
+        return {
+            "schema_version": "1.0",
+            "total": len(results),
+            "updated": sum(1 for item in results if item["status"] == "UPDATED"),
+            "unchanged": sum(1 for item in results if item["status"] == "UNCHANGED"),
+            "failed": sum(1 for item in results if item["status"] == "FAIL"),
+            "results": results,
+        }
+
+    def product_versions(self, pipeline_id: Any) -> dict[str, Any]:
+        pipeline_id = _safe_pipeline_id(pipeline_id)
+        if not self._state_path(pipeline_id).exists():
+            raise PipelineError("商品工作区不存在", status=404)
+        document = self._product_versions_document(pipeline_id)
+        return {
+            "schema_version": "1.0",
+            "pipeline_id": pipeline_id,
+            "current": self.product_settings(pipeline_id),
+            "versions": list(reversed(document["versions"])),
+        }
+
+    def restore_product_version(
+        self, pipeline_id: Any, version_id: Any, actor: str = ""
+    ) -> dict[str, Any]:
+        pipeline_id = _safe_pipeline_id(pipeline_id)
+        version_id = str(version_id or "").strip()
+        with self._lock:
+            versions = self._product_versions_document(pipeline_id)["versions"]
+            selected = next(
+                (item for item in versions if item.get("version_id") == version_id),
+                None,
+            )
+            if not isinstance(selected, Mapping):
+                raise PipelineError("商品版本不存在", status=404)
+            settings = selected.get("settings")
+            if not isinstance(settings, Mapping):
+                raise PipelineError("商品版本内容无效", status=409)
+            outcome = self._apply_product_settings(
+                pipeline_id,
+                settings,
+                actor=actor,
+                note=f"回滚至版本 {version_id}",
+                source="ROLLBACK",
+            )
+        return {
+            "pipeline_id": pipeline_id,
+            "restored_version_id": version_id,
+            **outcome,
+        }
+
     def _selected_image_items(
         self, pipeline_id: str, source: Mapping[str, Any]
     ) -> list[Mapping[str, Any]]:
@@ -1762,6 +2037,9 @@ class PipelineService:
                 "currency_code": next(iter(currencies)) if len(currencies) == 1 else None,
                 "updated_at": pipeline.get("updated_at"),
                 "created_at": pipeline.get("created_at"),
+                "product_version_count": len(
+                    self._product_versions_document(pipeline_id)["versions"]
+                ),
             }
             products.append(row)
             summary[status] += 1
@@ -1840,6 +2118,10 @@ class PipelineService:
             for stage in STAGE_FILES
             if self.path(pipeline_id, stage).exists()
         }
+        state["product_settings"] = self.product_settings(pipeline_id)
+        state["product_version_count"] = len(
+            self._product_versions_document(pipeline_id)["versions"]
+        )
         return state
 
     def read_artifact(self, pipeline_id: Any, stage: int) -> dict[str, Any]:

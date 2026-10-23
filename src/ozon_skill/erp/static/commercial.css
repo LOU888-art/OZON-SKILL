@@ -1,0 +1,98 @@
+.batch-edit-field {
+  align-items: center;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  display: grid;
+  font-size: 10px;
+  font-weight: 760;
+  gap: 10px;
+  grid-template-columns: auto minmax(150px, .7fr) minmax(220px, 1fr);
+  margin: 10px 0;
+  padding: 11px;
+}
+
+.batch-edit-field > input[type="checkbox"] {
+  accent-color: var(--green);
+  height: 16px;
+  width: 16px;
+}
+
+.batch-edit-field > input:not([type="checkbox"]),
+.batch-edit-field > select {
+  background: #fff;
+  border: 1px solid var(--line-dark);
+  border-radius: 8px;
+  font-size: 10px;
+  padding: 9px;
+  width: 100%;
+}
+
+.catalog-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.version-list {
+  display: grid;
+  gap: 9px;
+}
+
+.version-item {
+  align-items: flex-start;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  display: flex;
+  gap: 15px;
+  justify-content: space-between;
+  padding: 13px;
+}
+
+.version-item b,
+.version-item small {
+  display: block;
+}
+
+.version-item b {
+  font-size: 10px;
+}
+
+.version-item small {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.55;
+  margin-top: 5px;
+}
+
+.version-item button {
+  background: #fff;
+  border: 1px solid var(--line-dark);
+  border-radius: 8px;
+  cursor: pointer;
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 750;
+  padding: 7px 9px;
+}
+
+.version-item button:disabled {
+  cursor: default;
+  opacity: .38;
+}
+
+@media (max-width: 760px) {
+  .batch-edit-field {
+    grid-template-columns: auto 1fr;
+  }
+
+  .batch-edit-field > input:not([type="checkbox"]),
+  .batch-edit-field > select {
+    grid-column: 1 / -1;
+  }
+
+  .version-item {
+    flex-direction: column;
+  }
+}

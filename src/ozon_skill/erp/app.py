@@ -38,6 +38,11 @@ _BATCH_IMPORT_ROUTE = re.compile(r"^/api/batch-imports/([a-f0-9]{32})$")
 _BATCH_PROCESSES_ROUTE = "/api/batch-processes"
 _BATCH_PROCESS_ROUTE = re.compile(r"^/api/batch-processes/([a-f0-9]{32})$")
 _PRODUCTS_ROUTE = "/api/products"
+_PRODUCT_BATCH_EDIT_ROUTE = "/api/products/batch-edit"
+_PRODUCT_VERSIONS_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/versions$")
+_PRODUCT_VERSION_RESTORE_ROUTE = re.compile(
+    r"^/api/pipelines/([^/]+)/versions/([a-f0-9]{24})/restore$"
+)
 _ASSETS_ROUTE = "/api/assets"
 _ASSET_ROUTE = re.compile(r"^/api/assets/([a-f0-9]{24})$")
 _IMAGES_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/images$")
@@ -134,7 +139,7 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
 
     def _serve_static(self, relative: str) -> None:
         filename = relative or "index.html"
-        if filename not in {"index.html", "app.js", "styles.css", "progress.css"}:
+        if filename not in {"index.html", "app.js", "styles.css", "progress.css", "commercial.css"}:
             self._error("Not found", 404)
             return
         path = _STATIC_ROOT / filename
@@ -221,6 +226,10 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._json(self.service.batch_process_status(match.group(1)))
             elif path == _PRODUCTS_ROUTE:
                 self._json(self.service.product_catalog())
+            elif match := _PRODUCT_VERSIONS_ROUTE.fullmatch(path):
+                self._json(
+                    self.service.product_versions(unquote(match.group(1)))
+                )
             elif path == _ASSETS_ROUTE:
                 self._json(self.service.asset_library())
             elif path == "/api/stores":
@@ -288,6 +297,22 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                     self._require("images.manage")
                 self._json(
                     self.service.start_batch_process(body, self._username()), 202
+                )
+                return
+            if path == _PRODUCT_BATCH_EDIT_ROUTE:
+                self._require("stage.run")
+                self._json(
+                    self.service.batch_edit_products(body, self._username())
+                )
+                return
+            if version_match := _PRODUCT_VERSION_RESTORE_ROUTE.fullmatch(path):
+                self._require("stage.run")
+                self._json(
+                    self.service.restore_product_version(
+                        unquote(version_match.group(1)),
+                        version_match.group(2),
+                        self._username(),
+                    )
                 )
                 return
             if path == _TEAM_ROUTE:
