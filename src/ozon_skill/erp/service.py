@@ -62,6 +62,7 @@ from .object_storage import ObjectStorageError, ObjectStorageRegistry
 from .operations import OzonOperationsClient, OzonOperationsError
 from .pricing import PricingError, calculate_pricing, calculate_target_pricing
 from .stores import StoreAuthorizationError, StoreRegistry
+from .supplier_monitor import SupplierMonitorError, SupplierMonitorRegistry
 from .team import TeamError, TeamRegistry
 
 
@@ -513,6 +514,8 @@ class PipelineService:
         self._batch_import_root = self.work_root / ".batch-imports"
         self._batch_process_threads: dict[str, threading.Thread] = {}
         self._batch_process_root = self.work_root / ".batch-processes"
+        self._supplier_monitor_threads: dict[str, threading.Thread] = {}
+        self._supplier_monitor_job_root = self.work_root / ".supplier-monitor-jobs"
         self.stores = StoreRegistry(self.work_root / ".ozon-stores.json")
         self.ai_provider = AiProviderRegistry(self.work_root / ".ai-provider.json")
         self.team = TeamRegistry(self.work_root / ".team.json")
@@ -521,6 +524,9 @@ class PipelineService:
         self.notifications = NotificationRegistry(self.work_root / ".notifications.json")
         self.alert_channels = AlertChannelRegistry(
             self.work_root / ".alert-channels.json"
+        )
+        self.supplier_monitor = SupplierMonitorRegistry(
+            self.work_root / ".supplier-monitor.json"
         )
         self.object_storage = ObjectStorageRegistry(self.work_root / ".object-storage.json")
         self.assets = AssetRegistry(self.work_root / ".image-assets.json")
@@ -581,6 +587,23 @@ class PipelineService:
                         item["status"] = "INTERRUPTED"
                         item["error"] = "服务器重启中断，未自动重试"
                 _atomic_json(job_path, job)
+        if self._supplier_monitor_job_root.exists():
+            for job_path in self._supplier_monitor_job_root.glob("*.json"):
+                try:
+                    job = _read_object(job_path)
+                except PipelineError:
+                    continue
+                if job.get("status") not in {"QUEUED", "RUNNING"}:
+                    continue
+                job["status"] = "INTERRUPTED"
+                job["finished_at"] = _now()
+                job["updated_at"] = _now()
+                job["message"] = "服务器重启中断了供应商检测；为避免重复接口扣费，系统未自动续跑"
+                for item in job.get("items") or []:
+                    if isinstance(item, dict) and item.get("status") in {"QUEUED", "RUNNING"}:
+                        item["status"] = "INTERRUPTED"
+                        item["error"] = "服务器重启中断，未自动重试"
+                _atomic_json(job_path, job)
 
     def ai_provider_status(self) -> dict[str, Any]:
         return self.ai_provider.public_status()
@@ -610,6 +633,161 @@ class PipelineService:
             )
         except AlertChannelError as exc:
             raise PipelineError(str(exc), status=422) from exc
+
+    def supplier_monitor_status(self) -> dict[str, Any]:
+        try:
+            return self.supplier_monitor.status()
+        except SupplierMonitorError as exc:
+            raise PipelineError(str(exc), status=500) from exc
+
+    def _dispatch_supplier_alert(self, pipeline_id: str, changes: list[dict[str, Any]], checked_at: str) -> None:
+        if not changes:
+            return
+        try:
+            if not self.alert_channels.public_status().get("enabled"):
+                return
+        except AlertChannelError:
+            return
+        summary = "；".join(str(item.get("message") or item.get("type"))[:300] for item in changes[:10])
+        event_id = hashlib.sha256(f"supplier\0{pipeline_id}\0{checked_at}\0{summary}".encode("utf-8")).hexdigest()[:32]
+
+        def deliver() -> None:
+            try:
+                self.alert_channels.send(
+                    f"Northstar 供应商变更 · 商品 {pipeline_id}",
+                    f"1688 商品 ID：{pipeline_id}\n变更：{summary}\n系统未自动修改采购价、库存或 Ozon 商品，请登录 ERP 人工确认。",
+                    event_id=event_id,
+                )
+            except AlertChannelError:
+                pass
+
+        threading.Thread(target=deliver, name=f"supplier-alert-{pipeline_id}", daemon=True).start()
+
+    def _supplier_monitor_job_path(self, job_id: Any) -> Path:
+        value = str(job_id or "").strip().lower()
+        if not _BATCH_JOB_ID.fullmatch(value):
+            raise PipelineError("供应商检测任务 ID 格式无效")
+        return self._supplier_monitor_job_root / f"{value}.json"
+
+    def supplier_monitor_job_status(self, job_id: Any) -> dict[str, Any]:
+        path = self._supplier_monitor_job_path(job_id)
+        if not path.exists():
+            raise PipelineError("供应商检测任务不存在", status=404)
+        return _read_object(path)
+
+    def start_supplier_monitor(self, value: Mapping[str, Any], actor: Any = "") -> dict[str, Any]:
+        raw_ids = value.get("pipeline_ids")
+        if not isinstance(raw_ids, list):
+            raise PipelineError("pipeline_ids 必须是商品 ID 数组")
+        pipeline_ids: list[str] = []
+        for raw_id in raw_ids:
+            pipeline_id = _safe_pipeline_id(raw_id)
+            if pipeline_id not in pipeline_ids:
+                pipeline_ids.append(pipeline_id)
+        if not pipeline_ids:
+            raise PipelineError("请至少选择一个商品")
+        if len(pipeline_ids) > 20:
+            raise PipelineError("供应商监控单次最多检测 20 个商品")
+        if value.get("confirm_external_requests") is not True:
+            raise PipelineError("请确认允许逐条调用 AlphaShop 商品详情 API")
+        try:
+            AlphaShopClient.from_environment()
+        except AlphaShopApiError as exc:
+            raise PipelineError(str(exc), status=409) from exc
+        timestamp = _now()
+        job = {
+            "schema_version": "1.0",
+            "job_id": uuid4().hex,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "created_by": str(actor or "system")[:64],
+            "status": "QUEUED",
+            "total": len(pipeline_ids),
+            "completed_count": 0,
+            "changed_count": 0,
+            "failed_count": 0,
+            "message": "供应商检测已进入后台队列",
+            "items": [{"pipeline_id": item, "status": "QUEUED", "changes": [], "error": ""} for item in pipeline_ids],
+        }
+        path = self._supplier_monitor_job_path(job["job_id"])
+        _atomic_json(path, job)
+        thread = threading.Thread(target=self._run_supplier_monitor, args=(job["job_id"],), name=f"supplier-monitor-{job['job_id']}", daemon=True)
+        self._supplier_monitor_threads[job["job_id"]] = thread
+        thread.start()
+        return job
+
+    # Kept as a compatibility entry point for callers using the initial name.
+    def refresh_supplier_monitor(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        return self.start_supplier_monitor(value)
+
+    def _check_supplier_product(self, client: AlphaShopClient, pipeline_id: str) -> dict[str, Any]:
+        source_path = self.path(pipeline_id, 1)
+        if not source_path.exists():
+            return {"pipeline_id": pipeline_id, "status": "CHECK_FAILED", "error": "商品尚未完成第一阶段采集", "changes": []}
+        try:
+            current_status = self.supplier_monitor.status()
+            known = {str(item.get("pipeline_id")) for item in current_status.get("products") or []}
+            if pipeline_id not in known:
+                self.supplier_monitor.record(pipeline_id, _read_object(source_path))
+            exchange = client.offer_detail_exchange(pipeline_id)
+            latest = normalize_alphashop_offer(exchange.payload, pipeline_id)
+            row = self.supplier_monitor.record(pipeline_id, latest)
+            changes = list(row.get("changes") or [])
+            self._dispatch_supplier_alert(pipeline_id, changes, str(row.get("checked_at") or _now()))
+            return {"pipeline_id": pipeline_id, "status": row.get("check_status"), "checked_at": row.get("checked_at"), "changes": changes, "error": ""}
+        except Exception as exc:
+            try:
+                row = self.supplier_monitor.record_error(pipeline_id, str(exc))
+            except SupplierMonitorError:
+                row = {"checked_at": _now()}
+            return {"pipeline_id": pipeline_id, "status": "CHECK_FAILED", "checked_at": row.get("checked_at"), "changes": [], "error": str(exc)[:500]}
+
+    def _run_supplier_monitor(self, job_id: str) -> None:
+        path = self._supplier_monitor_job_path(job_id)
+        try:
+            client = AlphaShopClient.from_environment()
+            with self._lock:
+                job = _read_object(path)
+                job["status"] = "RUNNING"
+                job["updated_at"] = _now()
+                job["message"] = "正在逐条读取 1688 最新详情"
+                _atomic_json(path, job)
+            for index in range(len(job.get("items") or [])):
+                with self._lock:
+                    job = _read_object(path)
+                    pipeline_id = str(job["items"][index]["pipeline_id"])
+                    job["items"][index]["status"] = "RUNNING"
+                    job["updated_at"] = _now()
+                    _atomic_json(path, job)
+                result = self._check_supplier_product(client, pipeline_id)
+                with self._lock:
+                    job = _read_object(path)
+                    job["items"][index] = result
+                    completed = [item for item in job["items"] if item.get("status") not in {"QUEUED", "RUNNING"}]
+                    job["completed_count"] = len(completed)
+                    job["changed_count"] = sum(item.get("status") == "CHANGED" for item in completed)
+                    job["failed_count"] = sum(item.get("status") == "CHECK_FAILED" for item in completed)
+                    job["updated_at"] = _now()
+                    _atomic_json(path, job)
+            with self._lock:
+                job = _read_object(path)
+                failed = int(job.get("failed_count") or 0)
+                changed = int(job.get("changed_count") or 0)
+                job["status"] = "COMPLETED" if failed == 0 else "PARTIAL"
+                job["finished_at"] = _now()
+                job["updated_at"] = _now()
+                job["message"] = f"供应商检测完成：变化 {changed}，失败 {failed}"
+                _atomic_json(path, job)
+        except Exception as exc:
+            with self._lock:
+                job = _read_object(path)
+                job["status"] = "FAILED"
+                job["finished_at"] = _now()
+                job["updated_at"] = _now()
+                job["message"] = f"供应商检测失败：{str(exc)[:500]}"
+                _atomic_json(path, job)
+        finally:
+            self._supplier_monitor_threads.pop(job_id, None)
 
     def _dispatch_failure_alert(
         self, pipeline_id: str, stage: int, failures: list[str]

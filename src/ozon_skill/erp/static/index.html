@@ -115,7 +115,7 @@
   <section id="catalogView" class="catalog-view hidden">
     <div class="catalog-head">
       <div><span class="eyebrow">PRODUCT CENTER</span><h1>商品中心</h1><p>统一管理草稿、门禁失败、待上架、已上架和需要更新的商品。</p></div>
-      <div class="catalog-actions"><button id="batchProcessHistoryBtn" class="secondary" type="button">批量记录</button><button id="batchEditBtn" class="secondary" type="button" disabled>批量编辑（0）</button><button id="batchProcessBtn" class="secondary" type="button" disabled>批量处理（0）</button><button id="refreshCatalogBtn" class="primary" type="button">刷新商品</button></div>
+      <div class="catalog-actions"><button id="supplierMonitorBtn" class="secondary" type="button" disabled>供应商检测（0）</button><button id="batchProcessHistoryBtn" class="secondary" type="button">批量记录</button><button id="batchEditBtn" class="secondary" type="button" disabled>批量编辑（0）</button><button id="batchProcessBtn" class="secondary" type="button" disabled>批量处理（0）</button><button id="refreshCatalogBtn" class="primary" type="button">刷新商品</button></div>
     </div>
     <section id="catalogMetrics" class="catalog-metrics"></section>
     <div class="catalog-toolbar">
@@ -269,6 +269,17 @@
         <div id="batchImportResults" class="batch-import-results"></div>
         <div class="dialog-actions"><button id="resetBatchImportBtn" class="secondary" type="button">新建一批</button><button id="submitBatchImportBtn" class="primary" type="submit">确认并开始采集</button></div>
       </form>
+    </div>
+  </dialog>
+
+  <dialog id="supplierMonitorDialog">
+    <div class="dialog-card stores-dialog">
+      <div class="dialog-head"><div><span class="eyebrow">SUPPLIER WATCH</span><h3>1688 供应商变更监控</h3></div><button id="closeSupplierMonitorBtn" class="close" type="button">×</button></div>
+      <p class="dialog-note">检测采购价、SKU、库存、断货和商品失效。检测结果使用独立快照，不覆盖第一阶段产物，也不会自动修改 Ozon 商品。</p>
+      <section id="supplierMonitorMetrics" class="catalog-metrics"></section>
+      <div id="supplierMonitorResults" class="version-list"></div>
+      <label class="batch-confirm"><input id="supplierMonitorConfirm" type="checkbox"> 我确认允许对当前选中的商品逐条调用 AlphaShop 详情 API；单次最多 20 个。</label>
+      <div class="dialog-actions"><button id="runSupplierMonitorBtn" class="primary" type="button">检测选中商品</button></div>
     </div>
   </dialog>
 

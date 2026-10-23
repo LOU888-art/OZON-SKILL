@@ -35,6 +35,8 @@ _NOTIFICATIONS_ROUTE = "/api/notifications"
 _NOTIFICATIONS_READ_ROUTE = "/api/notifications/read"
 _ALERT_CHANNELS_ROUTE = "/api/alert-channels"
 _ALERT_CHANNELS_TEST_ROUTE = "/api/alert-channels/test"
+_SUPPLIER_MONITOR_ROUTE = "/api/supplier-monitor"
+_SUPPLIER_MONITOR_JOB_ROUTE = re.compile(r"^/api/supplier-monitor/jobs/([a-f0-9]{32})$")
 _BATCH_IMPORTS_ROUTE = "/api/batch-imports"
 _BATCH_IMPORT_ROUTE = re.compile(r"^/api/batch-imports/([a-f0-9]{32})$")
 _BATCH_PROCESSES_ROUTE = "/api/batch-processes"
@@ -213,6 +215,10 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
             elif path == _ALERT_CHANNELS_ROUTE:
                 self._require("team.manage")
                 self._json({"channels": self.service.alert_channels_status()})
+            elif path == _SUPPLIER_MONITOR_ROUTE:
+                self._json(self.service.supplier_monitor_status())
+            elif match := _SUPPLIER_MONITOR_JOB_ROUTE.fullmatch(path):
+                self._json(self.service.supplier_monitor_job_status(match.group(1)))
             elif path == _BATCH_IMPORTS_ROUTE:
                 self._json(
                     self.service.list_batch_imports(
@@ -299,6 +305,10 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
             if path == _ALERT_CHANNELS_TEST_ROUTE:
                 self._require("team.manage")
                 self._json(self.service.test_alert_channels())
+                return
+            if path == _SUPPLIER_MONITOR_ROUTE:
+                self._require("pipeline.create")
+                self._json(self.service.start_supplier_monitor(body, self._username()), 202)
                 return
             if path == _BATCH_IMPORTS_ROUTE:
                 self._require("pipeline.create")
