@@ -307,9 +307,23 @@ def _api_attributes(
                     if legal_value is not None:
                         entry["value"] = str(legal_value)
                     values.append(entry)
-            if value is not None and not values:
+            # Stage 2 also stores the Ozon-validated ID directly on the
+            # attribute.  Older/generated stage-3 artifacts can legitimately
+            # retain that field while losing the redundant dictionary_matches
+            # projection.  Do not turn a traced legal ID into a false gate.
+            if not values and not sku_scoped:
+                direct_ids = attribute.get("dictionary_value_id")
+                if not isinstance(direct_ids, list):
+                    direct_ids = [direct_ids]
+                for dictionary_id in direct_ids:
+                    if isinstance(dictionary_id, int):
+                        entry = {"dictionary_value_id": dictionary_id}
+                        if value is not None:
+                            entry["value"] = str(value)
+                        values.append(entry)
+            if required and value is not None and not values:
                 errors.append(
-                    f"dictionary attribute {attribute_id} has a value but no dictionary_value_id"
+                    f"字典属性 {attribute_id} 有文本值但缺少 Ozon dictionary_value_id，请选择官方候选值"
                 )
         elif value is not None:
             raw_values = _sku_source_values(attribute, sku)

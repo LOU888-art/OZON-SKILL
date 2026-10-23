@@ -354,7 +354,7 @@ def _missing_required_attributes(value: Mapping[str, Any]) -> list[dict[str, Any
             isinstance(match, Mapping)
             and isinstance(match.get("dictionary_value_id"), int)
             for match in item.get("dictionary_matches") or []
-        )
+        ) or isinstance(item.get("dictionary_value_id"), int)
         has_direct_value = item.get("value") not in (None, "", [])
         is_missing = (
             not has_dictionary_value
@@ -3707,6 +3707,9 @@ class PipelineService:
             if selected_id is None and matches:
                 selected_id = matches[0].get("dictionary_value_id")
                 selected_value = matches[0].get("dictionary_value")
+            if selected_id is None and isinstance(item.get("dictionary_value_id"), int):
+                selected_id = item.get("dictionary_value_id")
+                selected_value = item.get("value")
             if selected_value is None:
                 selected_value = item.get("value")
             attributes.append(
