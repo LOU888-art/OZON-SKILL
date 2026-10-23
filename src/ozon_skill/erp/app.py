@@ -58,6 +58,7 @@ _PRODUCT_VERSION_RESTORE_ROUTE = re.compile(
 )
 _ASSETS_ROUTE = "/api/assets"
 _ASSET_ROUTE = re.compile(r"^/api/assets/([a-f0-9]{24})$")
+_ASSET_PREVIEW_ROUTE = re.compile(r"^/api/assets/([a-f0-9]{24})/preview$")
 _IMAGES_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/images$")
 _REQUIRED_ATTRIBUTES_ROUTE = re.compile(
     r"^/api/pipelines/([^/]+)/required-attributes$"
@@ -173,6 +174,17 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _image(self, body: bytes, content_type: str) -> None:
+        self._finish_activity(200)
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "private, max-age=86400")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", "default-src 'none'")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _error(self, message: str, status: int = 400) -> None:
         self._json({"error": message, "status": status}, status)
 
@@ -197,7 +209,14 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
 
     def _serve_static(self, relative: str) -> None:
         filename = relative or "index.html"
-        if filename not in {"index.html", "app.js", "styles.css", "progress.css", "commercial.css"}:
+        if filename not in {
+            "index.html",
+            "app.js",
+            "styles.css",
+            "progress.css",
+            "commercial.css",
+            "assets.css",
+        }:
             self._error("Not found", 404)
             return
         path = _STATIC_ROOT / filename
@@ -304,6 +323,9 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 )
             elif path == _ASSETS_ROUTE:
                 self._json(self.service.asset_library())
+            elif match := _ASSET_PREVIEW_ROUTE.fullmatch(path):
+                body, content_type = self.service.asset_preview(match.group(1))
+                self._image(body, content_type)
             elif path == "/api/stores":
                 self._json({"stores": self.service.list_stores()})
             elif path == _AI_PROVIDER_ROUTE:

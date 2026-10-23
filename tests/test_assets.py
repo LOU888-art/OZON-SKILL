@@ -155,6 +155,40 @@ class AssetLibraryTests(unittest.TestCase):
                 with self.assertRaisesRegex(PipelineError, "历史 OSS Bucket"):
                     service.delete_asset(orphan["asset_id"])
 
+    def test_preview_downloads_known_asset_and_survives_source_expiry(self) -> None:
+        png = b"\x89PNG\r\n\x1a\npreview"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._pipeline(root)
+            service = PipelineService(root)
+            source = next(
+                item
+                for item in service.asset_library()["assets"]
+                if item["asset_type"] == "source"
+            )
+            with patch(
+                "ozon_skill.erp.service.download_public_image",
+                return_value=(png, "image/png"),
+            ) as download:
+                first = service.asset_preview(source["asset_id"])
+            with patch(
+                "ozon_skill.erp.service.download_public_image",
+                side_effect=AssertionError("cached preview must be used"),
+            ):
+                second = service.asset_preview(source["asset_id"])
+
+        self.assertEqual(first, (png, "image/png"))
+        self.assertEqual(second, first)
+        download.assert_called_once_with("https://images.example.com/source.png")
+
+    def test_preview_rejects_unknown_asset_without_fetching_url(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service = PipelineService(Path(temporary))
+            with patch("ozon_skill.erp.service.download_public_image") as download:
+                with self.assertRaisesRegex(PipelineError, "不存在"):
+                    service.asset_preview("a" * 24)
+            download.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

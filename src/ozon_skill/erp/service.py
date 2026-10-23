@@ -59,7 +59,11 @@ from .assets import AssetRegistry, AssetRegistryError, asset_id, managed_asset_i
 from .finance import FinanceSettingsError, FinanceSettingsRegistry
 from .market_research import MarketResearchError, MarketResearchRegistry
 from .notifications import NotificationRegistry
-from .object_storage import ObjectStorageError, ObjectStorageRegistry
+from .object_storage import (
+    ObjectStorageError,
+    ObjectStorageRegistry,
+    download_public_image,
+)
 from .operations import OzonOperationsClient, OzonOperationsError
 from .pricing import PricingError, calculate_pricing, calculate_target_pricing
 from .stores import StoreAuthorizationError, StoreRegistry
@@ -521,6 +525,7 @@ class PipelineService:
         self._batch_process_root = self.work_root / ".batch-processes"
         self._supplier_monitor_threads: dict[str, threading.Thread] = {}
         self._supplier_monitor_job_root = self.work_root / ".supplier-monitor-jobs"
+        self._asset_preview_root = self.work_root / ".asset-previews"
         self._supplier_schedule_thread: threading.Thread | None = None
         self._supplier_schedule_wake = threading.Event()
         self.stores = StoreRegistry(self.work_root / ".ozon-stores.json")
@@ -1161,6 +1166,69 @@ class PipelineService:
                 "assets": rows,
                 "generated_at": _now(),
             }
+
+    def asset_preview(self, identifier: Any) -> tuple[bytes, str]:
+        """Return a cached, same-origin preview for a known image asset."""
+
+        identifier = str(identifier or "").strip()
+        if not re.fullmatch(r"[a-f0-9]{24}", identifier):
+            raise PipelineError("图片资产编号无效", status=404)
+        inventory = self.asset_library()
+        record = next(
+            (item for item in inventory["assets"] if item.get("asset_id") == identifier),
+            None,
+        )
+        if not record:
+            raise PipelineError("图片资产不存在", status=404)
+        url = str(record.get("public_url") or "").strip()
+        cache_path = self._asset_preview_root / identifier
+        metadata_path = self._asset_preview_root / f"{identifier}.json"
+        with self._lock:
+            if cache_path.is_file() and metadata_path.is_file():
+                try:
+                    metadata = _read_object(metadata_path)
+                    if metadata.get("source_url") == url:
+                        data = cache_path.read_bytes()
+                        content_type = str(metadata.get("content_type") or "")
+                        if data and content_type in {
+                            "image/png",
+                            "image/jpeg",
+                            "image/webp",
+                        }:
+                            return data, content_type
+                except (OSError, PipelineError):
+                    pass
+        try:
+            data, content_type = download_public_image(url)
+        except (ObjectStorageError, ValueError) as exc:
+            raise PipelineError(
+                f"图片外链暂时无法读取：{exc}；建议在“图片存储”配置 OSS 永久托管",
+                status=502,
+            ) from exc
+        with self._lock:
+            self._asset_preview_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            temporary: str | None = None
+            try:
+                fd, temporary = tempfile.mkstemp(
+                    prefix=f".{identifier}.", dir=self._asset_preview_root
+                )
+                with os.fdopen(fd, "wb") as handle:
+                    os.fchmod(handle.fileno(), 0o600)
+                    handle.write(data)
+                os.replace(temporary, cache_path)
+                _atomic_json(
+                    metadata_path,
+                    {
+                        "source_url": url,
+                        "content_type": content_type,
+                        "cached_at": _now(),
+                    },
+                )
+            except OSError as exc:
+                if temporary:
+                    Path(temporary).unlink(missing_ok=True)
+                raise PipelineError("图片预览缓存写入失败", status=500) from exc
+        return data, content_type
 
     def delete_asset(self, identifier: Any) -> dict[str, Any]:
         identifier = str(identifier or "").strip()

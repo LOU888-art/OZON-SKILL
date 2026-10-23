@@ -17,8 +17,8 @@ from email.utils import formatdate
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlparse
-from urllib.request import Request, urlopen
+from urllib.parse import quote, urljoin, urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 from ozon_skill.content_generation.rich_content import validate_public_image_url
 
@@ -84,6 +84,54 @@ def _reject_private_destination(url: str) -> None:
         address = ipaddress.ip_address(value)
         if not address.is_global:
             raise ObjectStorageError("图片 URL 指向非公网地址，已阻止下载")
+
+
+class _CheckedRedirectHandler(HTTPRedirectHandler):
+    """Validate every redirect before urllib is allowed to connect to it."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        target = urljoin(req.full_url, newurl)
+        validate_public_image_url(target)
+        _reject_private_destination(target)
+        return super().redirect_request(req, fp, code, msg, headers, target)
+
+
+def download_public_image(
+    source_url: str,
+    *,
+    timeout_seconds: float = 45.0,
+    max_bytes: int = _MAX_IMAGE_BYTES,
+) -> tuple[bytes, str]:
+    """Download a public image with SSRF-safe redirect validation."""
+
+    validate_public_image_url(source_url)
+    _reject_private_destination(source_url)
+    request = Request(
+        source_url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 Chrome/130.0 Safari/537.36"
+            ),
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        },
+    )
+    try:
+        with build_opener(_CheckedRedirectHandler()).open(
+            request, timeout=timeout_seconds
+        ) as response:
+            content_type = response.headers.get("Content-Type", "")
+            data = response.read(max_bytes + 1)
+    except HTTPError as exc:
+        raise ObjectStorageError(f"下载图片失败：HTTP {exc.code}") from exc
+    except (URLError, TimeoutError, OSError) as exc:
+        raise ObjectStorageError(f"下载图片失败：{exc}") from exc
+    if not data or len(data) > max_bytes:
+        raise ObjectStorageError(
+            f"图片为空或超过 {max_bytes // (1024 * 1024)} MiB"
+        )
+    normalized_type, _ = _image_type(data, content_type)
+    return data, normalized_type
 
 
 class AliyunOssClient:
