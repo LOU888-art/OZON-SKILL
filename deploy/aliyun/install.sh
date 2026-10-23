@@ -191,6 +191,7 @@ else
   echo "登录密码：保持现有密码不变"
 fi
 echo "浏览器会提示自签名证书警告；确认 IP 正确后可继续访问。"
+echo "以后拉取新代码后，请运行 bash deploy/aliyun/update.sh 安装到生产运行目录。"
 if [ "$dry_run" = "false" ]; then
   echo "已保留现有 LIVE MODE（DRY_RUN=false）；网页仍需再次勾选确认才会真实提交。"
 else

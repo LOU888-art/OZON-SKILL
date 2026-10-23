@@ -16,6 +16,16 @@ python3 -m venv --system-site-packages /workspace/.venv
 
 浏览器打开 `http://127.0.0.1:8080`。AlphaShop 密钥必须在进程环境中配置。OZON Seller API 店铺可在网页的“店铺授权”中添加：ERP 会先通过只读类目树接口验证 Client-Id 与 Api-Key，再将凭证保存到权限为 `0600` 的服务端文件；Api-Key 不会通过网页或列表 API 回显。
 
+阿里云生产环境从 `/opt/ozon-erp/venv` 运行已安装的软件包，不能只在源码目录执行 `git pull` 后重启。更新生产版本必须执行：
+
+```bash
+cd /root/ozon-erp-source
+git pull --ff-only origin deploy/aliyun
+bash deploy/aliyun/update.sh
+```
+
+更新器会重新安装运行包、重启服务、检查健康状态，并核验关键新版静态页面已经进入实际运行目录；不会修改 `/var/lib/ozon-erp/work` 中的商品数据或 `/etc/ozon-erp` 中的密钥配置。
+
 顶部“定价工具”按 `最新定价工具表.xlsx` 的人民币口径计算 OGL/邮政分档、计泡重量、头程、佣金、退货、提现、广告、尾程、保本价和目标利润建议价。店铺经营参数保存后，订单利润看板与第四阶段 SKU 自动上架价会复用同一套规则；采购成本和上架售价分开保存，不再把“采购价 × 汇率”误当作销售定价。
 
 顶部“Ozon 选品”与 `browser-extension/northstar-ozon-research` 浏览器插件组成市场选品闭环。运营可保存任意开始/结束日期、类目、关键词、品牌、价格、订购量、销售额、卖家数、评分、评论数和增长率规则。插件读取当前已登录 Ozon Seller“分析 → Ozon 上的商品”结果表，可自动滚动加载，再交由 ERP 服务端复核、去重并同步到候选池。插件不保存 ERP/Ozon 密码或 Cookie，必须通过已登录 ERP 标签页同源调用接口。
