@@ -225,6 +225,11 @@
   padding: 2px 5px;
 }
 
+.plugin-download {
+  min-width: 180px;
+  text-decoration: none;
+}
+
 .research-source-preview {
   align-items: center;
   background: var(--panel-soft);

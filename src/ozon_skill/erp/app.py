@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import mimetypes
 import re
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Sequence
@@ -44,6 +46,7 @@ _BATCH_PROCESSES_ROUTE = "/api/batch-processes"
 _BATCH_PROCESS_ROUTE = re.compile(r"^/api/batch-processes/([a-f0-9]{32})$")
 _PRODUCTS_ROUTE = "/api/products"
 _RESEARCH_ROUTE = "/api/research"
+_RESEARCH_PLUGIN_ROUTE = "/api/research/plugin"
 _RESEARCH_RULES_ROUTE = "/api/research/rules"
 _RESEARCH_INGEST_ROUTE = "/api/research/ingest"
 _RESEARCH_CANDIDATE_ROUTE = re.compile(r"^/api/research/candidates/([^/]+)$")
@@ -66,6 +69,37 @@ _ATTRIBUTE_VALUES_ROUTE = re.compile(
     r"^/api/pipelines/([^/]+)/attributes/(\d+)/values$"
 )
 _STATIC_ROOT = Path(__file__).with_name("static")
+_PLUGIN_FILES = (
+    "manifest.json",
+    "content.js",
+    "popup.html",
+    "popup.css",
+    "popup.js",
+    "README.md",
+)
+
+
+def _research_plugin_archive() -> bytes:
+    candidates = (
+        Path.cwd() / "browser-extension" / "northstar-ozon-research",
+        Path(__file__).resolve().parents[3]
+        / "browser-extension"
+        / "northstar-ozon-research",
+    )
+    extension_root = next(
+        (path for path in candidates if all((path / name).is_file() for name in _PLUGIN_FILES)),
+        None,
+    )
+    if extension_root is None:
+        raise PipelineError("服务器缺少 Ozon 选品插件文件，请重新部署当前版本", status=500)
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name in _PLUGIN_FILES:
+            archive.write(
+                extension_root / name,
+                arcname=f"northstar-ozon-research/{name}",
+            )
+    return output.getvalue()
 
 
 class ERPRequestHandler(BaseHTTPRequestHandler):
@@ -123,6 +157,20 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
         self._finish_activity(status)
         body = json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8")
         self._headers(status, "application/json; charset=utf-8", len(body))
+        self.wfile.write(body)
+
+    def _plugin_download(self) -> None:
+        body = _research_plugin_archive()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header(
+            "Content-Disposition",
+            'attachment; filename="northstar-ozon-research.zip"',
+        )
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
         self.wfile.write(body)
 
     def _error(self, message: str, status: int = 400) -> None:
@@ -248,6 +296,8 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._json(self.service.product_catalog())
             elif path == _RESEARCH_ROUTE:
                 self._json(self.service.market_research_status())
+            elif path == _RESEARCH_PLUGIN_ROUTE:
+                self._plugin_download()
             elif match := _PRODUCT_VERSIONS_ROUTE.fullmatch(path):
                 self._json(
                     self.service.product_versions(unquote(match.group(1)))
