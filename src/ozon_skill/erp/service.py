@@ -1056,6 +1056,10 @@ class PipelineService:
                         f"{'AI优化图' if kind == 'ai_generated' else '俄语翻译图'}"
                         f"{suffix}{sku_suffix}"
                     )
+                    image_label = (
+                        f"{'AI优化图' if kind == 'ai_generated' else '俄语翻译图'}"
+                        f"{suffix}{sku_suffix}"
+                    )
                     reference = {
                         "pipeline_id": pipeline_id,
                         "title_zh": title_zh,
@@ -1075,6 +1079,8 @@ class PipelineService:
                                 "source_url": item.get("source_url"),
                                 "asset_type": kind,
                                 "display_name": display_name,
+                                "product_title": title_zh,
+                                "image_label": image_label,
                                 "managed": True,
                                 "sha256": item.get("storage_sha256"),
                                 "size_bytes": item.get("storage_size_bytes"),
@@ -1110,6 +1116,8 @@ class PipelineService:
                                 "source_url": item.get("source_url"),
                                 "asset_type": kind,
                                 "display_name": display_name,
+                                "product_title": title_zh,
+                                "image_label": image_label,
                                 "managed": False,
                                 "size_bytes": None,
                                 "references": [],

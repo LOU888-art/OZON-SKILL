@@ -87,6 +87,8 @@ class AssetLibraryTests(unittest.TestCase):
             current["display_name"],
             "下进上出封闭式猫砂盆粉色 · AI优化图 01",
         )
+        self.assertEqual(current["product_title"], "下进上出封闭式猫砂盆粉色")
+        self.assertEqual(current["image_label"], "AI优化图 01")
         self.assertNotIn(
             "source",
             {item.get("asset_type") for item in inventory["assets"]},
