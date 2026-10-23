@@ -1608,6 +1608,154 @@ class PipelineService:
             "generated_at": _now(),
         }
 
+    def product_catalog(self) -> dict[str, Any]:
+        """Return a safe read model for the commercial product center."""
+
+        products: list[dict[str, Any]] = []
+        summary = {
+            "total": 0,
+            "published": 0,
+            "ready": 0,
+            "failed": 0,
+            "processing": 0,
+            "draft": 0,
+            "needs_update": 0,
+            "sku_count": 0,
+        }
+        for pipeline in self.list_pipelines():
+            pipeline_id = str(pipeline.get("pipeline_id") or "")
+            if not pipeline_id:
+                continue
+
+            def artifact(stage: int) -> dict[str, Any]:
+                if not self.path(pipeline_id, stage).exists():
+                    return {}
+                try:
+                    return self.read_artifact(pipeline_id, stage)
+                except PipelineError:
+                    return {}
+
+            raw = artifact(1)
+            mapped = artifact(2)
+            final = artifact(3)
+            payload = artifact(4)
+            payload_items = [
+                item
+                for item in payload.get("items") or []
+                if isinstance(item, Mapping)
+            ]
+            sku_rows = [
+                item
+                for item in raw.get("sku_list") or []
+                if isinstance(item, Mapping)
+            ]
+            sku_count = len(sku_rows) or len(payload_items)
+            title_zh = str(raw.get("title_zh") or "").strip()
+            title_ru = str(final.get("title_ru") or "").strip()
+            if not title_ru and payload_items:
+                title_ru = str(payload_items[0].get("name") or "").strip()
+
+            thumbnail_url = ""
+            for image in final.get("localized_images") or []:
+                if isinstance(image, Mapping) and image.get("final_public_url"):
+                    thumbnail_url = str(image["final_public_url"])
+                    break
+            if not thumbnail_url:
+                images = _image_items(raw)
+                if images:
+                    thumbnail_url = str(images[0].get("url") or "")
+
+            prices: list[Decimal] = []
+            currencies: set[str] = set()
+            offer_ids: list[str] = []
+            for item in payload_items:
+                offer_id = str(item.get("offer_id") or "").strip()
+                if offer_id:
+                    offer_ids.append(offer_id)
+                currency = str(item.get("currency_code") or "").strip().upper()
+                if currency:
+                    currencies.add(currency)
+                try:
+                    price = Decimal(str(item.get("price") or ""))
+                except InvalidOperation:
+                    continue
+                if price.is_finite() and price > 0:
+                    prices.append(price)
+
+            stages = pipeline.get("stages") or {}
+            statuses = {
+                str(number): str(stage.get("status") or "LOCKED")
+                for number, stage in stages.items()
+                if isinstance(stage, Mapping)
+            }
+            passed_count = sum(1 for status in statuses.values() if status == "PASS")
+            current_stage = next(
+                (
+                    number
+                    for number in range(1, 6)
+                    if statuses.get(str(number)) in {"FAIL", "RUNNING", "STALE"}
+                    or statuses.get(str(number), "LOCKED") != "PASS"
+                ),
+                5,
+            )
+            latest_failure = ""
+            for number in range(5, 0, -1):
+                stage = stages.get(str(number))
+                if not isinstance(stage, Mapping) or stage.get("status") != "FAIL":
+                    continue
+                latest_failure = str(next(iter(stage.get("failures") or []), ""))[:500]
+                current_stage = number
+                break
+
+            if "RUNNING" in statuses.values():
+                status = "processing"
+            elif "FAIL" in statuses.values():
+                status = "failed"
+            elif statuses.get("5") == "PASS":
+                status = "published"
+            elif statuses.get("5") == "STALE":
+                status = "needs_update"
+            elif statuses.get("4") == "PASS":
+                status = "ready"
+            else:
+                status = "draft"
+
+            row = {
+                "pipeline_id": pipeline_id,
+                "title_zh": title_zh,
+                "title_ru": title_ru,
+                "display_title": title_ru or title_zh or f"1688 商品 {pipeline_id}",
+                "thumbnail_url": thumbnail_url,
+                "status": status,
+                "stage_passed_count": passed_count,
+                "current_stage": current_stage,
+                "latest_failure": latest_failure,
+                "sku_count": sku_count,
+                "offer_ids": offer_ids,
+                "store_id": pipeline.get("store_id"),
+                "ozon_category_id": (
+                    final.get("ozon_category_id") or mapped.get("ozon_category_id")
+                ),
+                "ozon_type_id": final.get("ozon_type_id") or mapped.get("ozon_type_id"),
+                "price_min": str(min(prices)) if prices else None,
+                "price_max": str(max(prices)) if prices else None,
+                "currency_code": next(iter(currencies)) if len(currencies) == 1 else None,
+                "updated_at": pipeline.get("updated_at"),
+                "created_at": pipeline.get("created_at"),
+            }
+            products.append(row)
+            summary[status] += 1
+            summary["sku_count"] += sku_count
+
+        products.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+        summary["total"] = len(products)
+        return {
+            "schema_version": "1.0",
+            "summary": summary,
+            "products": products,
+            "generated_at": _now(),
+        }
+
     def notification_center(self, username: Any) -> dict[str, Any]:
         """Build actionable notifications from current failures and personal read state."""
 

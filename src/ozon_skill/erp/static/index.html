@@ -15,6 +15,7 @@
     <a class="brand" href="#"><span class="brand-mark">N</span><span class="brand-copy"><b>Northstar</b><small>Commerce OS</small></span></a>
     <nav class="main-nav" aria-label="主导航">
       <button id="productNav" class="nav-item active" type="button"><span>商品</span>商品工作台</button>
+      <button id="catalogNav" class="nav-item" type="button"><span>商品</span>商品中心</button>
       <button id="taskNav" class="nav-item" type="button"><span>任务</span>任务中心</button>
       <button id="assetNav" class="nav-item" type="button"><span>图片</span>图片资产</button>
       <button id="operationsNav" class="nav-item" type="button"><span>订单</span>订单与库存</button>
@@ -109,6 +110,21 @@
       </div>
     </section>
   </main>
+
+  <section id="catalogView" class="catalog-view hidden">
+    <div class="catalog-head">
+      <div><span class="eyebrow">PRODUCT CENTER</span><h1>商品中心</h1><p>统一管理草稿、门禁失败、待上架、已上架和需要更新的商品。</p></div>
+      <button id="refreshCatalogBtn" class="primary" type="button">刷新商品</button>
+    </div>
+    <section id="catalogMetrics" class="catalog-metrics"></section>
+    <div class="catalog-toolbar">
+      <input id="catalogSearch" type="search" placeholder="搜索商品名称、1688 ID、Offer ID 或店铺">
+      <select id="catalogStatusFilter"><option value="all">全部状态</option><option value="published">已上架</option><option value="ready">待上架</option><option value="needs_update">需要更新</option><option value="failed">门禁失败</option><option value="processing">处理中</option><option value="draft">草稿</option></select>
+    </div>
+    <section class="catalog-card">
+      <div class="table-wrap"><table><thead><tr><th>商品</th><th>状态</th><th>SKU</th><th>Ozon 类目 / 类型</th><th>售价</th><th>店铺</th><th>进度</th><th>更新时间</th><th></th></tr></thead><tbody id="catalogTable"></tbody></table></div>
+    </section>
+  </section>
 
   <section id="assetView" class="asset-view hidden">
     <div class="asset-head">

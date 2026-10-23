@@ -35,6 +35,7 @@ _NOTIFICATIONS_ROUTE = "/api/notifications"
 _NOTIFICATIONS_READ_ROUTE = "/api/notifications/read"
 _BATCH_IMPORTS_ROUTE = "/api/batch-imports"
 _BATCH_IMPORT_ROUTE = re.compile(r"^/api/batch-imports/([a-f0-9]{32})$")
+_PRODUCTS_ROUTE = "/api/products"
 _ASSETS_ROUTE = "/api/assets"
 _ASSET_ROUTE = re.compile(r"^/api/assets/([a-f0-9]{24})$")
 _IMAGES_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/images$")
@@ -208,6 +209,8 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 )
             elif match := _BATCH_IMPORT_ROUTE.fullmatch(path):
                 self._json(self.service.batch_import_status(match.group(1)))
+            elif path == _PRODUCTS_ROUTE:
+                self._json(self.service.product_catalog())
             elif path == _ASSETS_ROUTE:
                 self._json(self.service.asset_library())
             elif path == "/api/stores":
