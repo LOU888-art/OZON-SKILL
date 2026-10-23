@@ -216,6 +216,7 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
             "progress.css",
             "commercial.css",
             "assets.css",
+            "tech-ui.css",
         }:
             self._error("Not found", 404)
             return
