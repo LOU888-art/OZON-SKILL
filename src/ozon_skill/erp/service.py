@@ -76,6 +76,7 @@ IMAGE_ACTIONS = {"exclude", "translate", "reference_8", "sku_main"}
 _PIPELINE_ID = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 _BATCH_JOB_ID = re.compile(r"^[a-f0-9]{32}$")
 _MAX_BATCH_IMPORT_ITEMS = 100
+_MAX_BATCH_PROCESS_ITEMS = 50
 PLAN_CATALOG = {
     "starter": {
         "name": "启航版",
@@ -507,6 +508,8 @@ class PipelineService:
         self._background_jobs: dict[tuple[str, int], threading.Thread] = {}
         self._batch_import_threads: dict[str, threading.Thread] = {}
         self._batch_import_root = self.work_root / ".batch-imports"
+        self._batch_process_threads: dict[str, threading.Thread] = {}
+        self._batch_process_root = self.work_root / ".batch-processes"
         self.stores = StoreRegistry(self.work_root / ".ozon-stores.json")
         self.ai_provider = AiProviderRegistry(self.work_root / ".ai-provider.json")
         self.team = TeamRegistry(self.work_root / ".team.json")
@@ -550,6 +553,23 @@ class PipelineService:
                 job["finished_at"] = _now()
                 job["updated_at"] = _now()
                 job["message"] = "服务器重启中断了批量采集；为避免重复扣费，系统未自动续跑"
+                for item in job.get("items") or []:
+                    if isinstance(item, dict) and item.get("status") in {"QUEUED", "RUNNING"}:
+                        item["status"] = "INTERRUPTED"
+                        item["error"] = "服务器重启中断，未自动重试"
+                _atomic_json(job_path, job)
+        if self._batch_process_root.exists():
+            for job_path in self._batch_process_root.glob("*.json"):
+                try:
+                    job = _read_object(job_path)
+                except PipelineError:
+                    continue
+                if job.get("status") not in {"QUEUED", "RUNNING"}:
+                    continue
+                job["status"] = "INTERRUPTED"
+                job["finished_at"] = _now()
+                job["updated_at"] = _now()
+                job["message"] = "服务器重启中断了批量处理；为避免重复调用付费接口，系统未自动续跑"
                 for item in job.get("items") or []:
                     if isinstance(item, dict) and item.get("status") in {"QUEUED", "RUNNING"}:
                         item["status"] = "INTERRUPTED"
@@ -2022,6 +2042,297 @@ class PipelineService:
             job["message"] = f"批量采集完成：成功 {passed}，失败 {failed}"
             _atomic_json(path, job)
             self._batch_import_threads.pop(job_id, None)
+
+    def _batch_process_path(self, job_id: Any) -> Path:
+        value = str(job_id or "").strip().lower()
+        if not _BATCH_JOB_ID.fullmatch(value):
+            raise PipelineError("批量处理任务 ID 格式无效")
+        return self._batch_process_root / f"{value}.json"
+
+    def batch_process_status(self, job_id: Any) -> dict[str, Any]:
+        path = self._batch_process_path(job_id)
+        if not path.exists():
+            raise PipelineError("批量处理任务不存在", status=404)
+        return _read_object(path)
+
+    def list_batch_processes(self, limit: Any = 20) -> dict[str, Any]:
+        try:
+            safe_limit = max(1, min(int(limit), 100))
+        except (TypeError, ValueError):
+            safe_limit = 20
+        if not self._batch_process_root.exists():
+            return {"jobs": []}
+        jobs: list[dict[str, Any]] = []
+        for path in sorted(
+            self._batch_process_root.glob("*.json"),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        ):
+            try:
+                jobs.append(_read_object(path))
+            except PipelineError:
+                continue
+            if len(jobs) >= safe_limit:
+                break
+        return {"jobs": jobs}
+
+    def start_batch_process(
+        self, value: Mapping[str, Any], actor: Any = ""
+    ) -> dict[str, Any]:
+        raw_ids = value.get("pipeline_ids")
+        if not isinstance(raw_ids, list):
+            raise PipelineError("pipeline_ids 必须是商品 ID 数组")
+        pipeline_ids: list[str] = []
+        for raw_id in raw_ids:
+            pipeline_id = _safe_pipeline_id(raw_id)
+            if pipeline_id not in pipeline_ids:
+                pipeline_ids.append(pipeline_id)
+        if not pipeline_ids:
+            raise PipelineError("请至少选择一个商品")
+        if len(pipeline_ids) > _MAX_BATCH_PROCESS_ITEMS:
+            raise PipelineError(f"单次最多处理 {_MAX_BATCH_PROCESS_ITEMS} 个商品")
+        try:
+            target_stage = int(value.get("target_stage"))
+        except (TypeError, ValueError) as exc:
+            raise PipelineError("目标阶段必须是 2、3 或 4") from exc
+        if target_stage not in {2, 3, 4}:
+            raise PipelineError("批量处理仅允许运行到第 2、3 或 4 阶段")
+        if value.get("confirm_external_requests") is not True:
+            raise PipelineError("请确认允许批量调用 AlphaShop、AI 和 Ozon 只读接口")
+
+        store_id = str(value.get("store_id") or "").strip()
+        if not store_id:
+            raise PipelineError("请选择目标 Ozon 店铺")
+        # Validate the configured store without persisting any credentials in the job.
+        selected_store = self._selected_store(pipeline_ids[0], store_id)
+        confidence_threshold = value.get("confidence_threshold", 0.70)
+        try:
+            threshold = float(confidence_threshold)
+        except (TypeError, ValueError) as exc:
+            raise PipelineError("置信度阈值必须是数字") from exc
+        if not 0 <= threshold <= 1:
+            raise PipelineError("置信度阈值必须在 0–1 之间")
+        media_mode = str(value.get("media_mode") or "image_plan").strip().lower()
+        text_mode = str(value.get("text_mode") or "ai_generate").strip().lower()
+        if media_mode not in {"alphashop_translate", "ai_generate", "image_plan"}:
+            raise PipelineError("批量图片模式无效")
+        if text_mode not in {"built_in", "ai_generate"}:
+            raise PipelineError("批量文本模式无效")
+        store_config = value.get("store_config") or {}
+        if not isinstance(store_config, Mapping):
+            raise PipelineError("批量店铺配置必须是对象")
+        dimension_defaults = store_config.get("dimension_defaults") or {}
+        if not isinstance(dimension_defaults, Mapping):
+            raise PipelineError("批量尺寸与重量配置必须是对象")
+        safe_dimensions = {
+            key: dimension_defaults.get(key)
+            for key in (
+                "depth",
+                "width",
+                "height",
+                "weight",
+                "dimension_unit",
+                "weight_unit",
+            )
+        }
+        safe_store_config = {
+            "store_id": str(selected_store["store_id"]),
+            "cny_to_rub_rate": store_config.get("cny_to_rub_rate"),
+            "dimension_defaults": safe_dimensions,
+            "vat": str(store_config.get("vat") or "0"),
+            # Category-specific attributes and SKU-specific costs must never be
+            # copied across unrelated products by a shared batch request.
+            "attribute_overrides": {},
+            "sku_price_overrides": {},
+        }
+
+        rows: list[dict[str, Any]] = []
+        for pipeline_id in pipeline_ids:
+            state_path = self._state_path(pipeline_id)
+            if not state_path.exists():
+                rows.append(
+                    {
+                        "pipeline_id": pipeline_id,
+                        "status": "FAIL",
+                        "current_stage": None,
+                        "stage_results": [],
+                        "error": "商品工作区不存在",
+                    }
+                )
+                continue
+            state = _read_object(state_path)
+            stage1 = (state.get("stages") or {}).get("1") or {}
+            if stage1.get("status") != "PASS" or not self.path(pipeline_id, 1).exists():
+                rows.append(
+                    {
+                        "pipeline_id": pipeline_id,
+                        "status": "FAIL",
+                        "current_stage": 1,
+                        "stage_results": [],
+                        "error": "阶段 1 未通过，不能进入批量处理",
+                    }
+                )
+                continue
+            rows.append(
+                {
+                    "pipeline_id": pipeline_id,
+                    "status": "QUEUED",
+                    "current_stage": 2,
+                    "stage_results": [],
+                    "error": None,
+                }
+            )
+        if not any(row["status"] == "QUEUED" for row in rows):
+            raise PipelineError("所选商品均未通过第一阶段")
+
+        with self._lock:
+            active = [
+                thread
+                for thread in self._batch_process_threads.values()
+                if thread.is_alive()
+            ]
+            if active:
+                raise PipelineError("已有批量处理任务正在执行，请等待完成后再创建", status=409)
+            job_id = uuid4().hex
+            now = _now()
+            failed_count = sum(1 for row in rows if row["status"] == "FAIL")
+            job = {
+                "schema_version": "1.0",
+                "job_id": job_id,
+                "status": "QUEUED",
+                "created_at": now,
+                "updated_at": now,
+                "started_at": None,
+                "finished_at": None,
+                "created_by": str(actor or "").strip() or "unknown",
+                "target_stage": target_stage,
+                "store_id": str(selected_store["store_id"]),
+                "confidence_threshold": threshold,
+                "media_mode": media_mode,
+                "text_mode": text_mode,
+                "store_config": safe_store_config,
+                "external_requests_confirmed": True,
+                "total": len(rows),
+                "completed_count": failed_count,
+                "passed_count": 0,
+                "failed_count": failed_count,
+                "items": rows,
+                "message": "已进入后台队列；第五阶段不在批处理范围内",
+            }
+            path = self._batch_process_path(job_id)
+            _atomic_json(path, job)
+            thread = threading.Thread(
+                target=self._run_batch_process,
+                args=(job_id,),
+                daemon=True,
+                name=f"batch-process-{job_id[:8]}",
+            )
+            self._batch_process_threads[job_id] = thread
+            thread.start()
+        return job
+
+    def _run_batch_process(self, job_id: str) -> None:
+        path = self._batch_process_path(job_id)
+        with self._lock:
+            job = _read_object(path)
+            job["status"] = "RUNNING"
+            job["started_at"] = _now()
+            job["updated_at"] = _now()
+            job["message"] = f"正在逐件运行到阶段 {job['target_stage']}"
+            _atomic_json(path, job)
+        for index in range(len(job.get("items") or [])):
+            with self._lock:
+                job = _read_object(path)
+                row = job["items"][index]
+                if row.get("status") != "QUEUED":
+                    continue
+                row["status"] = "RUNNING"
+                row["started_at"] = _now()
+                job["updated_at"] = _now()
+                _atomic_json(path, job)
+            results: list[dict[str, Any]] = []
+            try:
+                pipeline_id = str(row["pipeline_id"])
+                target_stage = int(job["target_stage"])
+                for stage_number in range(2, target_stage + 1):
+                    state = self.get_pipeline(pipeline_id)
+                    existing_status = str(
+                        ((state.get("stages") or {}).get(str(stage_number)) or {}).get("status")
+                        or "LOCKED"
+                    )
+                    if existing_status == "PASS" and self.path(pipeline_id, stage_number).exists():
+                        results.append({"stage": stage_number, "status": "SKIPPED_PASS"})
+                        continue
+                    with self._lock:
+                        current = _read_object(path)
+                        current["items"][index]["current_stage"] = stage_number
+                        current["updated_at"] = _now()
+                        _atomic_json(path, current)
+                    if stage_number == 2:
+                        result = self.run_stage_2(
+                            pipeline_id,
+                            confidence_threshold=job["confidence_threshold"],
+                            store_id=job["store_id"],
+                        )
+                    elif stage_number == 3:
+                        result = self.run_stage_3(
+                            pipeline_id,
+                            media_mode=job["media_mode"],
+                            text_mode=job["text_mode"],
+                        )
+                    else:
+                        result = self.run_stage_4(
+                            pipeline_id,
+                            store_config=job["store_config"],
+                        )
+                    stage_status = str(result.get("status") or "FAIL")
+                    failures = [str(item) for item in result.get("failures") or []]
+                    results.append(
+                        {
+                            "stage": stage_number,
+                            "status": stage_status,
+                            "failures": failures[:20],
+                        }
+                    )
+                    if stage_status != "PASS":
+                        raise PipelineError(
+                            "；".join(failures) or f"阶段 {stage_number} 未通过门禁"
+                        )
+                status = "PASS"
+                error = None
+            except Exception as exc:
+                status = "FAIL"
+                error = str(exc)[:1000]
+            with self._lock:
+                job = _read_object(path)
+                row = job["items"][index]
+                row["status"] = status
+                row["error"] = error
+                row["stage_results"] = results
+                row["finished_at"] = _now()
+                completed = [
+                    item
+                    for item in job["items"]
+                    if item.get("status") in {"PASS", "FAIL", "INTERRUPTED"}
+                ]
+                job["completed_count"] = len(completed)
+                job["passed_count"] = sum(1 for item in completed if item.get("status") == "PASS")
+                job["failed_count"] = sum(1 for item in completed if item.get("status") == "FAIL")
+                job["updated_at"] = _now()
+                _atomic_json(path, job)
+        with self._lock:
+            job = _read_object(path)
+            passed = int(job.get("passed_count") or 0)
+            failed = int(job.get("failed_count") or 0)
+            job["status"] = "COMPLETED" if failed == 0 else ("FAILED" if passed == 0 else "PARTIAL")
+            job["finished_at"] = _now()
+            job["updated_at"] = _now()
+            job["message"] = (
+                f"批量处理完成：成功 {passed}，失败 {failed}；"
+                "未运行第五阶段，未执行真实上架"
+            )
+            _atomic_json(path, job)
+            self._batch_process_threads.pop(job_id, None)
 
     def run_stage_1(self, offer_id: Any) -> dict[str, Any]:
         try:
