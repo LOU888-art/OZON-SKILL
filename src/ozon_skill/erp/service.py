@@ -54,6 +54,7 @@ from ozon_skill.upload.workflow import run_upload_workflow
 
 from .ai_provider import AiProviderConfigurationError, AiProviderRegistry
 from .activity import ActivityRegistry
+from .alert_channels import AlertChannelError, AlertChannelRegistry
 from .assets import AssetRegistry, AssetRegistryError, asset_id, managed_asset_id
 from .finance import FinanceSettingsError, FinanceSettingsRegistry
 from .notifications import NotificationRegistry
@@ -518,6 +519,9 @@ class PipelineService:
         self.finance = FinanceSettingsRegistry(self.work_root / ".finance-settings.json")
         self.activity = ActivityRegistry(self.work_root / ".activity.jsonl")
         self.notifications = NotificationRegistry(self.work_root / ".notifications.json")
+        self.alert_channels = AlertChannelRegistry(
+            self.work_root / ".alert-channels.json"
+        )
         self.object_storage = ObjectStorageRegistry(self.work_root / ".object-storage.json")
         self.assets = AssetRegistry(self.work_root / ".image-assets.json")
         self._recover_interrupted_jobs()
@@ -580,6 +584,64 @@ class PipelineService:
 
     def ai_provider_status(self) -> dict[str, Any]:
         return self.ai_provider.public_status()
+
+    def alert_channels_status(self) -> dict[str, Any]:
+        try:
+            return self.alert_channels.public_status()
+        except AlertChannelError as exc:
+            raise PipelineError(str(exc), status=500) from exc
+
+    def configure_alert_channels(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            return self.alert_channels.save(value)
+        except AlertChannelError as exc:
+            raise PipelineError(str(exc), status=422) from exc
+
+    def delete_alert_channels(self) -> None:
+        self.alert_channels.delete()
+
+    def test_alert_channels(self) -> dict[str, Any]:
+        try:
+            return self.alert_channels.send(
+                "Northstar ERP 测试通知",
+                "外部通知渠道连接成功。此消息由管理员在 ERP 中手动触发。",
+                event_id=f"test-{uuid4().hex}",
+                test=True,
+            )
+        except AlertChannelError as exc:
+            raise PipelineError(str(exc), status=422) from exc
+
+    def _dispatch_failure_alert(
+        self, pipeline_id: str, stage: int, failures: list[str]
+    ) -> None:
+        if not failures:
+            return
+        try:
+            status = self.alert_channels.public_status()
+        except AlertChannelError:
+            return
+        if not status.get("enabled"):
+            return
+        rendered = "；".join(str(item)[:500] for item in failures[:5])
+        event_id = hashlib.sha256(
+            f"{pipeline_id}\0{stage}\0{rendered}".encode("utf-8")
+        ).hexdigest()[:32]
+
+        def deliver() -> None:
+            try:
+                self.alert_channels.send(
+                    f"Northstar 门禁失败 · 商品 {pipeline_id} · 阶段 {stage}",
+                    f"商品 ID：{pipeline_id}\n阶段：{stage}\n错误：{rendered}\n请登录 ERP 任务中心处理。",
+                    event_id=event_id,
+                )
+            except AlertChannelError:
+                pass
+
+        threading.Thread(
+            target=deliver,
+            name=f"alert-{pipeline_id}-{stage}",
+            daemon=True,
+        ).start()
 
     def object_storage_status(self) -> dict[str, Any]:
         return self.object_storage.public_status()
@@ -1793,6 +1855,8 @@ class PipelineService:
             "failures": failures,
         }
         _atomic_json(path, state)
+        if not passed:
+            self._dispatch_failure_alert(pipeline_id, stage, failures)
 
     def _record_running(self, pipeline_id: str, stage: int) -> None:
         path = self._state_path(pipeline_id)

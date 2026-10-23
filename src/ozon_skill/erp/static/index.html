@@ -209,7 +209,7 @@
   <section id="taskView" class="task-view hidden">
     <div class="task-head">
       <div><span class="eyebrow">MISSION CONTROL</span><h1>任务与告警中心</h1><p>集中查看流水线进度、失败门禁、系统配置告警和团队操作记录。</p></div>
-      <div class="task-controls"><select id="taskFilter" aria-label="任务状态"><option value="all">全部任务</option><option value="failed">只看失败</option><option value="running">只看运行中</option><option value="completed">只看已完成</option><option value="draft">只看待处理</option></select><button id="refreshTasksBtn" class="primary" type="button">刷新中心</button></div>
+      <div class="task-controls"><select id="taskFilter" aria-label="任务状态"><option value="all">全部任务</option><option value="failed">只看失败</option><option value="running">只看运行中</option><option value="completed">只看已完成</option><option value="draft">只看待处理</option></select><button id="externalAlertsBtn" class="secondary" type="button">外部通知</button><button id="refreshTasksBtn" class="primary" type="button">刷新中心</button></div>
     </div>
     <section id="taskMetrics" class="task-metrics"></section>
     <div class="task-grid">
@@ -225,6 +225,21 @@
       <p class="dialog-note">点击通知会进入对应阶段的修复表单，不会自动调用外部 API。第五阶段始终要求人工确认。</p>
       <div id="notificationList" class="notification-list"><div class="empty">暂无失败通知</div></div>
       <div class="dialog-actions"><button id="markNotificationsReadBtn" class="secondary" type="button">全部标记已读</button><button id="openTaskCenterBtn" class="primary" type="button">打开任务中心</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="externalAlertsDialog">
+    <div class="dialog-card stores-dialog">
+      <div class="dialog-head"><div><span class="eyebrow">EXTERNAL ALERTS</span><h3>邮件与企业微信通知</h3></div><button id="closeExternalAlertsBtn" class="close" type="button">×</button></div>
+      <p class="dialog-note">只有总开关和对应渠道均启用后，新的门禁失败才会发送。相同错误只通知一次，不会在服务器重启后补发。</p>
+      <form id="externalAlertsForm">
+        <div class="field"><label><input id="alertsEnabled" type="checkbox"> 启用外部门禁失败通知</label></div>
+        <section class="channel-config"><div class="field"><label><input id="wecomEnabled" type="checkbox"> 企业微信机器人</label><input id="wecomWebhook" type="password" autocomplete="new-password" placeholder="已配置时留空保持不变"><small>仅接受 qyapi.weixin.qq.com 的 HTTPS 机器人 Webhook，地址保存后不回显。</small></div></section>
+        <section class="channel-config"><div class="field"><label><input id="emailEnabled" type="checkbox"> SMTP 邮件</label></div><div class="field-grid"><div class="field"><label for="smtpHost">SMTP 主机</label><input id="smtpHost" placeholder="smtp.example.com"></div><div class="field"><label for="smtpPort">端口 / 安全方式</label><div class="inline-fields"><input id="smtpPort" type="number" min="1" max="65535" value="587"><select id="smtpSecurity"><option value="starttls">STARTTLS</option><option value="ssl">SSL/TLS</option><option value="none">无加密</option></select></div></div></div><div class="field-grid"><div class="field"><label for="smtpUsername">SMTP 用户名</label><input id="smtpUsername" autocomplete="off"></div><div class="field"><label for="smtpPassword">SMTP 密码</label><input id="smtpPassword" type="password" autocomplete="new-password" placeholder="已配置时留空保持不变"></div></div><div class="field"><label for="emailFrom">发件邮箱</label><input id="emailFrom" type="email"></div><div class="field"><label for="emailRecipients">收件邮箱</label><textarea id="emailRecipients" rows="3" placeholder="每行一个邮箱，最多 20 个"></textarea></div></section>
+        <div class="warning">通知只包含商品 ID、失败阶段和错误摘要，不包含 Ozon 密钥、AI 密钥、完整 Payload 或商品图片。点击“发送测试”会立即向已启用渠道发送一条测试消息。</div>
+        <div id="alertDeliveryList" class="version-list"></div>
+        <div class="dialog-actions"><button id="deleteExternalAlertsBtn" class="ghost" type="button">删除配置</button><button id="testExternalAlertsBtn" class="secondary" type="button">发送测试</button><button class="primary" type="submit">保存配置</button></div>
+      </form>
     </div>
   </dialog>
 

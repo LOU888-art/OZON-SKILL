@@ -33,6 +33,8 @@ _PRICING_ROUTE = "/api/pricing/calculate"
 _ACTIVITY_ROUTE = "/api/activity"
 _NOTIFICATIONS_ROUTE = "/api/notifications"
 _NOTIFICATIONS_READ_ROUTE = "/api/notifications/read"
+_ALERT_CHANNELS_ROUTE = "/api/alert-channels"
+_ALERT_CHANNELS_TEST_ROUTE = "/api/alert-channels/test"
 _BATCH_IMPORTS_ROUTE = "/api/batch-imports"
 _BATCH_IMPORT_ROUTE = re.compile(r"^/api/batch-imports/([a-f0-9]{32})$")
 _BATCH_PROCESSES_ROUTE = "/api/batch-processes"
@@ -208,6 +210,9 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 )
             elif path == _NOTIFICATIONS_ROUTE:
                 self._json(self.service.notification_center(self._username()))
+            elif path == _ALERT_CHANNELS_ROUTE:
+                self._require("team.manage")
+                self._json({"channels": self.service.alert_channels_status()})
             elif path == _BATCH_IMPORTS_ROUTE:
                 self._json(
                     self.service.list_batch_imports(
@@ -284,6 +289,16 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._json(
                     self.service.mark_notifications_read(self._username(), body)
                 )
+                return
+            if path == _ALERT_CHANNELS_ROUTE:
+                self._require("team.manage")
+                self._json(
+                    {"channels": self.service.configure_alert_channels(body)}
+                )
+                return
+            if path == _ALERT_CHANNELS_TEST_ROUTE:
+                self._require("team.manage")
+                self._json(self.service.test_alert_channels())
                 return
             if path == _BATCH_IMPORTS_ROUTE:
                 self._require("pipeline.create")
@@ -424,6 +439,11 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
             if path == _AI_PROVIDER_ROUTE:
                 self._require("ai.manage")
                 self.service.delete_ai_provider()
+                self._json({"status": "deleted"})
+                return
+            if path == _ALERT_CHANNELS_ROUTE:
+                self._require("team.manage")
+                self.service.delete_alert_channels()
                 self._json({"status": "deleted"})
                 return
             if asset_match := _ASSET_ROUTE.fullmatch(path):
