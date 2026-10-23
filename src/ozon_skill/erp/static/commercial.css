@@ -96,3 +96,172 @@
     flex-direction: column;
   }
 }
+
+.research-view {
+  margin: 0 auto;
+  max-width: 1500px;
+  padding: 38px 42px 60px;
+}
+
+.research-head,
+.research-rule-head,
+.research-rule-actions {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.research-head h1 {
+  font: 500 38px/1 Georgia, "Songti SC", serif;
+  letter-spacing: -.04em;
+  margin: 8px 0 10px;
+}
+
+.research-head p,
+.research-rule-actions small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.research-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.research-rules {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: var(--shadow-sm);
+  margin: 24px 0 16px;
+  padding: 20px 22px;
+}
+
+.research-rule-head h2 {
+  font-size: 18px;
+  margin: 6px 0 0;
+}
+
+.research-rule-head > span {
+  background: var(--green-soft);
+  border-radius: 99px;
+  color: var(--green);
+  font-size: 9px;
+  font-weight: 800;
+  padding: 7px 10px;
+}
+
+.research-rules .field {
+  margin: 12px 0 0;
+}
+
+.research-rule-actions {
+  border-top: 1px solid var(--line);
+  margin-top: 16px;
+  padding-top: 15px;
+}
+
+.research-rule-actions .primary {
+  min-width: 145px;
+}
+
+.research-toolbar {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr 180px;
+  margin: 15px 0 10px;
+}
+
+.research-toolbar input,
+.research-toolbar select {
+  background: var(--panel);
+  border: 1px solid var(--line-dark);
+  border-radius: 10px;
+  color: var(--ink);
+  font-size: 11px;
+  outline: none;
+  padding: 11px 12px;
+}
+
+.research-status {
+  border-radius: 99px;
+  display: inline-block;
+  font-size: 8px;
+  font-weight: 850;
+  padding: 6px 8px;
+  white-space: nowrap;
+}
+
+.research-status.new { background: #edf0ec; color: #65706c; }
+.research-status.shortlisted { background: var(--amber-soft); color: #865c15; }
+.research-status.approved,
+.research-status.sourced { background: var(--green-soft); color: #12614e; }
+.research-status.rejected { background: var(--red-soft); color: #992f24; }
+
+.research-growth {
+  color: var(--green) !important;
+  display: block;
+  font-weight: 750;
+  margin-top: 5px;
+}
+
+.plugin-steps {
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1.7;
+  margin: 0 0 16px;
+  padding: 16px 20px 16px 38px;
+}
+
+.plugin-steps code {
+  background: #e8ece7;
+  border-radius: 5px;
+  padding: 2px 5px;
+}
+
+.research-source-preview {
+  align-items: center;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  display: flex;
+  gap: 14px;
+  margin-bottom: 15px;
+  padding: 12px;
+}
+
+.research-source-preview img {
+  background: #fff;
+  border-radius: 9px;
+  height: 88px;
+  object-fit: contain;
+  width: 72px;
+}
+
+.research-source-preview b,
+.research-source-preview small {
+  display: block;
+}
+
+.research-source-preview small {
+  color: var(--muted);
+  font-size: 9px;
+  margin-top: 7px;
+  word-break: break-all;
+}
+
+@media (max-width: 760px) {
+  .research-view { padding: 24px 16px; }
+  .research-head,
+  .research-rule-head,
+  .research-rule-actions { align-items: flex-start; flex-direction: column; }
+  .research-toolbar { grid-template-columns: 1fr; }
+  .research-actions,
+  .research-rule-actions .primary { width: 100%; }
+}

@@ -57,6 +57,7 @@ from .activity import ActivityRegistry
 from .alert_channels import AlertChannelError, AlertChannelRegistry
 from .assets import AssetRegistry, AssetRegistryError, asset_id, managed_asset_id
 from .finance import FinanceSettingsError, FinanceSettingsRegistry
+from .market_research import MarketResearchError, MarketResearchRegistry
 from .notifications import NotificationRegistry
 from .object_storage import ObjectStorageError, ObjectStorageRegistry
 from .operations import OzonOperationsClient, OzonOperationsError
@@ -526,6 +527,7 @@ class PipelineService:
         self.ai_provider = AiProviderRegistry(self.work_root / ".ai-provider.json")
         self.team = TeamRegistry(self.work_root / ".team.json")
         self.finance = FinanceSettingsRegistry(self.work_root / ".finance-settings.json")
+        self.market_research = MarketResearchRegistry(self.work_root / ".market-research.json")
         self.activity = ActivityRegistry(self.work_root / ".activity.jsonl")
         self.notifications = NotificationRegistry(self.work_root / ".notifications.json")
         self.alert_channels = AlertChannelRegistry(
@@ -2399,6 +2401,71 @@ class PipelineService:
             "products": products,
             "generated_at": _now(),
         }
+
+    def market_research_status(self) -> dict[str, Any]:
+        try:
+            return self.market_research.status()
+        except MarketResearchError as exc:
+            raise PipelineError(str(exc), status=409) from exc
+
+    def save_market_research_rules(
+        self, value: Mapping[str, Any], actor: Any = ""
+    ) -> dict[str, Any]:
+        try:
+            return self.market_research.save_rules(value, str(actor or "system"))
+        except (MarketResearchError, ValueError) as exc:
+            raise PipelineError(str(exc)) from exc
+
+    def ingest_market_candidates(
+        self, value: Mapping[str, Any], actor: Any = ""
+    ) -> dict[str, Any]:
+        try:
+            return self.market_research.ingest(value.get("items"), str(actor or "plugin"))
+        except MarketResearchError as exc:
+            raise PipelineError(str(exc)) from exc
+
+    def update_market_candidate(
+        self, candidate_id: Any, value: Mapping[str, Any], actor: Any = ""
+    ) -> dict[str, Any]:
+        normalized = _safe_pipeline_id(candidate_id)
+        try:
+            return self.market_research.update(normalized, value, str(actor or "system"))
+        except MarketResearchError as exc:
+            raise PipelineError(str(exc), status=404 if "不存在" in str(exc) else 400) from exc
+
+    def source_market_candidate(
+        self, candidate_id: Any, value: Mapping[str, Any], actor: Any = ""
+    ) -> dict[str, Any]:
+        normalized = _safe_pipeline_id(candidate_id)
+        try:
+            existing = self.market_research.get(normalized)
+        except MarketResearchError as exc:
+            raise PipelineError(str(exc), status=404) from exc
+        if existing.get("pipeline_id"):
+            raise PipelineError("候选商品已经绑定 1688 货源，请直接打开已有任务", status=409)
+        if value.get("confirm_external_request") is not True:
+            raise PipelineError("请确认允许调用 AlphaShop 商品详情 API")
+        try:
+            offer_id = extract_offer_id(value.get("offer_id") or value.get("offer_url"))
+        except (TypeError, ValueError) as exc:
+            raise PipelineError(str(exc)) from exc
+        result = self.run_stage_1(offer_id)
+        if result.get("status") != "PASS":
+            raise PipelineError("1688 商品采集失败，候选品尚未绑定", status=409)
+        try:
+            candidate = self.market_research.bind_source(
+                normalized, offer_id, offer_id, str(actor or "system")
+            )
+        except MarketResearchError as exc:
+            raise PipelineError(str(exc), status=404) from exc
+        return {"candidate": candidate, "pipeline": result}
+
+    def delete_market_candidate(self, candidate_id: Any) -> None:
+        normalized = _safe_pipeline_id(candidate_id)
+        try:
+            self.market_research.delete(normalized)
+        except MarketResearchError as exc:
+            raise PipelineError(str(exc), status=404) from exc
 
     def notification_center(self, username: Any) -> dict[str, Any]:
         """Build actionable notifications from current failures and personal read state."""

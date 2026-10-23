@@ -43,6 +43,11 @@ _BATCH_IMPORT_ROUTE = re.compile(r"^/api/batch-imports/([a-f0-9]{32})$")
 _BATCH_PROCESSES_ROUTE = "/api/batch-processes"
 _BATCH_PROCESS_ROUTE = re.compile(r"^/api/batch-processes/([a-f0-9]{32})$")
 _PRODUCTS_ROUTE = "/api/products"
+_RESEARCH_ROUTE = "/api/research"
+_RESEARCH_RULES_ROUTE = "/api/research/rules"
+_RESEARCH_INGEST_ROUTE = "/api/research/ingest"
+_RESEARCH_CANDIDATE_ROUTE = re.compile(r"^/api/research/candidates/([^/]+)$")
+_RESEARCH_SOURCE_ROUTE = re.compile(r"^/api/research/candidates/([^/]+)/source$")
 _PRODUCT_BATCH_EDIT_ROUTE = "/api/products/batch-edit"
 _PRODUCT_VERSIONS_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/versions$")
 _PRODUCT_VERSION_RESTORE_ROUTE = re.compile(
@@ -241,6 +246,8 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._json(self.service.batch_process_status(match.group(1)))
             elif path == _PRODUCTS_ROUTE:
                 self._json(self.service.product_catalog())
+            elif path == _RESEARCH_ROUTE:
+                self._json(self.service.market_research_status())
             elif match := _PRODUCT_VERSIONS_ROUTE.fullmatch(path):
                 self._json(
                     self.service.product_versions(unquote(match.group(1)))
@@ -337,6 +344,26 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._json(
                     self.service.batch_edit_products(body, self._username())
                 )
+                return
+            if path == _RESEARCH_RULES_ROUTE:
+                self._require("stage.run")
+                self._json({"rules": self.service.save_market_research_rules(body, self._username())})
+                return
+            if path == _RESEARCH_INGEST_ROUTE:
+                self._require("pipeline.create")
+                self._json(self.service.ingest_market_candidates(body, self._username()))
+                return
+            if source_match := _RESEARCH_SOURCE_ROUTE.fullmatch(path):
+                self._require("pipeline.create")
+                self._json(self.service.source_market_candidate(
+                    unquote(source_match.group(1)), body, self._username()
+                ), 201)
+                return
+            if candidate_match := _RESEARCH_CANDIDATE_ROUTE.fullmatch(path):
+                self._require("stage.run")
+                self._json({"candidate": self.service.update_market_candidate(
+                    unquote(candidate_match.group(1)), body, self._username()
+                )})
                 return
             if version_match := _PRODUCT_VERSION_RESTORE_ROUTE.fullmatch(path):
                 self._require("stage.run")
@@ -467,6 +494,11 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
             if path == _SUPPLIER_SCHEDULE_ROUTE:
                 self._require("team.manage")
                 self.service.delete_supplier_schedule()
+                self._json({"status": "deleted"})
+                return
+            if candidate_match := _RESEARCH_CANDIDATE_ROUTE.fullmatch(path):
+                self._require("stage.run")
+                self.service.delete_market_candidate(unquote(candidate_match.group(1)))
                 self._json({"status": "deleted"})
                 return
             if asset_match := _ASSET_ROUTE.fullmatch(path):

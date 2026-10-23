@@ -17,6 +17,7 @@
     <nav class="main-nav" aria-label="主导航">
       <button id="productNav" class="nav-item active" type="button"><span>商品</span>商品工作台</button>
       <button id="catalogNav" class="nav-item" type="button"><span>商品</span>商品中心</button>
+      <button id="researchNav" class="nav-item" type="button"><span>增长</span>Ozon 选品</button>
       <button id="taskNav" class="nav-item" type="button"><span>任务</span>任务中心</button>
       <button id="assetNav" class="nav-item" type="button"><span>图片</span>图片资产</button>
       <button id="operationsNav" class="nav-item" type="button"><span>订单</span>订单与库存</button>
@@ -125,6 +126,24 @@
     <section class="catalog-card">
       <div class="table-wrap"><table><thead><tr><th><input id="catalogSelectAll" type="checkbox" aria-label="选择当前筛选商品"></th><th>商品</th><th>状态</th><th>SKU</th><th>Ozon 类目 / 类型</th><th>售价</th><th>店铺</th><th>进度</th><th>更新时间</th><th></th></tr></thead><tbody id="catalogTable"></tbody></table></div>
     </section>
+  </section>
+
+  <section id="researchView" class="research-view hidden">
+    <div class="research-head">
+      <div><span class="eyebrow">OZON MARKET RESEARCH</span><h1>Ozon 自动选品</h1><p>在 Ozon 后台应用市场筛选，插件自动读取结果并同步到候选池。</p></div>
+      <div class="research-actions"><button id="researchPluginBtn" class="secondary" type="button">安装 / 使用插件</button><button id="refreshResearchBtn" class="primary" type="button">刷新候选池</button></div>
+    </div>
+    <form id="researchRulesForm" class="research-rules">
+      <div class="research-rule-head"><div><span class="eyebrow">AUTOMATION RULE</span><h2>自动选品规则</h2></div><span id="researchRulesState">尚未保存</span></div>
+      <div class="field-grid four"><div class="field"><label for="researchDateFrom">开始日期</label><input id="researchDateFrom" type="date" required></div><div class="field"><label for="researchDateTo">结束日期</label><input id="researchDateTo" type="date" required></div><div class="field"><label for="researchCategory">类目包含</label><input id="researchCategory" placeholder="可留空"></div><div class="field"><label for="researchBrandMode">品牌条件</label><select id="researchBrandMode"><option value="all">不限品牌</option><option value="unbranded">仅无品牌</option><option value="branded">仅有品牌</option></select></div></div>
+      <div class="field-grid"><div class="field"><label for="researchInclude">包含关键词</label><input id="researchInclude" placeholder="多个关键词用逗号分隔；命中任意一个"></div><div class="field"><label for="researchExclude">排除关键词</label><input id="researchExclude" placeholder="侵权词、禁售词等"></div></div>
+      <div class="field-grid four"><div class="field"><label for="researchPriceRange">价格范围（₽）</label><input id="researchPriceRange" placeholder="300 / 2000"></div><div class="field"><label for="researchOrdersMin">最低订购量</label><input id="researchOrdersMin" type="number" min="0" step="1"></div><div class="field"><label for="researchRevenueMin">最低订购金额（₽）</label><input id="researchRevenueMin" type="number" min="0" step="1"></div><div class="field"><label for="researchSellersMax">最多卖家数</label><input id="researchSellersMax" type="number" min="0" step="1"></div></div>
+      <div class="field-grid four"><div class="field"><label for="researchRatingMin">最低评分</label><input id="researchRatingMin" type="number" min="0" max="5" step="0.1"></div><div class="field"><label for="researchReviewsMin">最低评论数</label><input id="researchReviewsMin" type="number" min="0" step="1"></div><div class="field"><label for="researchGrowthMin">最低增长率（%）</label><input id="researchGrowthMin" type="number" step="0.1"></div><div class="field"><label for="researchMaxCandidates">本次最多同步</label><input id="researchMaxCandidates" type="number" min="1" max="500" value="100" required></div></div>
+      <div class="research-rule-actions"><small>日期可任意选择。只有同时满足硬性条件的商品才进入候选池；缺少被筛选指标的商品不会被误收。</small><button type="submit" class="primary">保存选品规则</button></div>
+    </form>
+    <section id="researchMetrics" class="catalog-metrics"></section>
+    <div class="research-toolbar"><input id="researchSearch" type="search" placeholder="搜索商品、Ozon ID、卖家或类目"><select id="researchDecisionFilter"><option value="all">全部状态</option><option value="NEW">待审核</option><option value="SHORTLISTED">已收藏</option><option value="APPROVED">已通过</option><option value="REJECTED">已淘汰</option><option value="SOURCED">已找到货源</option></select></div>
+    <section class="catalog-card"><div class="table-wrap"><table><thead><tr><th>Ozon 商品</th><th>市场指标</th><th>竞争</th><th>命中原因</th><th>状态</th><th>同步时间</th><th></th></tr></thead><tbody id="researchTable"></tbody></table></div></section>
   </section>
 
   <section id="assetView" class="asset-view hidden">
@@ -330,6 +349,24 @@
       <div class="dialog-head"><div><span class="eyebrow">PRODUCT HISTORY</span><h3 id="productVersionsTitle">商品版本历史</h3></div><button id="closeProductVersionsBtn" class="close" type="button">×</button></div>
       <p class="dialog-note">回滚只恢复非敏感上架参数，并将第四、第五阶段标记为需要更新；不会自动重新提交。</p>
       <div id="productVersionsList" class="version-list"></div>
+    </div>
+  </dialog>
+
+  <dialog id="researchPluginDialog">
+    <div class="dialog-card stores-dialog">
+      <div class="dialog-head"><div><span class="eyebrow">BROWSER CONNECTOR</span><h3>Northstar Ozon 选品插件</h3></div><button id="closeResearchPluginBtn" class="close" type="button">×</button></div>
+      <p class="dialog-note">插件不读取或保存 Ozon 密码、Cookie。它只在您已登录的 Ozon 商品分析页面读取表格，并通过已登录的 Northstar ERP 标签页同步候选商品。</p>
+      <ol class="plugin-steps"><li>在 Chrome / Edge 扩展管理中开启“开发者模式”。</li><li>加载项目目录 <code>browser-extension/northstar-ozon-research</code>。</li><li>保持本 ERP 页面打开并已登录。</li><li>打开 Ozon Seller 的“分析 → Ozon 上的商品”，设置页面筛选。</li><li>点击插件图标，填写 ERP 网址并选择“扫描并同步当前结果”。</li></ol>
+      <div class="warning">插件只同步当前页面已经加载的商品。可先在 Ozon 页面设置筛选和排序，再让插件自动滚动扫描；不会绕过 Ozon 登录或权限。</div>
+    </div>
+  </dialog>
+
+  <dialog id="researchSourceDialog">
+    <div class="dialog-card stores-dialog">
+      <div class="dialog-head"><div><span class="eyebrow">SOURCE MATCH</span><h3 id="researchSourceTitle">绑定 1688 货源</h3></div><button id="closeResearchSourceBtn" class="close" type="button">×</button></div>
+      <div id="researchSourcePreview" class="research-source-preview"></div>
+      <div class="warning">AlphaShop 以图搜货接口尚未配置时，可先粘贴人工确认的 1688 商品 ID 或链接。确认后会立即调用商品详情 API，并创建现有五阶段上架任务。</div>
+      <form id="researchSourceForm"><div class="field"><label for="researchSourceOffer">1688 商品 ID / 链接</label><input id="researchSourceOffer" required placeholder="628680616884 或 https://detail.1688.com/offer/....html"></div><label class="batch-confirm"><input id="researchSourceConfirm" type="checkbox" required> 我确认允许调用 AlphaShop 商品详情 API，该操作可能产生接口费用。</label><div class="dialog-actions"><button type="submit" class="primary">采集货源并进入上架</button></div></form>
     </div>
   </dialog>
 

@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Northstar Ozon 自动选品",
+  "version": "0.1.0",
+  "description": "将 Ozon Seller 商品分析结果安全同步到 Northstar ERP 候选池。",
+  "permissions": ["activeTab", "storage", "scripting"],
+  "optional_host_permissions": ["https://*/*"],
+  "host_permissions": ["https://seller.ozon.ru/*"],
+  "action": {
+    "default_title": "Northstar Ozon 选品",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://seller.ozon.ru/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
