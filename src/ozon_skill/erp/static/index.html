@@ -280,6 +280,14 @@
       <div id="supplierMonitorResults" class="version-list"></div>
       <label class="batch-confirm"><input id="supplierMonitorConfirm" type="checkbox"> 我确认允许对当前选中的商品逐条调用 AlphaShop 详情 API；单次最多 20 个。</label>
       <div class="dialog-actions"><button id="runSupplierMonitorBtn" class="primary" type="button">检测选中商品</button></div>
+      <section id="supplierSchedulePanel" class="channel-config hidden">
+        <div class="dialog-head"><div><span class="eyebrow">RECURRING WATCH</span><h3>定时检测计划</h3></div><span id="supplierScheduleStatus">未启用</span></div>
+        <div class="field-grid"><label class="field"><span><input id="supplierScheduleEnabled" type="checkbox"> 启用周期检测</span><small>仅所有者或管理员可以启用。</small></label><div class="field"><label for="supplierScheduleInterval">检测周期</label><select id="supplierScheduleInterval"><option value="6">每 6 小时</option><option value="12">每 12 小时</option><option value="24" selected>每天</option><option value="72">每 3 天</option><option value="168">每周</option></select></div></div>
+        <div class="field"><label for="supplierScheduleProducts">计划监控的商品 ID</label><textarea id="supplierScheduleProducts" rows="3" placeholder="每行一个商品 ID，最多 20 个"></textarea><button id="useSelectedForScheduleBtn" class="ghost" type="button">使用商品中心当前选择</button></div>
+        <div id="supplierScheduleInfo" class="warning">定时计划尚未配置。</div>
+        <label class="batch-confirm"><input id="supplierScheduleConfirm" type="checkbox"> 我确认启用后会周期性调用 AlphaShop，并可能持续产生接口费用。</label>
+        <div class="dialog-actions"><button id="deleteSupplierScheduleBtn" class="ghost" type="button">删除计划</button><button id="saveSupplierScheduleBtn" class="secondary" type="button">保存定时计划</button></div>
+      </section>
     </div>
   </dialog>
 

@@ -62,7 +62,11 @@ from .object_storage import ObjectStorageError, ObjectStorageRegistry
 from .operations import OzonOperationsClient, OzonOperationsError
 from .pricing import PricingError, calculate_pricing, calculate_target_pricing
 from .stores import StoreAuthorizationError, StoreRegistry
-from .supplier_monitor import SupplierMonitorError, SupplierMonitorRegistry
+from .supplier_monitor import (
+    SupplierMonitorError,
+    SupplierMonitorRegistry,
+    SupplierScheduleRegistry,
+)
 from .team import TeamError, TeamRegistry
 
 
@@ -516,6 +520,8 @@ class PipelineService:
         self._batch_process_root = self.work_root / ".batch-processes"
         self._supplier_monitor_threads: dict[str, threading.Thread] = {}
         self._supplier_monitor_job_root = self.work_root / ".supplier-monitor-jobs"
+        self._supplier_schedule_thread: threading.Thread | None = None
+        self._supplier_schedule_wake = threading.Event()
         self.stores = StoreRegistry(self.work_root / ".ozon-stores.json")
         self.ai_provider = AiProviderRegistry(self.work_root / ".ai-provider.json")
         self.team = TeamRegistry(self.work_root / ".team.json")
@@ -528,9 +534,18 @@ class PipelineService:
         self.supplier_monitor = SupplierMonitorRegistry(
             self.work_root / ".supplier-monitor.json"
         )
+        self.supplier_schedule = SupplierScheduleRegistry(
+            self.work_root / ".supplier-monitor-schedule.json"
+        )
         self.object_storage = ObjectStorageRegistry(self.work_root / ".object-storage.json")
         self.assets = AssetRegistry(self.work_root / ".image-assets.json")
         self._recover_interrupted_jobs()
+        try:
+            schedule = self.supplier_schedule.defer_overdue()
+            if schedule.get("enabled"):
+                self._ensure_supplier_schedule_thread()
+        except SupplierMonitorError:
+            pass
 
     def _recover_interrupted_jobs(self) -> None:
         """Turn orphaned RUNNING states into explicit failures after a restart."""
@@ -639,6 +654,95 @@ class PipelineService:
             return self.supplier_monitor.status()
         except SupplierMonitorError as exc:
             raise PipelineError(str(exc), status=500) from exc
+
+    def supplier_schedule_status(self) -> dict[str, Any]:
+        try:
+            schedule = self.supplier_schedule.status()
+            job_id = str(schedule.get("last_job_id") or "")
+            if job_id:
+                try:
+                    job = self.supplier_monitor_job_status(job_id)
+                    schedule["last_job_status"] = job.get("status")
+                    schedule["last_job_message"] = job.get("message")
+                except PipelineError:
+                    schedule["last_job_status"] = "UNKNOWN"
+            return schedule
+        except SupplierMonitorError as exc:
+            raise PipelineError(str(exc), status=500) from exc
+
+    def save_supplier_schedule(self, value: Mapping[str, Any], actor: Any = "") -> dict[str, Any]:
+        raw_ids = value.get("pipeline_ids")
+        if isinstance(raw_ids, list):
+            for raw_id in raw_ids:
+                pipeline_id = _safe_pipeline_id(raw_id)
+                if not self.path(pipeline_id, 1).exists():
+                    raise PipelineError(f"商品 {pipeline_id} 尚未完成第一阶段采集")
+        if value.get("enabled") is True:
+            try:
+                AlphaShopClient.from_environment()
+            except AlphaShopApiError as exc:
+                raise PipelineError(str(exc), status=409) from exc
+        try:
+            schedule = self.supplier_schedule.save(value, actor=str(actor or "system"))
+        except SupplierMonitorError as exc:
+            raise PipelineError(str(exc), status=422) from exc
+        if schedule.get("enabled"):
+            self._ensure_supplier_schedule_thread()
+        self._supplier_schedule_wake.set()
+        return schedule
+
+    def delete_supplier_schedule(self) -> None:
+        self.supplier_schedule.delete()
+        self._supplier_schedule_wake.set()
+
+    def _ensure_supplier_schedule_thread(self) -> None:
+        with self._lock:
+            if self._supplier_schedule_thread and self._supplier_schedule_thread.is_alive():
+                return
+            thread = threading.Thread(
+                target=self._supplier_schedule_loop,
+                name="supplier-monitor-scheduler",
+                daemon=True,
+            )
+            self._supplier_schedule_thread = thread
+            thread.start()
+
+    def _supplier_schedule_loop(self) -> None:
+        try:
+            while True:
+                self._supplier_schedule_wake.wait(timeout=60)
+                self._supplier_schedule_wake.clear()
+                try:
+                    schedule = self.supplier_schedule.status()
+                    if not schedule.get("enabled"):
+                        return
+                    last_job_id = str(schedule.get("last_job_id") or "")
+                    if last_job_id:
+                        try:
+                            last_job = self.supplier_monitor_job_status(last_job_id)
+                            if last_job.get("status") in {"QUEUED", "RUNNING"}:
+                                continue
+                        except PipelineError:
+                            pass
+                    claimed = self.supplier_schedule.claim_due()
+                    if claimed is None:
+                        continue
+                    job = self.start_supplier_monitor(
+                        {
+                            "pipeline_ids": claimed.get("pipeline_ids") or [],
+                            "confirm_external_requests": True,
+                        },
+                        "scheduler",
+                    )
+                    self.supplier_schedule.mark_result(job_id=str(job["job_id"]))
+                except Exception as exc:
+                    try:
+                        self.supplier_schedule.mark_result(error=str(exc))
+                    except SupplierMonitorError:
+                        return
+        finally:
+            with self._lock:
+                self._supplier_schedule_thread = None
 
     def _dispatch_supplier_alert(self, pipeline_id: str, changes: list[dict[str, Any]], checked_at: str) -> None:
         if not changes:

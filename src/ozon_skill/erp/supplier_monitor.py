@@ -6,7 +6,7 @@ import json
 import os
 import tempfile
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping
@@ -180,3 +180,144 @@ class SupplierMonitorRegistry:
                 "products": products,
                 "events": list(document["events"])[-100:][::-1],
             }
+
+
+class SupplierScheduleRegistry:
+    ALLOWED_INTERVALS = {6, 12, 24, 72, 168}
+
+    def __init__(self, path: Path) -> None:
+        self.path = path.resolve()
+        self._lock = threading.RLock()
+
+    @staticmethod
+    def _timestamp(value: datetime) -> str:
+        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    @staticmethod
+    def _parse(value: Any) -> datetime | None:
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            return None
+
+    def _read(self) -> dict[str, Any]:
+        if not self.path.exists():
+            return {"schema_version": "1.0", "enabled": False, "pipeline_ids": [], "interval_hours": 24}
+        try:
+            document = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SupplierMonitorError("供应商定时计划无法读取") from exc
+        if not isinstance(document, dict) or not isinstance(document.get("pipeline_ids", []), list):
+            raise SupplierMonitorError("供应商定时计划格式无效")
+        return document
+
+    def _write(self, value: Mapping[str, Any]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent, text=True)
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(value, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+            os.replace(temporary, self.path)
+            os.chmod(self.path, 0o600)
+        except Exception:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+            raise
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            return dict(self._read())
+
+    def save(self, value: Mapping[str, Any], *, actor: str = "", now: datetime | None = None) -> dict[str, Any]:
+        enabled = value.get("enabled") is True
+        if enabled and value.get("confirm_recurring_charges") is not True:
+            raise SupplierMonitorError("启用定时检测前必须确认周期性 AlphaShop 接口费用")
+        raw_ids = value.get("pipeline_ids")
+        if not isinstance(raw_ids, list):
+            raise SupplierMonitorError("定时检测商品必须是 ID 数组")
+        pipeline_ids: list[str] = []
+        for raw_id in raw_ids:
+            pipeline_id = str(raw_id or "").strip()
+            if not pipeline_id or len(pipeline_id) > 80 or pipeline_id in {".", ".."}:
+                raise SupplierMonitorError("定时检测包含无效商品 ID")
+            if pipeline_id not in pipeline_ids:
+                pipeline_ids.append(pipeline_id)
+        if enabled and not pipeline_ids:
+            raise SupplierMonitorError("启用定时检测前至少选择一个商品")
+        if len(pipeline_ids) > 20:
+            raise SupplierMonitorError("定时检测最多包含 20 个商品")
+        try:
+            interval = int(value.get("interval_hours") or 24)
+        except (TypeError, ValueError) as exc:
+            raise SupplierMonitorError("定时检测周期无效") from exc
+        if interval not in self.ALLOWED_INTERVALS:
+            raise SupplierMonitorError("定时检测周期仅支持 6、12、24、72 或 168 小时")
+        current = now or datetime.now(timezone.utc)
+        document = {
+            "schema_version": "1.0",
+            "enabled": enabled,
+            "pipeline_ids": pipeline_ids,
+            "interval_hours": interval,
+            "next_run_at": self._timestamp(current + timedelta(hours=interval)) if enabled else None,
+            "updated_at": self._timestamp(current),
+            "updated_by": str(actor or "system")[:64],
+            "last_run_at": None,
+            "last_job_id": None,
+            "last_status": "SCHEDULED" if enabled else "DISABLED",
+            "last_error": "",
+        }
+        with self._lock:
+            existing = self._read()
+            for key in ("last_run_at", "last_job_id", "last_status", "last_error"):
+                if existing.get(key) is not None and key not in {"last_status", "last_error"}:
+                    document[key] = existing.get(key)
+            self._write(document)
+            return dict(document)
+
+    def defer_overdue(self, *, now: datetime | None = None) -> dict[str, Any]:
+        current = now or datetime.now(timezone.utc)
+        with self._lock:
+            document = self._read()
+            due = self._parse(document.get("next_run_at"))
+            if document.get("enabled") and (due is None or due <= current):
+                interval = int(document.get("interval_hours") or 24)
+                document["next_run_at"] = self._timestamp(current + timedelta(hours=interval))
+                document["last_status"] = "DEFERRED_AFTER_RESTART"
+                document["last_error"] = "服务器停机期间的计划已跳过，未补跑接口请求"
+                self._write(document)
+            return dict(document)
+
+    def claim_due(self, *, now: datetime | None = None) -> dict[str, Any] | None:
+        current = now or datetime.now(timezone.utc)
+        with self._lock:
+            document = self._read()
+            due = self._parse(document.get("next_run_at"))
+            if not document.get("enabled") or due is None or due > current:
+                return None
+            interval = int(document.get("interval_hours") or 24)
+            document["last_run_at"] = self._timestamp(current)
+            document["next_run_at"] = self._timestamp(current + timedelta(hours=interval))
+            document["last_status"] = "STARTING"
+            document["last_error"] = ""
+            self._write(document)
+            return dict(document)
+
+    def mark_result(self, *, job_id: str | None = None, error: str = "") -> dict[str, Any]:
+        with self._lock:
+            document = self._read()
+            document["last_job_id"] = job_id
+            document["last_status"] = "QUEUED" if job_id else "FAILED"
+            document["last_error"] = str(error)[:500]
+            self._write(document)
+            return dict(document)
+
+    def delete(self) -> None:
+        with self._lock:
+            try:
+                self.path.unlink()
+            except FileNotFoundError:
+                pass

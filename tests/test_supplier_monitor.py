@@ -4,11 +4,18 @@ import os
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 from ozon_skill.erp.service import PipelineError, PipelineService
-from ozon_skill.erp.supplier_monitor import SupplierMonitorRegistry, compare_snapshots, snapshot_from_raw
+from ozon_skill.erp.supplier_monitor import (
+    SupplierMonitorError,
+    SupplierMonitorRegistry,
+    SupplierScheduleRegistry,
+    compare_snapshots,
+    snapshot_from_raw,
+)
 
 
 def _raw(*, price: str = "12.80", stock: int | None = 10) -> dict:
@@ -121,6 +128,81 @@ class SupplierMonitorTests(unittest.TestCase):
         self.assertEqual(result["status"], "COMPLETED")
         self.assertEqual(result["changed_count"], 1)
         self.assertEqual(unchanged_source, original)
+
+    def test_schedule_requires_recurring_cost_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            registry = SupplierScheduleRegistry(Path(temporary) / ".schedule.json")
+            with self.assertRaisesRegex(SupplierMonitorError, "周期性"):
+                registry.save(
+                    {"enabled": True, "pipeline_ids": ["123"], "interval_hours": 24}
+                )
+
+    def test_schedule_is_claimed_once_and_advances_next_run(self) -> None:
+        start = datetime(2026, 10, 23, 0, 0, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as temporary:
+            registry = SupplierScheduleRegistry(Path(temporary) / ".schedule.json")
+            saved = registry.save(
+                {
+                    "enabled": True,
+                    "pipeline_ids": ["123"],
+                    "interval_hours": 6,
+                    "confirm_recurring_charges": True,
+                },
+                now=start,
+            )
+            claimed = registry.claim_due(now=start + timedelta(hours=6))
+            second = registry.claim_due(now=start + timedelta(hours=6))
+
+        self.assertEqual(saved["next_run_at"], "2026-10-23T06:00:00Z")
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed["next_run_at"], "2026-10-23T12:00:00Z")
+        self.assertIsNone(second)
+
+    def test_restart_defers_overdue_schedule_without_claiming_it(self) -> None:
+        start = datetime(2026, 10, 23, 0, 0, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as temporary:
+            registry = SupplierScheduleRegistry(Path(temporary) / ".schedule.json")
+            registry.save(
+                {
+                    "enabled": True,
+                    "pipeline_ids": ["123"],
+                    "interval_hours": 6,
+                    "confirm_recurring_charges": True,
+                },
+                now=start,
+            )
+            deferred = registry.defer_overdue(now=start + timedelta(hours=9))
+            claimed = registry.claim_due(now=start + timedelta(hours=9))
+
+        self.assertEqual(deferred["last_status"], "DEFERRED_AFTER_RESTART")
+        self.assertEqual(deferred["next_run_at"], "2026-10-23T15:00:00Z")
+        self.assertIsNone(claimed)
+
+    def test_service_saves_admin_schedule_only_for_collected_products(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_path = root / "123" / "01_raw.json"
+            source_path.parent.mkdir(parents=True)
+            source_path.write_text(json.dumps(_raw()), encoding="utf-8")
+            service = PipelineService(root)
+            with patch.dict(
+                os.environ,
+                {"ALPHASHOP_ACCESS_KEY": "test-key", "ALPHASHOP_SECRET_KEY": "test-secret"},
+            ), patch("ozon_skill.erp.service.threading.Thread.start"):
+                schedule = service.save_supplier_schedule(
+                    {
+                        "enabled": True,
+                        "pipeline_ids": ["123"],
+                        "interval_hours": 24,
+                        "confirm_recurring_charges": True,
+                    },
+                    "QSM",
+                )
+            mode = os.stat(root / ".supplier-monitor-schedule.json").st_mode & 0o777
+
+        self.assertTrue(schedule["enabled"])
+        self.assertEqual(schedule["updated_by"], "QSM")
+        self.assertEqual(mode, 0o600)
 
 
 if __name__ == "__main__":
