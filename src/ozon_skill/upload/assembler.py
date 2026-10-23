@@ -416,7 +416,11 @@ def _has_named_attribute(attributes: Sequence[Mapping[str, Any]], *needles: str)
 
 
 def assemble_import_payload(
-    final: Mapping[str, Any], source: Mapping[str, Any], store: StoreConfig
+    final: Mapping[str, Any],
+    source: Mapping[str, Any],
+    store: StoreConfig,
+    *,
+    assigned_offer_ids: Sequence[str] | None = None,
 ) -> AssemblyResult:
     """Build a dry-run payload even when validation reports execution blockers."""
 
@@ -491,7 +495,10 @@ def assemble_import_payload(
 
     items: list[dict[str, Any]] = []
     offer_ids: list[str] = []
-    for sku in _sku_rows(source):
+    sku_rows = _sku_rows(source)
+    if assigned_offer_ids is not None and len(assigned_offer_ids) != len(sku_rows):
+        errors.append("assigned_offer_ids count does not match SKU count")
+    for sku_index, sku in enumerate(sku_rows):
         attributes, attribute_errors, _ = _api_attributes(
             raw_attributes,
             sku,
@@ -506,7 +513,11 @@ def assemble_import_payload(
             errors.append(
                 f"SKU {sku_id or 'default'} has no verified public product images"
             )
-        offer_id = _offer_id(store.store_id, source_offer_id, sku_id)
+        offer_id = (
+            str(assigned_offer_ids[sku_index])
+            if assigned_offer_ids is not None and sku_index < len(assigned_offer_ids)
+            else _offer_id(store.store_id, source_offer_id, sku_id)
+        )
         offer_ids.append(offer_id)
         purchase_price = sku.get("purchase_price_cny")
         sale_price = sku.get("sale_price_cny")

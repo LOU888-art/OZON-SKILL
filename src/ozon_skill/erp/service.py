@@ -59,6 +59,7 @@ from .assets import AssetRegistry, AssetRegistryError, asset_id, managed_asset_i
 from .finance import FinanceSettingsError, FinanceSettingsRegistry
 from .market_research import MarketResearchError, MarketResearchRegistry
 from .notifications import NotificationRegistry
+from .offer_ids import OfferIdRegistry, OfferIdRegistryError
 from .object_storage import (
     ObjectStorageError,
     ObjectStorageRegistry,
@@ -546,6 +547,7 @@ class PipelineService:
         )
         self.object_storage = ObjectStorageRegistry(self.work_root / ".object-storage.json")
         self.assets = AssetRegistry(self.work_root / ".image-assets.json")
+        self.offer_ids = OfferIdRegistry(self.work_root / ".ozon-offer-ids.json")
         self._recover_interrupted_jobs()
         try:
             schedule = self.supplier_schedule.defer_overdue()
@@ -997,7 +999,7 @@ class PipelineService:
         return rows
 
     def asset_library(self) -> dict[str, Any]:
-        """Build a safe, cross-product view of source and managed image assets."""
+        """Build the processed-image library shown to operators."""
 
         with self._lock:
             external: dict[str, dict[str, Any]] = {}
@@ -1010,45 +1012,18 @@ class PipelineService:
                 pipeline_id = str(pipeline.get("pipeline_id") or "")
                 if not pipeline_id:
                     continue
+                title_zh = str(pipeline.get("title_zh") or "").strip()
+                if not title_zh:
+                    title_zh = f"1688 商品 {pipeline_id}"
                 stage5 = (pipeline.get("stages") or {}).get("5") or {}
                 published = isinstance(stage5, Mapping) and stage5.get("status") == "PASS"
-                if self.path(pipeline_id, 1).exists():
-                    try:
-                        raw = self.read_artifact(pipeline_id, 1)
-                    except PipelineError:
-                        raw = {}
-                    for item in _image_items(raw):
-                        url = str(item.get("url") or "").strip()
-                        if not url:
-                            continue
-                        identifier = asset_id(url)
-                        record = external.setdefault(
-                            identifier,
-                            {
-                                "asset_id": identifier,
-                                "public_url": url,
-                                "source_url": url,
-                                "asset_type": "source",
-                                "managed": False,
-                                "size_bytes": None,
-                                "references": [],
-                            },
-                        )
-                        record["references"].append(
-                            {
-                                "pipeline_id": pipeline_id,
-                                "stage": 1,
-                                "role": item.get("source_role"),
-                                "sku_id": item.get("sku_id"),
-                            }
-                        )
                 if not self.path(pipeline_id, 3).exists():
                     continue
                 try:
                     localized = self.read_artifact(pipeline_id, 3).get("localized_images") or []
                 except PipelineError:
                     continue
-                for item in localized:
+                for image_index, item in enumerate(localized, start=1):
                     if not isinstance(item, Mapping):
                         continue
                     url = str(item.get("final_public_url") or "").strip()
@@ -1058,13 +1033,32 @@ class PipelineService:
                     if not object_key and public_base and url.startswith(f"{public_base}/"):
                         object_key = url[len(public_base) + 1 :]
                     action = str(item.get("plan_action") or "")
-                    kind = (
-                        "ai_generated"
-                        if action in {"reference_8", "sku_main", "ai_generate"}
-                        else "translated"
+                    if action in {"reference_8", "sku_main", "ai_generate"}:
+                        kind = "ai_generated"
+                    elif action == "translate" or str(
+                        item.get("translation_status") or ""
+                    ).upper() == "TRANSLATED":
+                        kind = "translated"
+                    else:
+                        # Older translation artifacts did not always store plan_action.
+                        kind = "translated"
+                    module_number = item.get("module_number")
+                    suffix = f" {int(module_number):02d}" if str(
+                        module_number or ""
+                    ).isdigit() else f" {image_index:02d}"
+                    sku_suffix = (
+                        f" · SKU {str(item.get('sku_id')).strip()}"
+                        if item.get("sku_id") not in (None, "")
+                        else ""
+                    )
+                    display_name = (
+                        f"{title_zh} · "
+                        f"{'AI优化图' if kind == 'ai_generated' else '俄语翻译图'}"
+                        f"{suffix}{sku_suffix}"
                     )
                     reference = {
                         "pipeline_id": pipeline_id,
+                        "title_zh": title_zh,
                         "stage": 3,
                         "role": item.get("source_role"),
                         "sku_id": item.get("sku_id"),
@@ -1080,6 +1074,7 @@ class PipelineService:
                                 "public_url": url,
                                 "source_url": item.get("source_url"),
                                 "asset_type": kind,
+                                "display_name": display_name,
                                 "managed": True,
                                 "sha256": item.get("storage_sha256"),
                                 "size_bytes": item.get("storage_size_bytes"),
@@ -1114,6 +1109,7 @@ class PipelineService:
                                 "public_url": url,
                                 "source_url": item.get("source_url"),
                                 "asset_type": kind,
+                                "display_name": display_name,
                                 "managed": False,
                                 "size_bytes": None,
                                 "references": [],
@@ -1121,7 +1117,11 @@ class PipelineService:
                         )
                         record["references"].append(reference)
 
-            managed_rows = self.assets.synchronize(managed)
+            managed_rows = [
+                record
+                for record in self.assets.synchronize(managed)
+                if record.get("asset_type") in {"ai_generated", "translated"}
+            ]
             external_rows = []
             for record in external.values():
                 references = list(record.get("references") or [])
@@ -1135,6 +1135,13 @@ class PipelineService:
                     }
                 )
             for record in managed_rows:
+                if not record.get("display_name"):
+                    label = (
+                        "AI优化图"
+                        if record.get("asset_type") == "ai_generated"
+                        else "俄语翻译图"
+                    )
+                    record["display_name"] = f"历史图片资产 · {label}"
                 record["can_delete"] = bool(
                     record.get("orphaned") and not record.get("published")
                 )
@@ -1157,7 +1164,8 @@ class PipelineService:
                 "summary": {
                     "total": len(rows),
                     "managed": len(managed_rows),
-                    "source": len(external_rows),
+                    "source": 0,
+                    "external": len(external_rows),
                     "orphaned": sum(1 for row in managed_rows if row.get("orphaned")),
                     "published": sum(1 for row in managed_rows if row.get("published")),
                     "managed_bytes": bytes_used,
@@ -1352,6 +1360,8 @@ class PipelineService:
             pipeline_id = str(pipeline.get("pipeline_id") or "")
             if not pipeline_id or not self.path(pipeline_id, 1).exists() or not self.path(pipeline_id, 4).exists():
                 continue
+            if str(pipeline.get("store_id") or "") != str(store_id):
+                continue
             try:
                 source = self.read_artifact(pipeline_id, 1)
                 payload = self.read_artifact(pipeline_id, 4)
@@ -1361,7 +1371,7 @@ class PipelineService:
             items = [item for item in payload.get("items") or [] if isinstance(item, Mapping)]
             for sku, item in zip(sku_rows, items):
                 offer_id = str(item.get("offer_id") or "")
-                if not offer_id.startswith(f"{store_id}-"):
+                if not offer_id:
                     continue
                 try:
                     cost = Decimal(str(sku.get("purchase_price_cny")))
@@ -2245,7 +2255,12 @@ class PipelineService:
             state_path = path / "pipeline.json"
             if state_path.exists():
                 try:
-                    result.append(_read_object(state_path))
+                    state = _read_object(state_path)
+                    raw_path = path / STAGE_FILES[1]
+                    if raw_path.exists():
+                        raw = _read_object(raw_path)
+                        state["title_zh"] = str(raw.get("title_zh") or "").strip()
+                    result.append(state)
                 except PipelineError:
                     continue
         return result
@@ -2594,6 +2609,11 @@ class PipelineService:
         if not path.exists():
             raise PipelineError("商品工作区不存在", status=404)
         state = _read_object(path)
+        raw_path = self.path(pipeline_id, 1)
+        if raw_path.exists():
+            state["title_zh"] = str(
+                _read_object(raw_path).get("title_zh") or ""
+            ).strip()
         state["artifacts"] = {
             str(stage): STAGE_FILES[stage]
             for stage in STAGE_FILES
@@ -3691,7 +3711,44 @@ class PipelineService:
                 ),
             }
             stores = load_store_configs({"stores": [effective_store_config]})
-            assembly = assemble_import_payload(final, _source_for_mapper(raw), stores[0])
+            allocation_rows = sku_rows or [{}]
+            allocation_keys = [
+                "|".join(
+                    (
+                        str(authorized_store["store_id"]),
+                        pipeline_id,
+                        str(sku.get("sku_id") or f"default-{index}"),
+                    )
+                )
+                for index, sku in enumerate(allocation_rows)
+            ]
+            reserved_offer_ids: list[str] = []
+            for existing_pipeline in self.list_pipelines():
+                existing_id = str(existing_pipeline.get("pipeline_id") or "")
+                if not existing_id or not self.path(existing_id, 4).exists():
+                    continue
+                try:
+                    existing_payload = self.read_artifact(existing_id, 4)
+                except PipelineError:
+                    continue
+                reserved_offer_ids.extend(
+                    str(item.get("offer_id") or "").strip()
+                    for item in existing_payload.get("items") or []
+                    if isinstance(item, Mapping) and item.get("offer_id")
+                )
+            try:
+                assigned_offer_ids = self.offer_ids.assign(
+                    allocation_keys,
+                    reserved_ids=reserved_offer_ids,
+                )
+            except OfferIdRegistryError as exc:
+                raise PipelineError(str(exc), status=500) from exc
+            assembly = assemble_import_payload(
+                final,
+                _source_for_mapper(raw),
+                stores[0],
+                assigned_offer_ids=assigned_offer_ids,
+            )
             failures = list(assembly.validation_errors) + gate_stage_4(assembly.payload)
             if any(
                 item.get("currency_code") != ozon_currency
@@ -3706,6 +3763,7 @@ class PipelineService:
                 if authorized_store.get("credential_source") == "environment"
                 else "registry",
                 "offer_ids": assembly.offer_ids,
+                "offer_id_policy": "QSM + MMDD + daily sequence",
                 "required_attribute_ids": assembly.required_attribute_ids,
                 "dimension_source": assembly.dimension_source,
                 "warnings": assembly.warnings,

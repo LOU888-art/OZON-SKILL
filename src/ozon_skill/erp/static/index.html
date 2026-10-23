@@ -55,7 +55,7 @@
 
       <div class="list-head"><div><span class="section-label">商品工作区</span><small id="pipelineCount">0 个任务</small></div><span class="live-dot">实时</span></div>
       <div class="pipeline-tools">
-        <input id="pipelineSearch" type="search" placeholder="搜索商品 ID">
+        <input id="pipelineSearch" type="search" placeholder="搜索采集到的 1688 商品标题">
         <select id="pipelineFilter" aria-label="任务状态筛选">
           <option value="all">全部状态</option>
           <option value="failed">需要处理</option>
@@ -150,16 +150,16 @@
 
   <section id="assetView" class="asset-view hidden">
     <div class="asset-head">
-      <div><span class="eyebrow">IMAGE ASSET LIBRARY</span><h1>图片资产库</h1><p>统一查看 1688 原图、翻译图、AI 图、OSS 托管状态和商品引用关系。</p></div>
+      <div><span class="eyebrow">IMAGE ASSET LIBRARY</span><h1>图片资产库</h1><p>只保留 AI 优化图与俄语翻译图，并以 1688 商品标题命名链接。</p></div>
       <button id="refreshAssetsBtn" class="primary" type="button">刷新资产库</button>
     </div>
     <section id="assetMetrics" class="asset-metrics"></section>
     <div class="asset-toolbar">
-      <input id="assetSearch" type="search" placeholder="搜索商品 ID、SKU 或图片地址">
-      <select id="assetTypeFilter"><option value="all">全部类型</option><option value="source">1688 原图</option><option value="translated">翻译图</option><option value="ai_generated">AI 生成图</option></select>
+      <input id="assetSearch" type="search" placeholder="搜索 1688 商品标题或 SKU">
+      <select id="assetTypeFilter"><option value="all">全部类型</option><option value="translated">俄语翻译图</option><option value="ai_generated">AI 优化图</option></select>
       <select id="assetStatusFilter"><option value="all">全部状态</option><option value="managed">OSS 托管</option><option value="orphaned">可清理</option><option value="published">已上架保护</option><option value="external">外部图片</option></select>
     </div>
-    <div id="assetEmpty" class="operations-empty hidden">暂无图片资产。完成第一或第三阶段后会自动出现。</div>
+    <div id="assetEmpty" class="operations-empty hidden">暂无已处理图片。完成第三阶段的 AI 优化或图片翻译后会自动出现。</div>
     <div id="assetGrid" class="asset-grid"></div>
   </section>
 

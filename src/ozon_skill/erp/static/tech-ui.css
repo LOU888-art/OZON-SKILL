@@ -359,10 +359,17 @@ body {
 .catalog-card tbody tr:hover,
 .data-card tbody tr:hover { background: #eef8fa; }
 
-.asset-grid { grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 14px; }
+.asset-grid { grid-template-columns: 1fr; gap: 10px; }
 .asset-card { transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease; }
 .asset-card:hover { transform: translateY(-3px); border-color: #9acbd8; box-shadow: 0 18px 45px rgba(28, 71, 94, .13); }
 .asset-preview { background: linear-gradient(145deg, #eaf1f5, #f7fbfd); }
+.asset-link-card { display: grid; grid-template-columns: 54px minmax(0, 1fr); align-items: center; padding: 13px; overflow: visible; }
+.asset-link-icon { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 12px; color: #cfff3f; background: linear-gradient(145deg, #071925, #0b3040); font-size: 20px; }
+.asset-link-card .asset-body { padding: 0 0 0 11px; }
+.asset-link-card .asset-badges { position: static; margin-bottom: 8px; }
+.asset-file-link { display: block; color: #102e40; font-size: 12px; font-weight: 800; line-height: 1.5; text-decoration: none; }
+.asset-file-link:hover { color: #087f73; text-decoration: underline; }
+.asset-meta { display: flex; gap: 14px; margin: 6px 0 9px; color: #738b99; font-size: 9px; }
 
 .secondary, .ghost {
   border-color: #bdd2dd;
@@ -402,7 +409,7 @@ dialog::backdrop { background: rgba(4, 17, 27, .72); }
   .workspace { padding: 28px 22px; }
   .stage { grid-template-columns: 76px minmax(130px, .5fr) minmax(180px, 1fr); }
   .stage-actions { grid-column: 2 / -1; justify-content: flex-start; }
-  .asset-grid { grid-template-columns: repeat(3, minmax(190px, 1fr)); }
+  .asset-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 760px) {
@@ -430,7 +437,7 @@ dialog::backdrop { background: rgba(4, 17, 27, .72); }
   .stage p, .stage-actions { grid-column: 2; }
   .stage:after { left: 29px; }
   .catalog-view, .research-view, .asset-view, .operations-view, .pricing-view, .task-view { padding: 24px 14px 40px; }
-  .asset-grid { grid-template-columns: 1fr 1fr; }
+  .asset-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 480px) {

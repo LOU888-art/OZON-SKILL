@@ -33,7 +33,10 @@ class AssetLibraryTests(unittest.TestCase):
         )
         _write(
             directory / "01_raw.json",
-            {"images": [{"url": "https://images.example.com/source.png"}]},
+            {
+                "title_zh": "下进上出封闭式猫砂盆粉色",
+                "images": [{"url": "https://images.example.com/source.png"}],
+            },
         )
         _write(
             directory / "03_final.json",
@@ -51,7 +54,7 @@ class AssetLibraryTests(unittest.TestCase):
             },
         )
 
-    def test_inventory_combines_sources_managed_assets_and_orphans(self) -> None:
+    def test_inventory_only_contains_processed_assets_and_orphans(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             self._pipeline(root)
@@ -66,9 +69,9 @@ class AssetLibraryTests(unittest.TestCase):
             )
             inventory = service.asset_library()
 
-        self.assertEqual(inventory["summary"]["total"], 3)
+        self.assertEqual(inventory["summary"]["total"], 2)
         self.assertEqual(inventory["summary"]["managed"], 2)
-        self.assertEqual(inventory["summary"]["source"], 1)
+        self.assertEqual(inventory["summary"]["source"], 0)
         self.assertEqual(inventory["summary"]["orphaned"], 1)
         self.assertEqual(inventory["summary"]["managed_bytes"], 200)
         orphan = next(item for item in inventory["assets"] if item.get("orphaned"))
@@ -80,6 +83,14 @@ class AssetLibraryTests(unittest.TestCase):
         self.assertTrue(orphan["can_delete"])
         self.assertFalse(current["can_delete"])
         self.assertEqual(current["reference_count"], 1)
+        self.assertEqual(
+            current["display_name"],
+            "下进上出封闭式猫砂盆粉色 · AI优化图 01",
+        )
+        self.assertNotIn(
+            "source",
+            {item.get("asset_type") for item in inventory["assets"]},
+        )
 
     def test_delete_only_removes_unreferenced_never_published_object(self) -> None:
         class _Client:
@@ -98,6 +109,7 @@ class AssetLibraryTests(unittest.TestCase):
                     "object_key": "northstar/old/orphan.png",
                     "public_url": "https://cdn.example.com/assets/northstar/old/orphan.png",
                     "size_bytes": 80,
+                    "asset_type": "translated",
                 }
             )
             client = _Client()
@@ -147,6 +159,7 @@ class AssetLibraryTests(unittest.TestCase):
                 {
                     "object_key": "northstar/old/orphan.png",
                     "public_url": "https://old.example.com/northstar/old/orphan.png",
+                    "asset_type": "translated",
                     "storage_bucket": "old-bucket",
                     "storage_endpoint": "oss-cn-hongkong.aliyuncs.com",
                 }
@@ -161,25 +174,27 @@ class AssetLibraryTests(unittest.TestCase):
             root = Path(temporary)
             self._pipeline(root)
             service = PipelineService(root)
-            source = next(
+            processed = next(
                 item
                 for item in service.asset_library()["assets"]
-                if item["asset_type"] == "source"
+                if item["asset_type"] == "ai_generated"
             )
             with patch(
                 "ozon_skill.erp.service.download_public_image",
                 return_value=(png, "image/png"),
             ) as download:
-                first = service.asset_preview(source["asset_id"])
+                first = service.asset_preview(processed["asset_id"])
             with patch(
                 "ozon_skill.erp.service.download_public_image",
                 side_effect=AssertionError("cached preview must be used"),
             ):
-                second = service.asset_preview(source["asset_id"])
+                second = service.asset_preview(processed["asset_id"])
 
         self.assertEqual(first, (png, "image/png"))
         self.assertEqual(second, first)
-        download.assert_called_once_with("https://images.example.com/source.png")
+        download.assert_called_once_with(
+            "https://cdn.example.com/assets/northstar/628680616884/current.png"
+        )
 
     def test_preview_rejects_unknown_asset_without_fetching_url(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
