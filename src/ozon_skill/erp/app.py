@@ -33,6 +33,8 @@ _PRICING_ROUTE = "/api/pricing/calculate"
 _ACTIVITY_ROUTE = "/api/activity"
 _NOTIFICATIONS_ROUTE = "/api/notifications"
 _NOTIFICATIONS_READ_ROUTE = "/api/notifications/read"
+_BATCH_IMPORTS_ROUTE = "/api/batch-imports"
+_BATCH_IMPORT_ROUTE = re.compile(r"^/api/batch-imports/([a-f0-9]{32})$")
 _IMAGES_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/images$")
 _REQUIRED_ATTRIBUTES_ROUTE = re.compile(
     r"^/api/pipelines/([^/]+)/required-attributes$"
@@ -196,6 +198,14 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 )
             elif path == _NOTIFICATIONS_ROUTE:
                 self._json(self.service.notification_center(self._username()))
+            elif path == _BATCH_IMPORTS_ROUTE:
+                self._json(
+                    self.service.list_batch_imports(
+                        (query.get("limit") or ["20"])[0]
+                    )
+                )
+            elif match := _BATCH_IMPORT_ROUTE.fullmatch(path):
+                self._json(self.service.batch_import_status(match.group(1)))
             elif path == "/api/stores":
                 self._json({"stores": self.service.list_stores()})
             elif path == _AI_PROVIDER_ROUTE:
@@ -247,6 +257,12 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
             if path == _NOTIFICATIONS_READ_ROUTE:
                 self._json(
                     self.service.mark_notifications_read(self._username(), body)
+                )
+                return
+            if path == _BATCH_IMPORTS_ROUTE:
+                self._require("pipeline.create")
+                self._json(
+                    self.service.start_batch_import(body, self._username()), 202
                 )
                 return
             if path == _TEAM_ROUTE:

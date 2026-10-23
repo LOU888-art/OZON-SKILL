@@ -24,6 +24,8 @@ python3 -m venv --system-site-packages /workspace/.venv
 
 顶部“图片存储”可配置阿里云 OSS 与公开 CDN 地址。配置通过后，第三阶段会下载已经生成或翻译完成的图片，校验真实 PNG/JPEG/WebP 内容，按 SHA-256 去重上传到自有 Bucket，并把商品图和 Rich Content 中的临时外链替换为稳定 HTTPS 地址。保存配置时会上传并公开读取一张 1×1 验证图；建议使用仅有目标 Bucket `PutObject` 权限的 RAM 子账号，并允许对象级 `public-read` 或配置公开 CDN 回源。
 
+商品工作区的“批量导入 ID / 链接”可一次提交最多 100 条 1688 商品。系统会先提取 ID、去重和检查套餐商品额度，在用户明确确认后才后台逐条调用 AlphaShop。进度与每条错误会持久化；服务器重启后不会自动重放未完成的付费请求。
+
 常用环境变量：
 
 - AlphaShop 商品详情、类目映射和图片翻译：`ALPHASHOP_ACCESS_KEY`、`ALPHASHOP_SECRET_KEY`。

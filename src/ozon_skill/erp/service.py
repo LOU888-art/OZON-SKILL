@@ -9,6 +9,7 @@ import os
 import re
 import tempfile
 import threading
+from uuid import uuid4
 from copy import deepcopy
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -72,6 +73,8 @@ STAGE_FILES = {
 IMAGE_SELECTION_FILE = "image-selection.json"
 IMAGE_ACTIONS = {"exclude", "translate", "reference_8", "sku_main"}
 _PIPELINE_ID = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
+_BATCH_JOB_ID = re.compile(r"^[a-f0-9]{32}$")
+_MAX_BATCH_IMPORT_ITEMS = 100
 PLAN_CATALOG = {
     "starter": {
         "name": "启航版",
@@ -501,6 +504,8 @@ class PipelineService:
         self.work_root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._background_jobs: dict[tuple[str, int], threading.Thread] = {}
+        self._batch_import_threads: dict[str, threading.Thread] = {}
+        self._batch_import_root = self.work_root / ".batch-imports"
         self.stores = StoreRegistry(self.work_root / ".ozon-stores.json")
         self.ai_provider = AiProviderRegistry(self.work_root / ".ai-provider.json")
         self.team = TeamRegistry(self.work_root / ".team.json")
@@ -531,6 +536,23 @@ class PipelineService:
             if changed:
                 state["updated_at"] = _now()
                 _atomic_json(state_path, state)
+        if self._batch_import_root.exists():
+            for job_path in self._batch_import_root.glob("*.json"):
+                try:
+                    job = _read_object(job_path)
+                except PipelineError:
+                    continue
+                if job.get("status") not in {"QUEUED", "RUNNING"}:
+                    continue
+                job["status"] = "INTERRUPTED"
+                job["finished_at"] = _now()
+                job["updated_at"] = _now()
+                job["message"] = "服务器重启中断了批量采集；为避免重复扣费，系统未自动续跑"
+                for item in job.get("items") or []:
+                    if isinstance(item, dict) and item.get("status") in {"QUEUED", "RUNNING"}:
+                        item["status"] = "INTERRUPTED"
+                        item["error"] = "服务器重启中断，未自动重试"
+                _atomic_json(job_path, job)
 
     def ai_provider_status(self) -> dict[str, Any]:
         return self.ai_provider.public_status()
@@ -1403,6 +1425,204 @@ class PipelineService:
 
     def read_artifact(self, pipeline_id: Any, stage: int) -> dict[str, Any]:
         return _read_object(self.path(pipeline_id, stage))
+
+    def _batch_import_path(self, job_id: Any) -> Path:
+        value = str(job_id or "").strip().lower()
+        if not _BATCH_JOB_ID.fullmatch(value):
+            raise PipelineError("批量任务 ID 格式无效")
+        return self._batch_import_root / f"{value}.json"
+
+    def batch_import_status(self, job_id: Any) -> dict[str, Any]:
+        path = self._batch_import_path(job_id)
+        if not path.exists():
+            raise PipelineError("批量导入任务不存在", status=404)
+        return _read_object(path)
+
+    def list_batch_imports(self, limit: Any = 20) -> dict[str, Any]:
+        try:
+            safe_limit = max(1, min(int(limit), 100))
+        except (TypeError, ValueError):
+            safe_limit = 20
+        if not self._batch_import_root.exists():
+            return {"jobs": []}
+        jobs: list[dict[str, Any]] = []
+        for path in sorted(
+            self._batch_import_root.glob("*.json"),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        ):
+            try:
+                jobs.append(_read_object(path))
+            except PipelineError:
+                continue
+            if len(jobs) >= safe_limit:
+                break
+        return {"jobs": jobs}
+
+    @staticmethod
+    def _batch_import_tokens(value: Any) -> list[str]:
+        if isinstance(value, str):
+            tokens = re.split(r"[\s,，;；]+", value)
+        elif isinstance(value, list):
+            tokens = [str(item or "") for item in value]
+        else:
+            raise PipelineError("items 必须是链接/ID 数组或多行文本")
+        return [token.strip() for token in tokens if token.strip()]
+
+    def _batch_quota_snapshot(self, pipeline_ids: list[str]) -> dict[str, int]:
+        plan_code = str(os.environ.get("ERP_PLAN") or "business").strip().lower()
+        plan = PLAN_CATALOG.get(plan_code, PLAN_CATALOG["business"])
+        month = datetime.now(timezone.utc).strftime("%Y-%m")
+        used = sum(
+            1
+            for item in self.list_pipelines()
+            if str(item.get("created_at") or item.get("updated_at") or "").startswith(month)
+        )
+        new_count = sum(
+            1 for pipeline_id in pipeline_ids if not self._state_path(pipeline_id).exists()
+        )
+        limit = int(plan["limits"]["products"])
+        if used + new_count > limit:
+            raise PipelineError(
+                f"本次需新建 {new_count} 个商品任务，但本月仅剩 {max(0, limit - used)} 个额度（{used}/{limit}）",
+                status=402,
+            )
+        return {"used": used, "limit": limit, "new": new_count}
+
+    def start_batch_import(self, value: Mapping[str, Any], actor: Any = "") -> dict[str, Any]:
+        tokens = self._batch_import_tokens(value.get("items"))
+        if not tokens:
+            raise PipelineError("请至少输入一个 1688 商品 ID 或链接")
+        if len(tokens) > _MAX_BATCH_IMPORT_ITEMS:
+            raise PipelineError(f"单次最多导入 {_MAX_BATCH_IMPORT_ITEMS} 条商品")
+        if value.get("confirm_external_requests") is not True:
+            raise PipelineError("请确认允许逐条调用 AlphaShop 商品详情 API")
+
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        duplicate_count = 0
+        valid_pipeline_ids: list[str] = []
+        for token in tokens:
+            try:
+                pipeline_id = _safe_pipeline_id(extract_offer_id(token))
+            except (PipelineError, ValueError) as exc:
+                rows.append(
+                    {
+                        "input": token[:500],
+                        "pipeline_id": None,
+                        "status": "FAIL",
+                        "error": str(exc)[:500],
+                    }
+                )
+                continue
+            if pipeline_id in seen:
+                duplicate_count += 1
+                continue
+            seen.add(pipeline_id)
+            valid_pipeline_ids.append(pipeline_id)
+            rows.append(
+                {
+                    "input": token[:500],
+                    "pipeline_id": pipeline_id,
+                    "status": "QUEUED",
+                    "error": None,
+                }
+            )
+        if not valid_pipeline_ids:
+            raise PipelineError("没有可识别的 1688 商品 ID 或链接")
+
+        quota = self._batch_quota_snapshot(valid_pipeline_ids)
+        with self._lock:
+            active = [
+                thread for thread in self._batch_import_threads.values() if thread.is_alive()
+            ]
+            if active:
+                raise PipelineError("已有批量采集任务正在执行，请等待完成后再创建", status=409)
+            job_id = uuid4().hex
+            now = _now()
+            job = {
+                "schema_version": "1.0",
+                "job_id": job_id,
+                "status": "QUEUED",
+                "created_at": now,
+                "updated_at": now,
+                "started_at": None,
+                "finished_at": None,
+                "created_by": str(actor or "").strip() or "unknown",
+                "total": len(rows),
+                "valid_count": len(valid_pipeline_ids),
+                "duplicate_count": duplicate_count,
+                "completed_count": sum(1 for row in rows if row["status"] == "FAIL"),
+                "passed_count": 0,
+                "failed_count": sum(1 for row in rows if row["status"] == "FAIL"),
+                "quota": quota,
+                "items": rows,
+                "message": "已进入后台队列",
+            }
+            path = self._batch_import_path(job_id)
+            _atomic_json(path, job)
+            thread = threading.Thread(
+                target=self._run_batch_import,
+                args=(job_id,),
+                daemon=True,
+                name=f"batch-import-{job_id[:8]}",
+            )
+            self._batch_import_threads[job_id] = thread
+            thread.start()
+        return job
+
+    def _run_batch_import(self, job_id: str) -> None:
+        path = self._batch_import_path(job_id)
+        with self._lock:
+            job = _read_object(path)
+            job["status"] = "RUNNING"
+            job["started_at"] = _now()
+            job["updated_at"] = _now()
+            job["message"] = "正在逐条采集"
+            _atomic_json(path, job)
+        for index in range(len(job.get("items") or [])):
+            with self._lock:
+                job = _read_object(path)
+                row = job["items"][index]
+                if row.get("status") != "QUEUED":
+                    continue
+                row["status"] = "RUNNING"
+                row["started_at"] = _now()
+                job["updated_at"] = _now()
+                _atomic_json(path, job)
+            try:
+                result = self.run_stage_1(row["pipeline_id"])
+                status = str(result.get("status") or "FAIL")
+                error = "；".join(str(item) for item in result.get("failures") or []) or None
+            except Exception as exc:
+                status = "FAIL"
+                error = str(exc)[:1000]
+            with self._lock:
+                job = _read_object(path)
+                row = job["items"][index]
+                row["status"] = "PASS" if status == "PASS" else "FAIL"
+                row["error"] = error
+                row["finished_at"] = _now()
+                completed = [
+                    item
+                    for item in job["items"]
+                    if item.get("status") in {"PASS", "FAIL", "INTERRUPTED"}
+                ]
+                job["completed_count"] = len(completed)
+                job["passed_count"] = sum(1 for item in completed if item.get("status") == "PASS")
+                job["failed_count"] = sum(1 for item in completed if item.get("status") == "FAIL")
+                job["updated_at"] = _now()
+                _atomic_json(path, job)
+        with self._lock:
+            job = _read_object(path)
+            passed = int(job.get("passed_count") or 0)
+            failed = int(job.get("failed_count") or 0)
+            job["status"] = "COMPLETED" if failed == 0 else ("FAILED" if passed == 0 else "PARTIAL")
+            job["finished_at"] = _now()
+            job["updated_at"] = _now()
+            job["message"] = f"批量采集完成：成功 {passed}，失败 {failed}"
+            _atomic_json(path, job)
+            self._batch_import_threads.pop(job_id, None)
 
     def run_stage_1(self, offer_id: Any) -> dict[str, Any]:
         try:

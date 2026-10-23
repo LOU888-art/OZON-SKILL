@@ -42,6 +42,7 @@
         <div class="input-row">
           <input id="offerId" name="offer_id" autocomplete="off" placeholder="输入 offer_id / num_iid" required>
           <button type="submit" class="primary">开始采集 <span>→</span></button>
+          <button id="batchImportBtn" type="button" class="batch-import-trigger">批量导入 ID / 链接</button>
         </div>
         <small>仅调用 1688 开放平台，不使用网页爬虫。</small>
       </form>
@@ -205,6 +206,20 @@
         <div class="field-grid"><div class="field"><label for="ossAccessKeyId">AccessKey ID</label><input id="ossAccessKeyId" autocomplete="off" required></div><div class="field"><label for="ossAccessKeySecret">AccessKey Secret</label><input id="ossAccessKeySecret" type="password" autocomplete="new-password" placeholder="已配置时留空可保持不变"></div></div>
         <div class="warning">建议创建仅允许当前 Bucket PutObject 的 RAM 子账号，不要使用阿里云主账号 AccessKey。Bucket 需允许对象设置为 public-read，或配置能公开回源的 CDN。</div>
         <div class="dialog-actions"><button id="deleteObjectStorageBtn" class="secondary" type="button">删除配置</button><button class="primary" type="submit">验证并保存</button></div>
+      </form>
+    </div>
+  </dialog>
+
+  <dialog id="batchImportDialog">
+    <div class="dialog-card stores-dialog">
+      <div class="dialog-head"><div><span class="eyebrow">BULK PRODUCT INTAKE</span><h3>1688 商品批量导入</h3></div><button id="closeBatchImportBtn" class="close" type="button">×</button></div>
+      <p class="dialog-note">每行填写一个 1688 商品 ID 或详情链接，系统会自动提取 ID、去重、检查套餐额度，并在后台逐条采集。单条失败不会阻断整批。</p>
+      <form id="batchImportForm">
+        <div class="field"><label for="batchImportItems">商品 ID / 链接（最多 100 条）</label><textarea id="batchImportItems" placeholder="628680616884&#10;https://detail.1688.com/offer/988960243766.html" required></textarea><small>支持换行、空格、逗号或分号分隔；重复商品只采集一次。</small></div>
+        <label class="batch-confirm"><input id="batchImportConfirm" type="checkbox" required> 我确认系统可以逐条调用 AlphaShop 商品详情 API；该操作可能产生接口费用。</label>
+        <div id="batchImportProgress" class="batch-import-progress hidden"></div>
+        <div id="batchImportResults" class="batch-import-results"></div>
+        <div class="dialog-actions"><button id="resetBatchImportBtn" class="secondary" type="button">新建一批</button><button id="submitBatchImportBtn" class="primary" type="submit">确认并开始采集</button></div>
       </form>
     </div>
   </dialog>
