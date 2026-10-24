@@ -6,6 +6,8 @@ import math
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Mapping
 
+from .pricing_categories import get_commission_category
+
 
 class PricingError(RuntimeError):
     """A user-facing pricing input error."""
@@ -40,6 +42,43 @@ def _rate(value: Any, name: str) -> Decimal:
 
 def _money(value: Decimal) -> str:
     return str(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def _commission_for_value(
+    rates: tuple[Decimal, Decimal, Decimal], goods_value_rub: Decimal
+) -> tuple[Decimal, str]:
+    if goods_value_rub <= 1500:
+        return rates[0], "≤1500₽"
+    if goods_value_rub <= 5000:
+        return rates[1], "1500.01–5000₽"
+    return rates[2], ">5000₽"
+
+
+def _tiered_price(
+    fixed_cost: Decimal,
+    commission_rates: tuple[Decimal, Decimal, Decimal],
+    other_variable_rate: Decimal,
+    target_rate: Decimal,
+    exchange: Decimal,
+) -> Decimal:
+    bands = (
+        (commission_rates[0], Decimal("0"), Decimal("1500")),
+        (commission_rates[1], Decimal("1500"), Decimal("5000")),
+        (commission_rates[2], Decimal("5000"), None),
+    )
+    last_candidate: Decimal | None = None
+    for commission, lower, upper in bands:
+        denominator = Decimal("1") - other_variable_rate - commission - target_rate
+        if denominator <= 0:
+            raise PricingError("费率与目标利润率合计必须小于 100%")
+        candidate = fixed_cost / denominator
+        goods_value = candidate * exchange
+        last_candidate = candidate
+        if goods_value > lower and (upper is None or goods_value <= upper):
+            return candidate
+    if last_candidate is None:
+        raise PricingError("无法根据类目佣金计算价格")
+    return last_candidate
 
 
 def _channel(
@@ -119,13 +158,27 @@ def calculate_pricing(value: Mapping[str, Any]) -> dict[str, Any]:
     length = _number(value.get("length_cm", 0), "长度")
     width = _number(value.get("width_cm", 0), "宽度")
     height = _number(value.get("height_cm", 0), "高度")
-    commission = _rate(value.get("commission_percent", 10), "类目佣金率")
+    category_id = str(value.get("commission_category_id") or "").strip()
+    category = get_commission_category(category_id) if category_id else None
+    if category_id and category is None:
+        raise PricingError("未找到选中的 Ozon 类目佣金，请重新搜索并选择")
+    if category:
+        commission_rates = tuple(
+            Decimal(str(item)) / 100 for item in category["rates"]
+        )
+    else:
+        manual_commission = _rate(value.get("commission_percent", 10), "类目佣金率")
+        commission_rates = (manual_commission,) * 3
+    commission, commission_band = _commission_for_value(
+        commission_rates, sale * exchange
+    )
     returns = _rate(value.get("return_loss_percent", 3), "退货/取消损失率")
     withdrawal = _rate(value.get("withdrawal_percent", 1.2), "提现/结汇手续费率")
     advertising = _rate(value.get("advertising_percent", 5), "广告费率")
     last_mile = _rate(value.get("last_mile_percent", 2), "尾程配送费率")
     target = _rate(value.get("target_margin_percent", 30), "目标销售利润率")
-    variable_rate = commission + returns + withdrawal + advertising + last_mile
+    other_variable_rate = returns + withdrawal + advertising + last_mile
+    variable_rate = commission + other_variable_rate
     if variable_rate >= 1:
         raise PricingError("佣金及各项比例费率合计必须小于 100%")
     if variable_rate + target >= 1:
@@ -141,8 +194,13 @@ def calculate_pricing(value: Mapping[str, Any]) -> dict[str, Any]:
     last_mile_fee = min(max(sale * exchange * last_mile, Decimal("15")), Decimal("200")) / exchange
     total = purchase + misc + freight + platform_fee + return_loss + withdrawal_fee + advertising_fee + last_mile_fee
     profit = sale - total
-    break_even = (purchase + misc + freight) / (1 - variable_rate)
-    suggested = (purchase + misc + freight) / (1 - variable_rate - target)
+    fixed_cost = purchase + misc + freight
+    break_even = _tiered_price(
+        fixed_cost, commission_rates, other_variable_rate, Decimal("0"), exchange
+    )
+    suggested = _tiered_price(
+        fixed_cost, commission_rates, other_variable_rate, target, exchange
+    )
     warnings: list[str] = []
     if mode == "OGL" and channel in {"Big", "Premium Big"} and not all(item > 0 for item in (length, width, height)):
         warnings.append("OGL 计抛档缺少长宽高，当前暂按实重计费")
@@ -151,12 +209,28 @@ def calculate_pricing(value: Mapping[str, Any]) -> dict[str, Any]:
     suggested_channel = _channel(suggested, exchange, weight, mode, transport)
     if suggested_channel != channel:
         warnings.append(f"建议售价会使物流从 {channel} 跨档到 {suggested_channel}，请按建议价再次试算")
+    suggested_commission, suggested_band = _commission_for_value(
+        commission_rates, suggested * exchange
+    )
+    if suggested_commission != commission:
+        warnings.append(
+            f"建议售价的类目佣金将从 {commission * 100}% 切换为 "
+            f"{suggested_commission * 100}%（{suggested_band}）"
+        )
     return {
         "schema_version": "1.0",
         "currency": "CNY",
         "channel": channel,
         "charge_weight_g": str(charge_weight.quantize(Decimal("0.01"))),
         "goods_value_rub": _money(sale * exchange),
+        "commission": {
+            "source": "category" if category else "manual",
+            "category_id": category_id or None,
+            "category": category,
+            "price_band": commission_band,
+            "applied_percent": str((commission * 100).normalize()),
+            "rates_percent": [str((item * 100).normalize()) for item in commission_rates],
+        },
         "fees": {
             "purchase_cost": _money(purchase),
             "domestic_misc": _money(misc),

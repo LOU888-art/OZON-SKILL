@@ -7,9 +7,62 @@ from ozon_skill.erp.pricing import (
     calculate_pricing,
     calculate_target_pricing,
 )
+from ozon_skill.erp.pricing_categories import search_commission_categories
 
 
 class PricingWorkbookParityTests(unittest.TestCase):
+    def test_category_commission_switches_by_ruble_price_band(self) -> None:
+        category = search_commission_categories("家用香薰", 1)["results"][0]
+        common = {
+            "commission_category_id": category["id"],
+            "purchase_cost_cny": 10,
+            "weight_g": 300,
+            "cny_to_rub_rate": 12.6,
+        }
+
+        low = calculate_pricing({**common, "sale_price_cny": 100})
+        middle = calculate_pricing({**common, "sale_price_cny": 200})
+        high = calculate_pricing({**common, "sale_price_cny": 500})
+
+        self.assertEqual(low["commission"]["applied_percent"], "12")
+        self.assertEqual(middle["commission"]["applied_percent"], "14")
+        self.assertEqual(high["commission"]["applied_percent"], "18")
+        self.assertEqual(middle["fees"]["platform_commission"], "28.00")
+
+    def test_suggested_price_reselects_category_commission_tier(self) -> None:
+        category = search_commission_categories("家用香薰", 1)["results"][0]
+        result = calculate_pricing(
+            {
+                "commission_category_id": category["id"],
+                "sale_price_cny": 100,
+                "purchase_cost_cny": 100,
+                "weight_g": 300,
+                "cny_to_rub_rate": 12.6,
+            }
+        )
+
+        self.assertEqual(result["commission"]["applied_percent"], "12")
+        self.assertTrue(any("佣金将从 12" in item for item in result["warnings"]))
+        self.assertGreater(float(result["suggested_price_cny"]) * 12.6, 1500)
+
+    def test_category_search_supports_chinese_and_russian(self) -> None:
+        chinese = search_commission_categories("儿童智能手表", 10)
+        russian = search_commission_categories("Смарт-часы детские", 10)
+
+        self.assertEqual(chinese["total_categories"], 10788)
+        self.assertEqual(chinese["results"][0]["id"], russian["results"][0]["id"])
+
+    def test_unknown_category_commission_is_rejected(self) -> None:
+        with self.assertRaisesRegex(PricingError, "未找到选中的 Ozon 类目佣金"):
+            calculate_pricing(
+                {
+                    "commission_category_id": "missing",
+                    "sale_price_cny": 100,
+                    "purchase_cost_cny": 10,
+                    "weight_g": 300,
+                }
+            )
+
     def test_workbook_example_matches_cached_results(self) -> None:
         result = calculate_pricing(
             {

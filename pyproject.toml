@@ -22,5 +22,5 @@ ozon-erp = "ozon_skill.erp.app:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"ozon_skill.erp" = ["static/*.html", "static/*.css", "static/*.js"]
+"ozon_skill.erp" = ["static/*.html", "static/*.css", "static/*.js", "data/*.json.gz"]
 

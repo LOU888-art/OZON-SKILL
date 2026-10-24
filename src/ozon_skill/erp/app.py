@@ -32,6 +32,7 @@ _TEAM_MEMBER_ROUTE = re.compile(r"^/api/team/([^/]+)$")
 _OPERATIONS_ROUTE = "/api/operations"
 _FINANCE_SETTINGS_ROUTE = "/api/finance-settings"
 _PRICING_ROUTE = "/api/pricing/calculate"
+_PRICING_CATEGORIES_ROUTE = "/api/pricing/categories"
 _ACTIVITY_ROUTE = "/api/activity"
 _NOTIFICATIONS_ROUTE = "/api/notifications"
 _NOTIFICATIONS_READ_ROUTE = "/api/notifications/read"
@@ -281,6 +282,14 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                             str((query.get("store_id") or [""])[0])
                         )
                     }
+                )
+            elif path == _PRICING_CATEGORIES_ROUTE:
+                self._require("finance.read")
+                self._json(
+                    self.service.pricing_categories(
+                        (query.get("q") or [""])[0],
+                        (query.get("limit") or ["30"])[0],
+                    )
                 )
             elif path == _ACTIVITY_ROUTE:
                 self._require("audit.read")

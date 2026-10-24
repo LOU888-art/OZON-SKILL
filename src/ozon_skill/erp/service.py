@@ -68,6 +68,7 @@ from .object_storage import (
 )
 from .operations import OzonOperationsClient, OzonOperationsError
 from .pricing import PricingError, calculate_pricing, calculate_target_pricing
+from .pricing_categories import search_commission_categories
 from .stores import StoreAuthorizationError, StoreRegistry
 from .supplier_monitor import (
     SupplierMonitorError,
@@ -1362,6 +1363,9 @@ class PipelineService:
             return calculate_pricing(value)
         except PricingError as exc:
             raise PipelineError(str(exc), status=422) from exc
+
+    def pricing_categories(self, query: Any, limit: Any = 30) -> dict[str, Any]:
+        return search_commission_categories(query, limit)
 
     def _product_cost_index(self, store_id: str) -> dict[str, dict[str, Any]]:
         result: dict[str, dict[str, Any]] = {}

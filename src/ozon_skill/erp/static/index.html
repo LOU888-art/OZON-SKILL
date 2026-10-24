@@ -190,8 +190,8 @@
 
   <section id="pricingView" class="pricing-view hidden">
     <div class="pricing-head">
-      <div><span class="eyebrow">OZON RFBS PRICING</span><h1>定价与单件利润</h1><p>严格按《最新定价工具表》的 OGL / 邮政规则，全部金额统一按人民币核算。</p></div>
-      <div class="pricing-source"><span>规则版本</span><b>China Post 2025-11-07</b><small>OGL 货值分档 · 尾程 15–200₽</small></div>
+      <div><span class="eyebrow">OZON RFBS PRICING</span><h1>定价与单件利润</h1><p>严格按《OZON最新定价表》核算，内置 10,788 条类目佣金并按售价自动分档。</p></div>
+      <div class="pricing-source"><span>佣金规则</span><b>2025-12-01 三档佣金</b><small>≤1500₽ · 1500.01–5000₽ · &gt;5000₽</small></div>
     </div>
     <form id="pricingForm" class="pricing-layout">
       <section class="pricing-form-card">
@@ -201,8 +201,15 @@
           <div class="field"><label for="pricingPurchase">采购成本（CNY）</label><input id="pricingPurchase" type="number" min="0" step="0.01" value="7.8" required></div>
           <div class="field"><label for="pricingMisc">国内杂费（CNY）</label><input id="pricingMisc" type="number" min="0" step="0.01" value="0" required></div>
         </div>
+        <div class="field pricing-category-field">
+          <label for="pricingCategorySearch">Ozon 商品类型（中文/俄文搜索）</label>
+          <input id="pricingCategoryId" type="hidden">
+          <input id="pricingCategorySearch" type="search" autocomplete="off" placeholder="例如：猫砂盆、香薰、收纳盒或俄文商品类型">
+          <div id="pricingCategoryResults" class="pricing-category-results hidden"></div>
+          <small id="pricingCategoryHint">请从搜索结果选择完整类目；未选择时使用下方手动佣金。</small>
+        </div>
         <div class="field-grid three">
-          <div class="field"><label for="pricingCommission">类目佣金 RFBS（%）</label><input id="pricingCommission" type="number" min="0" max="100" step="0.01" value="10" required></div>
+          <div class="field"><label for="pricingCommission">当前档佣金 RFBS（%）</label><input id="pricingCommission" type="number" min="0" max="100" step="0.01" value="10" required><small>选择类目后自动计算；未选类目时可手动填写。</small></div>
           <div class="field"><label for="pricingReturns">退货/取消损失（%）</label><input id="pricingReturns" type="number" min="0" max="100" step="0.01" value="3" required></div>
           <div class="field"><label for="pricingWithdrawal">提现/结汇（%）</label><input id="pricingWithdrawal" type="number" min="0" max="100" step="0.01" value="1.2" required></div>
         </div>
