@@ -129,31 +129,6 @@ if command -v restorecon >/dev/null 2>&1; then
   restorecon -RF "$nginx_secret_dir"
 fi
 
-cat >/etc/nginx/conf.d/ozon-erp.conf <<'EOF'
-server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    listen 8443 ssl;
-    listen [::]:8443 ssl;
-    server_name 8.217.125.205;
-
-    ssl_certificate /etc/nginx/ozon-erp/server.crt;
-    ssl_certificate_key /etc/nginx/ozon-erp/server.key;
-    ssl_protocols TLSv1.2 TLSv1.3;
-
-    location / {
-        proxy_pass http://127.0.0.1:18080;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-ERP-User "";
-        proxy_read_timeout 300s;
-    }
-}
-EOF
-
 if [ -f /etc/ssh/sshd_config.pre-ozon-deploy ]; then
   cp /etc/ssh/sshd_config.pre-ozon-deploy /etc/ssh/sshd_config
   sshd -t
@@ -167,9 +142,8 @@ fi
 systemctl daemon-reload
 systemctl enable ozon-erp
 systemctl restart ozon-erp
-nginx -t
 systemctl enable nginx
-systemctl restart nginx
+systemctl start nginx
 
 if systemctl is-active --quiet firewalld; then
   firewall-cmd --permanent --add-service=https >/dev/null
@@ -187,6 +161,8 @@ for attempt in 1 2 3 4 5; do
   fi
   sleep 1
 done
+
+bash "$project_root/deploy/aliyun/configure-nginx.sh"
 
 echo
 echo "OZON ERP 部署完成"

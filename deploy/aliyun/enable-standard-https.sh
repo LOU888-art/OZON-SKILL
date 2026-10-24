@@ -13,46 +13,16 @@ if [ ! -f "$config" ]; then
 fi
 
 cp -p "$config" "$config.pre-standard-https"
-cat >"$config" <<'EOF'
-server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    listen 8443 ssl;
-    listen [::]:8443 ssl;
-    server_name 8.217.125.205;
-
-    ssl_certificate /etc/nginx/ozon-erp/server.crt;
-    ssl_certificate_key /etc/nginx/ozon-erp/server.key;
-    ssl_protocols TLSv1.2 TLSv1.3;
-
-    location / {
-        proxy_pass http://127.0.0.1:18080;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-ERP-User "";
-        proxy_read_timeout 300s;
-    }
-}
-EOF
-
-nginx -t
 if systemctl is-active --quiet firewalld; then
   firewall-cmd --permanent --add-service=https >/dev/null
   firewall-cmd --reload >/dev/null
 fi
 systemctl enable nginx
-systemctl restart nginx
+systemctl start nginx
 systemctl enable ozon-erp
 systemctl restart ozon-erp
 
-status=$(curl -k -sS -o /dev/null -w '%{http_code}' -H 'Host: 8.217.125.205' https://127.0.0.1/)
-if [ "$status" != "303" ]; then
-  echo "HTTPS 本机检查失败，预期跳转登录页（303），实际 $status" >&2
-  exit 1
-fi
+bash "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/configure-nginx.sh"
 
 echo "ERP 已切换到标准 HTTPS 端口"
 echo "网址：https://8.217.125.205/"

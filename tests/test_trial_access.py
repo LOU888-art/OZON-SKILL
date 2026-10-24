@@ -4,6 +4,7 @@ import json
 import tempfile
 import threading
 import unittest
+from http.cookies import SimpleCookie
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -129,6 +130,115 @@ class TrialHttpAccessTests(unittest.TestCase):
             self.assertEqual(pricing_status, 200)
             self.assertEqual(workspace_status, 403)
             self.assertIn("workspace.read", str(workspace["error"]))
+
+    def test_registered_trials_can_only_manage_their_own_verified_stores(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            server = create_server("127.0.0.1", 0, Path(directory))
+            server.pipeline_service.auth.bootstrap(
+                "admin@northstar.local", "AdminPass123", "admin"
+            )
+            server.pipeline_service.team.identity("admin")
+            server.pipeline_service.stores.client_factory = _client_factory
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+            def request(
+                path: str,
+                *,
+                method: str = "GET",
+                body: dict[str, object] | None = None,
+                cookie: str = "",
+            ) -> tuple[int, dict[str, object], str]:
+                data = json.dumps(body).encode() if body is not None else None
+                headers = {"Content-Type": "application/json"}
+                if cookie:
+                    headers["Cookie"] = cookie
+                value = Request(
+                    base_url + path, data=data, headers=headers, method=method
+                )
+                try:
+                    with urlopen(value, timeout=5) as response:
+                        return (
+                            response.status,
+                            json.loads(response.read()),
+                            response.headers.get("Set-Cookie", ""),
+                        )
+                except HTTPError as exc:
+                    return exc.code, json.loads(exc.read()), ""
+
+            def register(identifier: str, display_name: str) -> str:
+                status, _, set_cookie = request(
+                    "/api/auth/register",
+                    method="POST",
+                    body={
+                        "identifier": identifier,
+                        "password": "SellerPass123",
+                        "display_name": display_name,
+                    },
+                )
+                self.assertEqual(status, 201)
+                parsed = SimpleCookie()
+                parsed.load(set_cookie)
+                return f"northstar_session={parsed['northstar_session'].value}"
+
+            try:
+                first_cookie = register("seller1@example.com", "卖家一")
+                second_cookie = register("seller2@example.com", "卖家二")
+                create_status, created, _ = request(
+                    "/api/stores",
+                    method="POST",
+                    cookie=first_cookie,
+                    body={
+                        "store_id": "seller-one",
+                        "name": "卖家一的 Ozon 店铺",
+                        "client_id": "10001",
+                        "api_key": "private-key-one",
+                        "currency_code": "RUB",
+                    },
+                )
+                first_status, first_stores, _ = request(
+                    "/api/stores", cookie=first_cookie
+                )
+                second_status, second_stores, _ = request(
+                    "/api/stores", cookie=second_cookie
+                )
+                verify_status, _, _ = request(
+                    "/api/stores/seller-one/verify",
+                    method="POST",
+                    body={},
+                    cookie=first_cookie,
+                )
+                foreign_verify_status, _, _ = request(
+                    "/api/stores/seller-one/verify",
+                    method="POST",
+                    body={},
+                    cookie=second_cookie,
+                )
+                delete_status, _, _ = request(
+                    "/api/stores/seller-one",
+                    method="DELETE",
+                    cookie=first_cookie,
+                )
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+            self.assertEqual(create_status, 201)
+            self.assertEqual(created["store"]["store_id"], "seller-one")
+            self.assertNotIn("api_key", created["store"])
+            self.assertTrue(created["store"]["api_key_configured"])
+            self.assertEqual(first_status, 200)
+            self.assertEqual(
+                [item["store_id"] for item in first_stores["stores"]],
+                ["seller-one"],
+            )
+            self.assertEqual(second_status, 200)
+            self.assertEqual(second_stores["stores"], [])
+            self.assertEqual(verify_status, 200)
+            self.assertEqual(foreign_verify_status, 422)
+            self.assertEqual(delete_status, 200)
 
 
 if __name__ == "__main__":

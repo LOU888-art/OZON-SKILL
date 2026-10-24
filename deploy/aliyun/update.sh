@@ -42,14 +42,6 @@ fi
 
 systemctl restart ozon-erp
 
-nginx_config=/etc/nginx/conf.d/ozon-erp.conf
-if [ -f "$nginx_config" ]; then
-  sed -i '/^[[:space:]]*auth_basic/d' "$nginx_config"
-  sed -i 's/proxy_set_header X-ERP-User .*/proxy_set_header X-ERP-User "";/' "$nginx_config"
-  nginx -t
-  systemctl reload nginx
-fi
-
 for attempt in 1 2 3 4 5 6 7 8 9 10; do
   if curl --fail --silent http://127.0.0.1:18080/api/health >/dev/null; then
     break
@@ -60,6 +52,8 @@ for attempt in 1 2 3 4 5 6 7 8 9 10; do
   fi
   sleep 1
 done
+
+bash "$project_root/deploy/aliyun/configure-nginx.sh"
 
 runtime_index=$(
   "$venv_dir/bin/python" -c \
