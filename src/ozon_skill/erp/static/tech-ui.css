@@ -217,9 +217,16 @@ body {
 .primary { color: #05242e; background: linear-gradient(135deg, #37f3c2, #47dff4); }
 .primary:hover { background: linear-gradient(135deg, #70ffda, #7deafa); }
 
-.pipeline-item { border-radius: 9px; }
+.pipeline-item { grid-template-columns: auto 9px minmax(0, 1fr) auto auto; border-radius: 9px; }
 .pipeline-item.active { border-color: #9cced8; box-shadow: inset 3px 0 0 #08a8c7, var(--shadow-sm); }
 .pipeline-progress { background: #e4edf2; color: #537085; }
+.pipeline-item input[type="checkbox"], table input[type="checkbox"], .selection-actions input { accent-color: #08a8c7; }
+.row-delete, .danger-link { border: 1px solid #f1aeb9 !important; border-radius: 8px; background: #fff0f3 !important; color: #b5223c !important; padding: 7px 10px; font-size: 9px; font-weight: 800; cursor: pointer; }
+.row-delete:disabled, .danger-link:disabled { opacity: .45; cursor: not-allowed; }
+.pipeline-item .row-delete { padding: 5px 7px; }
+.selection-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 10px; color: #61758b; font-size: 9px; }
+.selection-actions label { display: flex; align-items: center; gap: 6px; }
+.asset-selection-actions { margin: -7px 0 13px; justify-content: flex-end; }
 
 .workspace { padding: 30px 34px 54px; }
 .detail { max-width: 1540px; }
@@ -365,7 +372,9 @@ body {
 .asset-card { transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease; }
 .asset-card:hover { transform: translateY(-3px); border-color: #9acbd8; box-shadow: 0 18px 45px rgba(28, 71, 94, .13); }
 .asset-preview { background: linear-gradient(145deg, #eaf1f5, #f7fbfd); }
-.asset-link-card { display: grid; grid-template-columns: 54px minmax(0, 1fr); align-items: center; padding: 13px; overflow: visible; }
+.asset-link-card { display: grid; grid-template-columns: 24px 54px minmax(0, 1fr); align-items: center; padding: 13px; overflow: visible; }
+.asset-select { justify-self: center; accent-color: #08a8c7; }
+.asset-select-placeholder { width: 18px; }
 .asset-link-icon { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 12px; color: #cfff3f; background: linear-gradient(145deg, #071925, #0b3040); font-size: 20px; }
 .asset-link-card .asset-body { padding: 0 0 0 11px; }
 .asset-link-card .asset-badges { position: static; margin-bottom: 8px; }

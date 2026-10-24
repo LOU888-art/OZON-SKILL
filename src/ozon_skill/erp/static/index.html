@@ -64,6 +64,7 @@
           <option value="draft">进行中</option>
         </select>
       </div>
+      <div class="selection-actions"><label><input id="pipelineSelectAll" type="checkbox"> 全选当前</label><button id="deleteSelectedPipelinesBtn" class="danger-link" type="button" disabled>删除（0）</button></div>
       <div id="pipelineList" class="pipeline-list"><div class="empty">暂无商品</div></div>
     </aside>
 
@@ -118,7 +119,7 @@
   <section id="catalogView" class="catalog-view hidden">
     <div class="catalog-head">
       <div><span class="eyebrow">PRODUCT CENTER</span><h1>商品中心</h1><p>统一管理草稿、门禁失败、待上架、已上架和需要更新的商品。</p></div>
-      <div class="catalog-actions"><button id="supplierMonitorBtn" class="secondary" type="button" disabled>供应商检测（0）</button><button id="batchProcessHistoryBtn" class="secondary" type="button">批量记录</button><button id="batchEditBtn" class="secondary" type="button" disabled>批量编辑（0）</button><button id="batchProcessBtn" class="secondary" type="button" disabled>批量处理（0）</button><button id="refreshCatalogBtn" class="primary" type="button">刷新商品</button></div>
+      <div class="catalog-actions"><button id="deleteSelectedCatalogBtn" class="danger-link" type="button" disabled>删除（0）</button><button id="supplierMonitorBtn" class="secondary" type="button" disabled>供应商检测（0）</button><button id="batchProcessHistoryBtn" class="secondary" type="button">批量记录</button><button id="batchEditBtn" class="secondary" type="button" disabled>批量编辑（0）</button><button id="batchProcessBtn" class="secondary" type="button" disabled>批量处理（0）</button><button id="refreshCatalogBtn" class="primary" type="button">刷新商品</button></div>
     </div>
     <section id="catalogMetrics" class="catalog-metrics"></section>
     <div class="catalog-toolbar">
@@ -144,8 +145,8 @@
       <div class="research-rule-actions"><small>日期可任意选择。只有同时满足硬性条件的商品才进入候选池；缺少被筛选指标的商品不会被误收。</small><button type="submit" class="primary">保存选品规则</button></div>
     </form>
     <section id="researchMetrics" class="catalog-metrics"></section>
-    <div class="research-toolbar"><input id="researchSearch" type="search" placeholder="搜索商品、Ozon ID、卖家或类目"><select id="researchDecisionFilter"><option value="all">全部状态</option><option value="NEW">待审核</option><option value="SHORTLISTED">已收藏</option><option value="APPROVED">已通过</option><option value="REJECTED">已淘汰</option><option value="SOURCED">已找到货源</option></select></div>
-    <section class="catalog-card"><div class="table-wrap"><table><thead><tr><th>Ozon 商品</th><th>市场指标</th><th>竞争</th><th>命中原因</th><th>状态</th><th>同步时间</th><th></th></tr></thead><tbody id="researchTable"></tbody></table></div></section>
+    <div class="research-toolbar"><input id="researchSearch" type="search" placeholder="搜索商品、Ozon ID、卖家或类目"><select id="researchDecisionFilter"><option value="all">全部状态</option><option value="NEW">待审核</option><option value="SHORTLISTED">已收藏</option><option value="APPROVED">已通过</option><option value="REJECTED">已淘汰</option><option value="SOURCED">已找到货源</option></select><button id="deleteSelectedResearchBtn" class="danger-link" type="button" disabled>删除（0）</button></div>
+    <section class="catalog-card"><div class="table-wrap"><table><thead><tr><th><input id="researchSelectAll" type="checkbox" aria-label="选择当前候选品"></th><th>Ozon 商品</th><th>市场指标</th><th>竞争</th><th>命中原因</th><th>状态</th><th>同步时间</th><th></th></tr></thead><tbody id="researchTable"></tbody></table></div></section>
   </section>
 
   <section id="assetView" class="asset-view hidden">
@@ -159,6 +160,7 @@
       <select id="assetTypeFilter"><option value="all">全部类型</option><option value="translated">俄语翻译图</option><option value="ai_generated">AI 优化图</option></select>
       <select id="assetStatusFilter"><option value="all">全部状态</option><option value="managed">OSS 托管</option><option value="orphaned">可清理</option><option value="published">已上架保护</option><option value="external">外部图片</option></select>
     </div>
+    <div class="selection-actions asset-selection-actions"><label><input id="assetSelectAll" type="checkbox"> 全选可清理图片</label><button id="deleteSelectedAssetsBtn" class="danger-link" type="button" disabled>删除（0）</button></div>
     <div id="assetEmpty" class="operations-empty hidden">暂无已处理图片。完成第三阶段的 AI 优化或图片翻译后会自动出现。</div>
     <div id="assetGrid" class="asset-grid"></div>
   </section>
@@ -230,14 +232,14 @@
   <section id="taskView" class="task-view hidden">
     <div class="task-head">
       <div><span class="eyebrow">MISSION CONTROL</span><h1>任务与告警中心</h1><p>集中查看流水线进度、失败门禁、系统配置告警和团队操作记录。</p></div>
-      <div class="task-controls"><select id="taskFilter" aria-label="任务状态"><option value="all">全部任务</option><option value="failed">只看失败</option><option value="running">只看运行中</option><option value="completed">只看已完成</option><option value="draft">只看待处理</option></select><button id="externalAlertsBtn" class="secondary" type="button">外部通知</button><button id="refreshTasksBtn" class="primary" type="button">刷新中心</button></div>
+      <div class="task-controls"><select id="taskFilter" aria-label="任务状态"><option value="all">全部任务</option><option value="failed">只看失败</option><option value="running">只看运行中</option><option value="completed">只看已完成</option><option value="draft">只看待处理</option></select><button id="deleteSelectedTasksBtn" class="danger-link" type="button" disabled>删除（0）</button><button id="externalAlertsBtn" class="secondary" type="button">外部通知</button><button id="refreshTasksBtn" class="primary" type="button">刷新中心</button></div>
     </div>
     <section id="taskMetrics" class="task-metrics"></section>
     <div class="task-grid">
       <section class="task-card alerts-card"><div class="task-card-head"><div><span class="eyebrow">SYSTEM ALERTS</span><h2>系统告警</h2></div><span id="alertCount">0</span></div><div id="systemAlerts" class="system-alerts"></div></section>
       <section class="task-card"><div class="task-card-head"><div><span class="eyebrow">ACTIVITY</span><h2>操作审计</h2></div><span id="activityCount">0</span></div><div id="activityList" class="activity-list"><div class="empty">正在加载操作记录…</div></div></section>
     </div>
-    <section class="task-card task-table-card"><div class="task-card-head"><div><span class="eyebrow">PIPELINE QUEUE</span><h2>商品任务队列</h2></div><span id="taskCount">0</span></div><div class="table-wrap"><table><thead><tr><th>商品 ID</th><th>状态</th><th>进度</th><th>当前阶段</th><th>最新问题</th><th>更新时间</th><th></th></tr></thead><tbody id="taskTable"></tbody></table></div></section>
+    <section class="task-card task-table-card"><div class="task-card-head"><div><span class="eyebrow">PIPELINE QUEUE</span><h2>商品任务队列</h2></div><label><input id="taskSelectAll" type="checkbox"> 全选当前</label><span id="taskCount">0</span></div><div class="table-wrap"><table><thead><tr><th></th><th>商品 ID</th><th>状态</th><th>进度</th><th>当前阶段</th><th>最新问题</th><th>更新时间</th><th></th></tr></thead><tbody id="taskTable"></tbody></table></div></section>
   </section>
 
   <dialog id="notificationDialog">

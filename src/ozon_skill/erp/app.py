@@ -52,11 +52,14 @@ _RESEARCH_INGEST_ROUTE = "/api/research/ingest"
 _RESEARCH_CANDIDATE_ROUTE = re.compile(r"^/api/research/candidates/([^/]+)$")
 _RESEARCH_SOURCE_ROUTE = re.compile(r"^/api/research/candidates/([^/]+)/source$")
 _PRODUCT_BATCH_EDIT_ROUTE = "/api/products/batch-edit"
+_PIPELINE_BATCH_DELETE_ROUTE = "/api/pipelines/batch-delete"
+_RESEARCH_BATCH_DELETE_ROUTE = "/api/research/candidates/batch-delete"
 _PRODUCT_VERSIONS_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/versions$")
 _PRODUCT_VERSION_RESTORE_ROUTE = re.compile(
     r"^/api/pipelines/([^/]+)/versions/([a-f0-9]{24})/restore$"
 )
 _ASSETS_ROUTE = "/api/assets"
+_ASSET_BATCH_DELETE_ROUTE = "/api/assets/batch-delete"
 _ASSET_ROUTE = re.compile(r"^/api/assets/([a-f0-9]{24})$")
 _ASSET_PREVIEW_ROUTE = re.compile(r"^/api/assets/([a-f0-9]{24})/preview$")
 _IMAGES_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/images$")
@@ -417,6 +420,20 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._json(
                     self.service.batch_edit_products(body, self._username())
                 )
+                return
+            if path == _PIPELINE_BATCH_DELETE_ROUTE:
+                self._require("pipeline.create")
+                self._json(
+                    self.service.delete_pipelines(body, self._username())
+                )
+                return
+            if path == _RESEARCH_BATCH_DELETE_ROUTE:
+                self._require("stage.run")
+                self._json(self.service.delete_market_candidates(body))
+                return
+            if path == _ASSET_BATCH_DELETE_ROUTE:
+                self._require("storage.manage")
+                self._json(self.service.delete_assets(body))
                 return
             if path == _RESEARCH_RULES_ROUTE:
                 self._require("stage.run")

@@ -171,7 +171,7 @@
 .research-toolbar {
   display: grid;
   gap: 10px;
-  grid-template-columns: 1fr 180px;
+  grid-template-columns: 1fr 180px auto;
   margin: 15px 0 10px;
 }
 

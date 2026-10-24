@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import shutil
 import tempfile
 import threading
 from uuid import uuid4
@@ -2557,6 +2558,109 @@ class PipelineService:
             self.market_research.delete(normalized)
         except MarketResearchError as exc:
             raise PipelineError(str(exc), status=404) from exc
+
+    def delete_market_candidates(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        if value.get("confirm_delete") is not True:
+            raise PipelineError("请确认删除选中的候选商品")
+        raw_ids = value.get("candidate_ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            raise PipelineError("请至少选择一个候选商品")
+        if len(raw_ids) > 500:
+            raise PipelineError("单次最多删除 500 个候选商品")
+        candidate_ids = list(dict.fromkeys(_safe_pipeline_id(item) for item in raw_ids))
+        deleted: list[str] = []
+        missing: list[str] = []
+        for candidate_id in candidate_ids:
+            try:
+                self.market_research.delete(candidate_id)
+                deleted.append(candidate_id)
+            except MarketResearchError:
+                missing.append(candidate_id)
+        return {
+            "status": "deleted",
+            "deleted": deleted,
+            "missing": missing,
+            "research": self.market_research_status(),
+        }
+
+    def delete_pipelines(self, value: Mapping[str, Any], actor: Any = "") -> dict[str, Any]:
+        """Delete local ERP workspaces without issuing any Ozon delete request."""
+
+        if value.get("confirm_delete") is not True:
+            raise PipelineError("请确认删除选中的 ERP 商品资料")
+        raw_ids = value.get("pipeline_ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            raise PipelineError("请至少选择一个商品任务")
+        if len(raw_ids) > 100:
+            raise PipelineError("单次最多删除 100 个商品任务")
+        pipeline_ids = list(dict.fromkeys(_safe_pipeline_id(item) for item in raw_ids))
+        deleted: list[str] = []
+        missing: list[str] = []
+        blocked: list[dict[str, str]] = []
+        with self._lock:
+            for pipeline_id in pipeline_ids:
+                directory = self.directory(pipeline_id)
+                state_path = directory / "pipeline.json"
+                if not directory.is_dir() or not state_path.exists():
+                    missing.append(pipeline_id)
+                    continue
+                try:
+                    state = _read_object(state_path)
+                except PipelineError as exc:
+                    blocked.append({"pipeline_id": pipeline_id, "reason": str(exc)})
+                    continue
+                stages = state.get("stages") or {}
+                if any(
+                    isinstance(stage, Mapping) and stage.get("status") == "RUNNING"
+                    for stage in stages.values()
+                ):
+                    blocked.append(
+                        {"pipeline_id": pipeline_id, "reason": "任务正在运行，禁止删除"}
+                    )
+                    continue
+                try:
+                    shutil.rmtree(directory)
+                    deleted.append(pipeline_id)
+                except OSError as exc:
+                    blocked.append(
+                        {
+                            "pipeline_id": pipeline_id,
+                            "reason": f"本地资料删除失败：{exc}",
+                        }
+                    )
+        return {
+            "status": "deleted" if deleted else "unchanged",
+            "deleted": deleted,
+            "missing": missing,
+            "blocked": blocked,
+            "local_only": True,
+            "ozon_products_deleted": False,
+            "actor": str(actor or "system"),
+        }
+
+    def delete_assets(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        if value.get("confirm_delete") is not True:
+            raise PipelineError("请确认删除选中的图片资产")
+        raw_ids = value.get("asset_ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            raise PipelineError("请至少选择一张可安全清理的图片")
+        if len(raw_ids) > 100:
+            raise PipelineError("单次最多删除 100 张图片")
+        asset_ids = list(dict.fromkeys(str(item or "").strip() for item in raw_ids))
+        deleted: list[str] = []
+        blocked: list[dict[str, str]] = []
+        for identifier in asset_ids:
+            try:
+                self.delete_asset(identifier)
+                deleted.append(identifier)
+            except PipelineError as exc:
+                blocked.append({"asset_id": identifier, "reason": str(exc)})
+        return {
+            "status": "deleted" if deleted else "unchanged",
+            "deleted": deleted,
+            "blocked": blocked,
+            **self.asset_library(),
+        }
 
     def notification_center(self, username: Any) -> dict[str, Any]:
         """Build actionable notifications from current failures and personal read state."""
