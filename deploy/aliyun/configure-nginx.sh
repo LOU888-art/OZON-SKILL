@@ -7,6 +7,21 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 config=/etc/nginx/conf.d/ozon-erp.conf
+disabled_suffix="disabled-by-ozon-erp-$(date -u +%Y%m%dT%H%M%SZ)"
+
+# A legacy file with the same server_name/listen pair wins when it is loaded
+# first, leaving the new no-Basic-Auth server ignored. Archive only duplicate
+# virtual-host files for this exact ERP IP; the files remain recoverable.
+for candidate in /etc/nginx/conf.d/*.conf; do
+  [ -f "$candidate" ] || continue
+  [ "$candidate" = "$config" ] && continue
+  if grep -Eq 'server_name[[:space:]]+8\.217\.125\.205([[:space:];]|$)' "$candidate" \
+    && grep -Eq 'listen[[:space:]].*443([[:space:];]|$)' "$candidate"; then
+    archived="${candidate}.${disabled_suffix}"
+    mv "$candidate" "$archived"
+    echo "已备份停用冲突的旧 Nginx 配置：$candidate -> $archived"
+  fi
+done
 
 cat >"$config" <<'EOF'
 server {
@@ -40,6 +55,13 @@ EOF
 
 nginx -t
 systemctl reload nginx
+
+active_count=$(nginx -T 2>&1 | grep -Ec 'server_name[[:space:]]+8\.217\.125\.205([[:space:];]|$)' || true)
+if [ "$active_count" -ne 1 ]; then
+  echo "Nginx 中仍有 $active_count 个 8.217.125.205 虚拟主机，无法保证关闭旧身份验证。" >&2
+  echo "请运行 nginx -T 2>&1 | grep -n -B 8 -A 12 'server_name 8.217.125.205' 查看来源。" >&2
+  exit 1
+fi
 
 headers=$(mktemp)
 trap 'rm -f "$headers"' EXIT
