@@ -48,6 +48,22 @@ class AuthRegistryTests(unittest.TestCase):
                         "display_name": "测试卖家",
                     }
                 )
+
+    def test_primary_login_rebinds_owner_and_revokes_old_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            registry = AuthRegistry(Path(directory) / "auth.json")
+            registry.bootstrap("admin@example.com", "AdminPass123", "owner")
+            old_token, _ = registry.login("admin@example.com", "AdminPass123")
+
+            account = registry.set_primary_login(
+                "19603830666", "NewOwner123", "owner"
+            )
+
+            self.assertEqual(account["username"], "owner")
+            self.assertEqual(account["identifier"], "196****0666")
+            self.assertIsNone(registry.session(old_token))
+            _, logged_in = registry.login("19603830666", "NewOwner123")
+            self.assertEqual(logged_in["username"], "owner")
             with self.assertRaises(AuthError):
                 registry.register(
                     {

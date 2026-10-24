@@ -18,6 +18,8 @@ python3 -m venv --system-site-packages /workspace/.venv
 
 生产登录由 ERP 应用自身管理，不再使用浏览器 Basic Auth 弹窗。用户可以在 `/login` 使用邮箱或含国家区号的手机号自行注册；密码使用 scrypt 加盐哈希保存，会话 Cookie 设置 `HttpOnly`、`Secure` 和 `SameSite=Lax`，退出登录后服务端立即撤销会话。自行注册的账号固定为“受限试用”，只能使用定价工具以及查看、验证和删除本人绑定的 Ozon 店铺，其他页面隐藏且对应后端接口返回 403。可通过 `ERP_SELF_REGISTRATION=false` 暂停新注册。
 
+如需把指定邮箱或手机号绑定为现有工作区主账号，请在服务器运行 `bash deploy/aliyun/set-owner-login.sh`。脚本会通过隐藏输入读取新密码，把登录标识绑定到 `.team.json` 中唯一的所有者身份，并撤销该所有者的全部旧会话；不会在源码或终端输出密码。
+
 阿里云生产环境从 `/opt/ozon-erp/venv` 运行已安装的软件包，不能只在源码目录执行 `git pull` 后重启。更新生产版本必须执行：
 
 ```bash

@@ -252,6 +252,63 @@ class AuthRegistry:
             self._write(document)
             return self._public(user)
 
+    def set_primary_login(
+        self, identifier_value: Any, password_value: Any, username: str
+    ) -> dict[str, Any]:
+        """Create or replace the login bound to the existing workspace owner."""
+
+        identifier, identifier_type = normalize_identifier(identifier_value)
+        password = _validate_password(password_value)
+        username = str(username or "").strip()
+        if not username:
+            raise AuthError("工作区所有者用户名不能为空", status=500)
+        with self._lock:
+            document = self._read()
+            conflict = next(
+                (
+                    item
+                    for item in document["users"]
+                    if str(item.get("identifier") or "").casefold()
+                    == identifier.casefold()
+                    and item.get("username") != username
+                ),
+                None,
+            )
+            if conflict is not None:
+                raise AuthError("该手机号或邮箱已经绑定其他账户", status=409)
+            user = next(
+                (
+                    item
+                    for item in document["users"]
+                    if item.get("username") == username
+                ),
+                None,
+            )
+            timestamp = _timestamp()
+            if user is None:
+                user = {
+                    "user_id": uuid4().hex,
+                    "username": username,
+                    "created_at": timestamp,
+                }
+                document["users"].append(user)
+            user.update(
+                {
+                    "identifier": identifier,
+                    "identifier_type": identifier_type,
+                    "display_name": user.get("display_name") or "系统管理员",
+                    "password": _password_record(password),
+                    "updated_at": timestamp,
+                }
+            )
+            document["sessions"] = [
+                item
+                for item in document["sessions"]
+                if item.get("username") != username
+            ]
+            self._write(document)
+            return self._public(user)
+
     def login(self, identifier_value: Any, password_value: Any) -> tuple[str, dict[str, Any]]:
         identifier, _ = normalize_identifier(identifier_value)
         password = str(password_value or "")
@@ -331,9 +388,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--password", required=True)
     parser.add_argument("--username", default="admin")
     parser.add_argument("--reset", action="store_true")
+    parser.add_argument("--primary", action="store_true")
     args = parser.parse_args(argv)
     registry = AuthRegistry(args.path)
-    if args.reset:
+    if args.primary:
+        registry.set_primary_login(args.identifier, args.password, args.username)
+    elif args.reset:
         registry.reset_password(args.identifier, args.password)
     else:
         registry.bootstrap(args.identifier, args.password, args.username)
