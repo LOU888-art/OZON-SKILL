@@ -97,6 +97,420 @@
   }
 }
 
+/* Commercial account registration surface. Authentication remains at the HTTPS gateway. */
+.account-dialog-shell {
+  width: min(980px, calc(100vw - 28px));
+}
+
+.account-dialog {
+  max-height: 92vh;
+  overflow: auto;
+  padding: 30px;
+}
+
+.account-dialog-head {
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+
+.account-dialog-head h3 {
+  margin-bottom: 7px;
+}
+
+.account-dialog-head p {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.account-hero {
+  position: relative;
+  overflow: hidden;
+  min-height: 116px;
+  padding: 24px 26px;
+  border: 1px solid rgba(55, 243, 194, .18);
+  background:
+    linear-gradient(rgba(75, 220, 234, .045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(75, 220, 234, .045) 1px, transparent 1px),
+    radial-gradient(circle at 84% 12%, rgba(55, 243, 194, .2), transparent 30%),
+    linear-gradient(135deg, #071925, #0b3040);
+  background-size: 22px 22px, 22px 22px, auto, auto;
+  box-shadow: 0 24px 55px rgba(5, 29, 43, .18);
+}
+
+.account-hero:after {
+  position: absolute;
+  right: -38px;
+  bottom: -66px;
+  width: 190px;
+  height: 190px;
+  border: 1px solid rgba(55, 243, 194, .13);
+  border-radius: 50%;
+  content: "";
+}
+
+.account-hero #accountDialogAvatar {
+  width: 52px;
+  height: 52px;
+  border: 1px solid rgba(55, 243, 194, .25);
+  border-radius: 15px;
+  background: rgba(55, 243, 194, .09);
+  color: var(--lime);
+  box-shadow: inset 0 0 24px rgba(55, 243, 194, .08);
+  font-size: 18px;
+}
+
+.account-online {
+  display: flex !important;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 5px;
+  color: #6eeccf !important;
+  font: 750 7px/1 "SFMono-Regular", Consolas, monospace !important;
+  letter-spacing: .15em;
+}
+
+.account-online i,
+.registration-badge i,
+.registration-submit > span i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #37f3c2;
+  box-shadow: 0 0 9px rgba(55, 243, 194, .8);
+}
+
+.account-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(250px, .55fr);
+  gap: 12px;
+  margin: 22px 0 0;
+}
+
+.account-usage-panel,
+.permissions-card {
+  margin: 0;
+  padding: 17px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: rgba(255, 255, 255, .74);
+  box-shadow: var(--shadow-sm);
+}
+
+.permissions-card h4 {
+  margin: 8px 0 5px;
+  font-size: 14px;
+}
+
+.permissions-card > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.permission-list span {
+  border: 1px solid rgba(8, 127, 155, .11);
+}
+
+.team-section {
+  margin-top: 26px;
+  padding-top: 24px;
+}
+
+.team-heading {
+  align-items: center;
+}
+
+.team-heading h3 {
+  font-size: 20px;
+}
+
+.team-heading p {
+  margin-top: 5px;
+  font-size: 9px;
+}
+
+.team-count {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  border: 1px solid #cfe0e8;
+  border-radius: 99px;
+  background: #fff;
+  color: #587184;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.team-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 14px;
+}
+
+.team-list article {
+  min-height: 58px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .78);
+}
+
+.team-registration-layout {
+  display: grid;
+  grid-template-columns: minmax(230px, .72fr) minmax(0, 1.28fr);
+  overflow: hidden;
+  border: 1px solid #bfd3df;
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 18px 55px rgba(26, 62, 88, .11);
+}
+
+.registration-showcase {
+  position: relative;
+  overflow: hidden;
+  padding: 27px 24px;
+  color: #e8f9fc;
+  background:
+    radial-gradient(circle at 10% 10%, rgba(55, 243, 194, .2), transparent 28%),
+    linear-gradient(145deg, #081b29, #0a3040);
+}
+
+.registration-showcase:after {
+  position: absolute;
+  right: -74px;
+  bottom: -70px;
+  width: 190px;
+  height: 190px;
+  border: 1px solid rgba(55, 243, 194, .14);
+  border-radius: 50%;
+  box-shadow: 0 0 0 26px rgba(55, 243, 194, .025), 0 0 0 52px rgba(55, 243, 194, .018);
+  content: "";
+}
+
+.registration-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px;
+  border: 1px solid rgba(55, 243, 194, .18);
+  border-radius: 99px;
+  color: #76e9d2;
+  font: 750 7px/1 "SFMono-Regular", Consolas, monospace;
+  letter-spacing: .11em;
+}
+
+.registration-showcase h4 {
+  margin: 24px 0 9px;
+  color: #fff;
+  font-size: 22px;
+  letter-spacing: -.04em;
+}
+
+.registration-showcase > p {
+  margin: 0;
+  color: #94b5c1;
+  font-size: 10px;
+  line-height: 1.7;
+}
+
+.registration-showcase ol {
+  display: grid;
+  gap: 10px;
+  margin: 24px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.registration-showcase li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #afcbd4;
+  font-size: 9px;
+}
+
+.registration-showcase li b {
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  border: 1px solid rgba(55, 243, 194, .22);
+  border-radius: 8px;
+  color: var(--lime);
+  font: 750 8px/1 "SFMono-Regular", Consolas, monospace;
+}
+
+.registration-security {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 9px;
+  align-items: start;
+  padding: 11px;
+  border: 1px solid rgba(137, 204, 216, .15);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, .045);
+}
+
+.registration-security > span {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: rgba(55, 243, 194, .11);
+  color: var(--lime);
+}
+
+.registration-security p,
+.registration-security b,
+.registration-security small {
+  display: block;
+  margin: 0;
+}
+
+.registration-security b { color: #e8f7fa; font-size: 9px; }
+.registration-security small { margin-top: 4px; color: #7197a4; font-size: 8px; line-height: 1.45; }
+
+.registration-form {
+  margin: 0;
+  padding: 27px;
+  border: 0;
+  border-radius: 0;
+  background: linear-gradient(145deg, #fff, #f7fbfd);
+}
+
+.registration-form-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 17px;
+}
+
+.registration-form-head span {
+  color: #078ba7;
+  font: 800 8px/1 "SFMono-Regular", Consolas, monospace;
+  letter-spacing: .12em;
+}
+
+.registration-form-head h4 {
+  margin: 7px 0 0;
+  font-size: 17px;
+}
+
+.registration-form-head > b {
+  color: #9bb0bc;
+  font: 750 9px/1 "SFMono-Regular", Consolas, monospace;
+}
+
+.registration-form .registration-field {
+  margin: 10px 0;
+}
+
+.registration-field label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #19364a;
+}
+
+.registration-field label span {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: #e4f7f8;
+  color: #087f9b;
+  font: 800 7px/1 "SFMono-Regular", Consolas, monospace;
+}
+
+.registration-field input,
+.registration-field select {
+  min-height: 44px;
+  border-color: #cbdbe4;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, .9);
+}
+
+.registration-field input:focus,
+.registration-field select:focus {
+  border-color: #13b8b0;
+  box-shadow: 0 0 0 4px rgba(25, 196, 180, .09);
+}
+
+.registration-submit {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  margin-top: 19px;
+  padding-top: 17px;
+  border-top: 1px solid #e0e9ee;
+}
+
+.registration-submit > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 270px;
+  color: #718493;
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.registration-submit button {
+  min-width: 132px;
+  min-height: 42px;
+  border-radius: 11px;
+  background: linear-gradient(135deg, #20dfc4, #29cdea);
+  color: #072331;
+  box-shadow: 0 10px 25px rgba(20, 194, 192, .2);
+}
+
+.registration-submit button b { margin-left: 8px; font-size: 14px; }
+
+.account-note {
+  margin: 13px 0 0;
+  padding: 11px 13px;
+  border: 1px solid #dde7ed;
+  border-radius: 10px;
+  background: rgba(239, 246, 249, .72);
+}
+
+@media (max-width: 760px) {
+  .topbar .top-actions {
+    position: fixed;
+    z-index: 45;
+    top: 12px;
+    right: 12px;
+    display: block;
+    width: auto;
+    margin: 0;
+  }
+  .topbar .top-actions > * { display: none; }
+  .topbar .top-actions .account-btn {
+    display: flex;
+    width: 40px;
+    height: 40px;
+    padding: 5px;
+    border: 1px solid rgba(55, 243, 194, .22);
+    border-radius: 12px;
+    background: #092030;
+    box-shadow: 0 10px 28px rgba(4, 24, 38, .24);
+  }
+  .account-dialog { padding: 19px; }
+  .account-hero { min-height: 102px; padding: 18px; }
+  .account-overview,
+  .team-registration-layout { grid-template-columns: 1fr; }
+  .team-list { grid-template-columns: 1fr; }
+  .registration-showcase { padding: 22px 20px; }
+  .registration-form { padding: 22px 20px; }
+  .registration-submit { align-items: stretch; flex-direction: column; }
+  .registration-submit > span { max-width: none; }
+  .registration-submit button { width: 100%; }
+}
+
 .research-view {
   margin: 0 auto;
   max-width: 1500px;

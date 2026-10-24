@@ -473,29 +473,40 @@
     </div>
   </dialog>
 
-  <dialog id="accountDialog">
+  <dialog id="accountDialog" class="account-dialog-shell">
     <div class="dialog-card account-dialog">
-      <div class="dialog-head"><div><span class="eyebrow">WORKSPACE & BILLING</span><h3>账户与套餐</h3></div><button id="closeAccountBtn" class="close" type="button">×</button></div>
+      <div class="dialog-head account-dialog-head"><div><span class="eyebrow">IDENTITY · ACCESS · BILLING</span><h3>账户中心</h3><p>管理工作区身份、成员注册、角色权限与套餐用量。</p></div><button id="closeAccountBtn" class="close" type="button" aria-label="关闭账户中心">×</button></div>
       <div class="account-hero">
-        <div><span id="accountDialogAvatar">A</span><div><b id="accountDialogName">admin</b><small id="accountRole">所有者</small></div></div>
+        <div><span id="accountDialogAvatar">A</span><div><span class="account-online"><i></i> ONLINE</span><b id="accountDialogName">admin</b><small id="accountRole">所有者</small></div></div>
         <div class="plan-price"><b id="planName">企业版</b><span id="planPrice">¥1,999 / 月</span></div>
       </div>
-      <div class="section-heading compact"><div><span class="eyebrow">USAGE</span><h3>本月用量</h3></div><p id="billingPeriod"></p></div>
-      <div id="usageGrid" class="usage-grid"></div>
-      <div class="permissions-card"><span class="section-label">当前权限</span><div id="permissionList" class="permission-list"></div></div>
-      <div class="team-section">
-        <div class="section-heading compact"><div><span class="eyebrow">TEAM</span><h3>团队成员</h3></div><p id="teamCount">0 人</p></div>
-        <div id="teamList" class="team-list"></div>
-        <form id="teamForm" class="team-form hidden">
-          <div class="field-grid">
-            <div class="field"><label for="memberUsername">登录用户名</label><input id="memberUsername" required pattern="[A-Za-z0-9._@-]{1,64}" placeholder="例如 operator01"></div>
-            <div class="field"><label for="memberDisplayName">成员姓名</label><input id="memberDisplayName" required placeholder="例如 王小明"></div>
-          </div>
-          <div class="field"><label for="memberRole">角色</label><select id="memberRole"><option value="admin">管理员</option><option value="operator" selected>运营</option><option value="designer">设计</option><option value="reviewer">审核</option><option value="viewer">只读</option></select></div>
-          <div class="dialog-actions"><button type="submit" class="primary">添加或更新成员</button></div>
-        </form>
+      <div class="account-overview">
+        <section class="account-usage-panel"><div class="section-heading compact"><div><span class="eyebrow">USAGE</span><h3>本月用量</h3></div><p id="billingPeriod"></p></div><div id="usageGrid" class="usage-grid"></div></section>
+        <aside class="permissions-card"><span class="section-label">ACCESS MATRIX</span><h4>当前账号权限</h4><p>权限由工作区角色统一控制，关键操作保留审计记录。</p><div id="permissionList" class="permission-list"></div></aside>
       </div>
-      <p class="dialog-note account-note">账号由服务器 HTTPS 登录层验证，应用不保存密码。添加成员后，由服务器管理员执行 <code>bash deploy/aliyun/add-login-user.sh 用户名</code> 创建登录凭证。</p>
+      <div class="team-section">
+        <div class="section-heading compact team-heading"><div><span class="eyebrow">TEAM IDENTITY</span><h3>团队账号</h3><p>为运营、设计和审核人员分配独立身份，避免多人共用管理员账号。</p></div><span id="teamCount" class="team-count">0 人</span></div>
+        <div id="teamList" class="team-list"></div>
+        <div class="team-registration-layout">
+          <aside class="registration-showcase">
+            <span class="registration-badge"><i></i> SECURE ONBOARDING</span>
+            <h4>注册团队成员</h4>
+            <p>一人一号、按角色授权。成员只能访问其工作职责所需的模块。</p>
+            <ol><li><b>01</b><span>创建成员身份</span></li><li><b>02</b><span>配置登录凭证</span></li><li><b>03</b><span>首次登录并审计</span></li></ol>
+            <div class="registration-security"><span>✓</span><p><b>凭证隔离</b><small>ERP 不保存成员密码，登录凭证由 HTTPS 网关单独管理。</small></p></div>
+          </aside>
+          <form id="teamForm" class="team-form registration-form hidden">
+            <div class="registration-form-head"><div><span>NEW MEMBER</span><h4>创建成员资料</h4></div><b>01 / 03</b></div>
+            <div class="field-grid">
+              <div class="field registration-field"><label for="memberUsername"><span>01</span>登录用户名</label><input id="memberUsername" required pattern="[A-Za-z0-9._@-]{1,64}" autocomplete="username" placeholder="例如 operator01"><small>支持字母、数字、点、下划线、@ 和连字符</small></div>
+              <div class="field registration-field"><label for="memberDisplayName"><span>02</span>成员姓名</label><input id="memberDisplayName" required autocomplete="name" placeholder="例如 王小明"><small>用于任务分配、通知与审计记录</small></div>
+            </div>
+            <div class="field registration-field role-field"><label for="memberRole"><span>03</span>工作角色</label><select id="memberRole"><option value="admin">管理员</option><option value="operator" selected>运营</option><option value="designer">设计</option><option value="reviewer">审核</option><option value="viewer">只读</option></select><small id="memberRoleHint">可管理商品流程，但不能修改团队、店铺密钥和系统级配置。</small></div>
+            <div class="registration-submit"><span><i></i> 保存后还需由服务器管理员创建同名登录凭证</span><button type="submit" class="primary">注册成员 <b>→</b></button></div>
+          </form>
+        </div>
+      </div>
+      <p class="dialog-note account-note"><b>下一步：</b>成员资料保存后，由服务器管理员执行 <code>bash deploy/aliyun/add-login-user.sh 用户名</code> 创建 HTTPS 登录凭证。</p>
     </div>
   </dialog>
 
