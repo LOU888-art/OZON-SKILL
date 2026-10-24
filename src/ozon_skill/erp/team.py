@@ -132,6 +132,39 @@ class TeamRegistry:
         with self._lock:
             return {"members": [self._public(item) for item in self._read()["members"]], "roles": ROLE_DEFINITIONS}
 
+    def register_trial(self, username: Any, display_name: Any) -> dict[str, Any]:
+        """Create the fixed, least-privilege role used by public registration."""
+
+        username = self._safe_username(username)
+        display_name = str(display_name or username).strip()[:80]
+        if len(display_name) < 2:
+            raise TeamError("姓名或昵称至少需要 2 个字符")
+        with self._lock:
+            document = self._read()
+            existing = next(
+                (
+                    item
+                    for item in document["members"]
+                    if str(item.get("username") or "").casefold()
+                    == username.casefold()
+                ),
+                None,
+            )
+            if existing is not None:
+                return self._public(existing)
+            timestamp = _now()
+            record = {
+                "username": username,
+                "display_name": display_name,
+                "role": "trial",
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "registered_via": "self_service",
+            }
+            document["members"].append(record)
+            self._write(document)
+            return self._public(record)
+
     def save_member(self, actor: Any, value: Mapping[str, Any]) -> dict[str, Any]:
         actor_identity = self.require(actor, "team.manage")
         username = self._safe_username(value.get("username"))

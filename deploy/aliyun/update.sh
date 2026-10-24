@@ -23,7 +23,32 @@ cp -a "$project_root"/. "$app_dir"/
   --force-reinstall \
   "$app_dir"
 
+state_dir=/var/lib/ozon-erp
+auth_file=$state_dir/work/.auth.json
+bootstrap_password=
+bootstrap_identifier=
+if [ ! -s "$auth_file" ]; then
+  owner_username=$(
+    "$venv_dir/bin/python" -c 'import json, pathlib; p=pathlib.Path("/var/lib/ozon-erp/work/.team.json"); d=json.loads(p.read_text()) if p.exists() else {}; print(next((str(x.get("username")) for x in d.get("members", []) if x.get("role")=="owner"), "admin"))'
+  )
+  bootstrap_identifier=admin@northstar.local
+  bootstrap_password=$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-20)
+  runuser -u ozon-erp -- "$venv_dir/bin/python" -m ozon_skill.erp.auth \
+    --path "$auth_file" \
+    --identifier "$bootstrap_identifier" \
+    --password "$bootstrap_password" \
+    --username "$owner_username"
+fi
+
 systemctl restart ozon-erp
+
+nginx_config=/etc/nginx/conf.d/ozon-erp.conf
+if [ -f "$nginx_config" ]; then
+  sed -i '/^[[:space:]]*auth_basic/d' "$nginx_config"
+  sed -i 's/proxy_set_header X-ERP-User .*/proxy_set_header X-ERP-User "";/' "$nginx_config"
+  nginx -t
+  systemctl reload nginx
+fi
 
 for attempt in 1 2 3 4 5 6 7 8 9 10; do
   if curl --fail --silent http://127.0.0.1:18080/api/health >/dev/null; then
@@ -54,4 +79,9 @@ echo
 echo "OZON ERP 更新完成${revision:+，版本 $revision}"
 echo "运行页面：$runtime_index"
 echo "服务状态：$(systemctl is-active ozon-erp)"
+if [ -n "$bootstrap_password" ]; then
+  echo "首次应用登录邮箱：$bootstrap_identifier"
+  echo "首次应用登录密码：$bootstrap_password"
+  echo "请立即登录并妥善保存；原浏览器 Basic Auth 密码已停止使用。"
+fi
 echo "请打开 https://8.217.125.205/ 并按 Ctrl+F5 强制刷新。"

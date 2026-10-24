@@ -91,13 +91,20 @@ class TrialHttpAccessTests(unittest.TestCase):
             server.pipeline_service.team.save_member(
                 "owner", {"username": "trial1", "display_name": "Trial"}
             )
+            server.pipeline_service.auth.bootstrap(
+                "trial1@example.com", "TrialPass123", "trial1"
+            )
+            token, _ = server.pipeline_service.auth.login(
+                "trial1@example.com", "TrialPass123"
+            )
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             base_url = f"http://127.0.0.1:{server.server_address[1]}"
 
             def get(path: str) -> tuple[int, dict[str, object]]:
                 request = Request(
-                    base_url + path, headers={"X-ERP-User": "trial1"}
+                    base_url + path,
+                    headers={"Cookie": f"northstar_session={token}"},
                 )
                 try:
                     with urlopen(request, timeout=5) as response:

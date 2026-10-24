@@ -16,6 +16,8 @@ python3 -m venv --system-site-packages /workspace/.venv
 
 浏览器打开 `http://127.0.0.1:8080`。AlphaShop 密钥必须在进程环境中配置。OZON Seller API 店铺可在网页的“店铺授权”中添加：ERP 会先通过只读类目树接口验证 Client-Id 与 Api-Key，再将凭证保存到权限为 `0600` 的服务端文件；Api-Key 不会通过网页或列表 API 回显。
 
+生产登录由 ERP 应用自身管理，不再使用浏览器 Basic Auth 弹窗。用户可以在 `/login` 使用邮箱或含国家区号的手机号自行注册；密码使用 scrypt 加盐哈希保存，会话 Cookie 设置 `HttpOnly`、`Secure` 和 `SameSite=Lax`，退出登录后服务端立即撤销会话。自行注册的账号固定为“受限试用”，只能使用定价工具以及查看、验证和删除本人绑定的 Ozon 店铺，其他页面隐藏且对应后端接口返回 403。可通过 `ERP_SELF_REGISTRATION=false` 暂停新注册。
+
 阿里云生产环境从 `/opt/ozon-erp/venv` 运行已安装的软件包，不能只在源码目录执行 `git pull` 后重启。更新生产版本必须执行：
 
 ```bash

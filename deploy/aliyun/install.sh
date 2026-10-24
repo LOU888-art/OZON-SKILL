@@ -57,6 +57,7 @@ python3.11 -m venv "$venv_dir"
 
 dry_run=true
 erp_plan=business
+self_registration=true
 if [ -r "$config_dir/erp.env" ]; then
   previous_dry_run=$(sed -n 's/^[[:space:]]*DRY_RUN[[:space:]]*=[[:space:]]*//p' "$config_dir/erp.env" | tail -n 1 | tr -d '\r')
   case "$previous_dry_run" in
@@ -66,12 +67,18 @@ if [ -r "$config_dir/erp.env" ]; then
   case "$previous_erp_plan" in
     starter|growth|business) erp_plan=$previous_erp_plan ;;
   esac
+  previous_self_registration=$(sed -n 's/^[[:space:]]*ERP_SELF_REGISTRATION[[:space:]]*=[[:space:]]*//p' "$config_dir/erp.env" | tail -n 1 | tr -d '\r')
+  case "$previous_self_registration" in
+    true|false) self_registration=$previous_self_registration ;;
+  esac
 fi
 cat >"$config_dir/erp.env" <<EOF
 ALPHASHOP_ACCESS_KEY=$access_key
 ALPHASHOP_SECRET_KEY=$secret_key
 DRY_RUN=$dry_run
 ERP_PLAN=$erp_plan
+ERP_SELF_REGISTRATION=$self_registration
+ERP_ENABLE_FULL_MEMBER_ROLES=0
 EOF
 chmod 600 "$config_dir/erp.env"
 unset access_key secret_key
@@ -100,12 +107,15 @@ WantedBy=multi-user.target
 EOF
 
 admin_password=
-if [ ! -s "$nginx_secret_dir/htpasswd" ]; then
+admin_identifier=admin@northstar.local
+if [ ! -s "$state_dir/work/.auth.json" ]; then
   admin_password=$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-20)
-  printf 'admin:%s\n' "$(openssl passwd -apr1 "$admin_password")" >"$nginx_secret_dir/htpasswd"
+  runuser -u ozon-erp -- "$venv_dir/bin/python" -m ozon_skill.erp.auth \
+    --path "$state_dir/work/.auth.json" \
+    --identifier "$admin_identifier" \
+    --password "$admin_password" \
+    --username admin
 fi
-chown root:nginx "$nginx_secret_dir/htpasswd"
-chmod 640 "$nginx_secret_dir/htpasswd"
 
 if [ ! -s "$nginx_secret_dir/server.key" ] || [ ! -s "$nginx_secret_dir/server.crt" ]; then
   openssl req -x509 -nodes -newkey rsa:2048 -days 30 \
@@ -131,9 +141,6 @@ server {
     ssl_certificate_key /etc/nginx/ozon-erp/server.key;
     ssl_protocols TLSv1.2 TLSv1.3;
 
-    auth_basic "OZON ERP";
-    auth_basic_user_file /etc/nginx/ozon-erp/htpasswd;
-
     location / {
         proxy_pass http://127.0.0.1:18080;
         proxy_http_version 1.1;
@@ -141,7 +148,7 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-ERP-User $remote_user;
+        proxy_set_header X-ERP-User "";
         proxy_read_timeout 300s;
     }
 }
@@ -184,11 +191,11 @@ done
 echo
 echo "OZON ERP 部署完成"
 echo "网址：https://8.217.125.205/"
-echo "用户名：admin"
+echo "管理员登录邮箱：$admin_identifier"
 if [ -n "$admin_password" ]; then
   echo "临时密码：$admin_password"
 else
-  echo "登录密码：保持现有密码不变"
+  echo "管理员密码：保持现有应用账户密码不变"
 fi
 echo "浏览器会提示自签名证书警告；确认 IP 正确后可继续访问。"
 echo "以后拉取新代码后，请运行 bash deploy/aliyun/update.sh 安装到生产运行目录。"

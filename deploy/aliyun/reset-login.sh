@@ -6,68 +6,34 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-username=${1:-}
-if [ -z "$username" ]; then
-  printf '新用户名：'
-  IFS= read -r username
+identifier=${1:-}
+if [ -z "$identifier" ]; then
+  printf '注册邮箱或手机号：'
+  IFS= read -r identifier
 fi
-case "$username" in
-  ''|*[!A-Za-z0-9._-]*)
-    echo "用户名只能包含字母、数字、点、下划线和连字符" >&2
-    exit 1
-    ;;
-esac
 
 password=${2:-}
 if [ -z "$password" ]; then
-  printf '新密码（输入时不会显示）：'
+  printf '新密码（至少 8 位，包含字母和数字；输入时不会显示）：'
   stty -echo
   IFS= read -r password
   stty echo
   printf '\n'
 fi
-if [ "${#password}" -lt 8 ]; then
-  unset password
-  echo "密码至少需要 8 个字符" >&2
+python_bin=/opt/ozon-erp/venv/bin/python
+auth_file=/var/lib/ozon-erp/work/.auth.json
+if [ ! -x "$python_bin" ] || [ ! -s "$auth_file" ]; then
+  echo "未找到已安装的 ERP 应用账户数据" >&2
   exit 1
 fi
 
-secret_dir=/etc/nginx/ozon-erp
-password_file=$secret_dir/htpasswd
-mkdir -p "$secret_dir"
-temporary=$(mktemp "$secret_dir/.htpasswd.XXXXXX")
-trap 'rm -f "$temporary"' EXIT
-printf '%s:%s\n' "$username" "$(openssl passwd -apr1 "$password")" >"$temporary"
+runuser -u ozon-erp -- "$python_bin" -m ozon_skill.erp.auth \
+  --path "$auth_file" \
+  --identifier "$identifier" \
+  --password "$password" \
+  --reset
 unset password
-chown root:nginx "$temporary"
-chmod 640 "$temporary"
-mv "$temporary" "$password_file"
-trap - EXIT
 
-nginx -t
-systemctl enable nginx
-systemctl restart nginx
-systemctl enable ozon-erp
-systemctl restart ozon-erp
-
-if systemctl is-active --quiet firewalld; then
-  firewall-cmd --permanent --add-service=https >/dev/null
-  firewall-cmd --permanent --add-port=8443/tcp >/dev/null
-  firewall-cmd --reload >/dev/null
-fi
-
-for attempt in 1 2 3 4 5; do
-  if curl --fail --silent http://127.0.0.1:18080/api/health >/dev/null; then
-    break
-  fi
-  if [ "$attempt" -eq 5 ]; then
-    systemctl status ozon-erp nginx --no-pager >&2
-    exit 1
-  fi
-  sleep 1
-done
-
-echo "ERP 登录已重置"
-echo "网址：https://8.217.125.205/"
-echo "用户名：$username"
-echo "密码未输出，请使用刚才输入的密码。"
+echo "应用登录密码已重置，原有登录会话已全部撤销。"
+echo "网址：https://8.217.125.205/login"
+echo "登录账号：$identifier"

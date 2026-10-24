@@ -57,6 +57,7 @@ from .ai_provider import AiProviderConfigurationError, AiProviderRegistry
 from .activity import ActivityRegistry
 from .alert_channels import AlertChannelError, AlertChannelRegistry
 from .assets import AssetRegistry, AssetRegistryError, asset_id, managed_asset_id
+from .auth import AuthError, AuthRegistry
 from .finance import FinanceSettingsError, FinanceSettingsRegistry
 from .market_research import MarketResearchError, MarketResearchRegistry
 from .notifications import NotificationRegistry
@@ -540,8 +541,15 @@ class PipelineService:
         self._supplier_schedule_thread: threading.Thread | None = None
         self._supplier_schedule_wake = threading.Event()
         self.stores = StoreRegistry(self.work_root / ".ozon-stores.json")
+        self.auth = AuthRegistry(self.work_root / ".auth.json")
         self.ai_provider = AiProviderRegistry(self.work_root / ".ai-provider.json")
         self.team = TeamRegistry(self.work_root / ".team.json")
+        bootstrap_user = self.auth.first_user()
+        if bootstrap_user is not None:
+            try:
+                self.team.identity(bootstrap_user["username"])
+            except TeamError:
+                pass
         self.finance = FinanceSettingsRegistry(self.work_root / ".finance-settings.json")
         self.market_research = MarketResearchRegistry(self.work_root / ".market-research.json")
         self.activity = ActivityRegistry(self.work_root / ".activity.jsonl")
@@ -1698,6 +1706,46 @@ class PipelineService:
         try:
             return self.team.require(username, permission)
         except TeamError as exc:
+            raise PipelineError(str(exc), status=exc.status) from exc
+
+    def register_account(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        enabled = str(os.environ.get("ERP_SELF_REGISTRATION") or "true").strip().lower()
+        if enabled not in {"1", "true", "yes", "on"}:
+            raise PipelineError("新用户注册暂时关闭", status=403)
+        try:
+            user = self.auth.register(value)
+            try:
+                member = self.team.register_trial(
+                    user["username"], user["display_name"]
+                )
+            except Exception:
+                self.auth.delete_user(str(user["username"]))
+                raise
+            token, _ = self.auth.login(value.get("identifier"), value.get("password"))
+            return {"token": token, "user": user, "member": member}
+        except (AuthError, TeamError) as exc:
+            raise PipelineError(str(exc), status=getattr(exc, "status", 400)) from exc
+
+    def login_account(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            token, user = self.auth.login(
+                value.get("identifier"), value.get("password")
+            )
+            self.team.identity(user["username"])
+            return {"token": token, "user": user}
+        except (AuthError, TeamError) as exc:
+            raise PipelineError(str(exc), status=getattr(exc, "status", 400)) from exc
+
+    def auth_session(self, token: str) -> dict[str, Any] | None:
+        try:
+            return self.auth.session(token)
+        except AuthError as exc:
+            raise PipelineError(str(exc), status=exc.status) from exc
+
+    def logout_account(self, token: str) -> None:
+        try:
+            self.auth.logout(token)
+        except AuthError as exc:
             raise PipelineError(str(exc), status=exc.status) from exc
 
     def team_status(self, username: str) -> dict[str, Any]:

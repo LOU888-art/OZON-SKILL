@@ -490,10 +490,10 @@
         <div class="team-registration-layout">
           <aside class="registration-showcase">
             <span class="registration-badge"><i></i> SECURE ONBOARDING</span>
-            <h4>注册团队成员</h4>
-            <p>一人一号、按角色授权。成员只能访问其工作职责所需的模块。</p>
-            <ol><li><b>01</b><span>创建成员身份</span></li><li><b>02</b><span>配置登录凭证</span></li><li><b>03</b><span>首次登录并审计</span></li></ol>
-            <div class="registration-security"><span>✓</span><p><b>凭证隔离</b><small>ERP 不保存成员密码，登录凭证由 HTTPS 网关单独管理。</small></p></div>
+            <h4>自主注册已启用</h4>
+            <p>新用户从登录页使用邮箱或手机号自行创建账号，并自动进入受限试用角色。</p>
+            <ol><li><b>01</b><span>邮箱或手机号注册</span></li><li><b>02</b><span>密码高强度哈希保存</span></li><li><b>03</b><span>仅开放定价与本人店铺</span></li></ol>
+            <div class="registration-security"><span>✓</span><p><b>最小权限</b><small>商品、图片、订单、选品与上架接口均由服务端拒绝访问。</small></p></div>
           </aside>
           <form id="teamForm" class="team-form registration-form hidden">
             <div class="registration-form-head"><div><span>NEW MEMBER</span><h4>创建成员资料</h4></div><b>01 / 03</b></div>
@@ -506,7 +506,7 @@
           </form>
         </div>
       </div>
-      <p class="dialog-note account-note"><b>下一步：</b>成员资料保存后，由服务器管理员执行 <code>bash deploy/aliyun/add-login-user.sh 用户名</code> 创建 HTTPS 登录凭证。</p>
+      <div class="dialog-actions account-note"><span class="dialog-note"><b>账户安全：</b>新用户可在登录页使用邮箱或手机号自行注册，默认仅开放定价与本人店铺。</span><button id="logoutBtn" type="button" class="ghost">退出登录</button></div>
     </div>
   </dialog>
 

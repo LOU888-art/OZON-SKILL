@@ -8,6 +8,7 @@ import json
 import mimetypes
 import re
 import zipfile
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Sequence
@@ -26,6 +27,11 @@ _AI_PROVIDER_ROUTE = "/api/ai-provider"
 _OBJECT_STORAGE_ROUTE = "/api/object-storage"
 _DASHBOARD_ROUTE = "/api/dashboard"
 _ACCOUNT_ROUTE = "/api/account"
+_AUTH_SESSION_ROUTE = "/api/auth/session"
+_AUTH_LOGIN_ROUTE = "/api/auth/login"
+_AUTH_REGISTER_ROUTE = "/api/auth/register"
+_AUTH_LOGOUT_ROUTE = "/api/auth/logout"
+_SESSION_COOKIE = "northstar_session"
 _PLANS_ROUTE = "/api/plans"
 _TEAM_ROUTE = "/api/team"
 _TEAM_MEMBER_ROUTE = re.compile(r"^/api/team/([^/]+)$")
@@ -115,7 +121,29 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
         return self.server.pipeline_service  # type: ignore[attr-defined]
 
     def _username(self) -> str:
-        return self.headers.get("X-ERP-User", "")
+        user = self._current_user()
+        return str(user.get("username") or "") if user else ""
+
+    def _session_token(self) -> str:
+        cookie = SimpleCookie()
+        try:
+            cookie.load(self.headers.get("Cookie", ""))
+        except Exception:
+            return ""
+        morsel = cookie.get(_SESSION_COOKIE)
+        return morsel.value if morsel else ""
+
+    def _current_user(self) -> dict[str, Any] | None:
+        if hasattr(self, "_authenticated_user"):
+            return self._authenticated_user
+        self._authenticated_user = self.service.auth_session(self._session_token())
+        return self._authenticated_user
+
+    def _require_authenticated(self) -> dict[str, Any]:
+        user = self._current_user()
+        if user is None:
+            raise PipelineError("请先登录后再继续", status=401)
+        return user
 
     def _require(self, permission: str) -> None:
         self.service.require_permission(self._username(), permission)
@@ -143,7 +171,13 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         super().log_message(format, *args)
 
-    def _headers(self, status: int, content_type: str, length: int) -> None:
+    def _headers(
+        self,
+        status: int,
+        content_type: str,
+        length: int,
+        extra_headers: Sequence[tuple[str, str]] = (),
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(length))
@@ -156,13 +190,40 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
             "default-src 'self'; script-src 'self'; style-src 'self'; "
             "img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'",
         )
+        for name, value in extra_headers:
+            self.send_header(name, value)
         self.end_headers()
 
-    def _json(self, value: Any, status: int = 200) -> None:
+    def _json(
+        self,
+        value: Any,
+        status: int = 200,
+        *,
+        extra_headers: Sequence[tuple[str, str]] = (),
+    ) -> None:
         self._finish_activity(status)
         body = json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8")
-        self._headers(status, "application/json; charset=utf-8", len(body))
+        self._headers(
+            status, "application/json; charset=utf-8", len(body), extra_headers
+        )
         self.wfile.write(body)
+
+    def _redirect(self, location: str) -> None:
+        self.send_response(303)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+    def _session_cookie(self, token: str, *, clear: bool = False) -> tuple[str, str]:
+        secure = self.headers.get("X-Forwarded-Proto", "").casefold() == "https"
+        flags = f"HttpOnly; {'Secure; ' if secure else ''}SameSite=Lax"
+        value = (
+            f"{_SESSION_COOKIE}=; Path=/; Max-Age=0; {flags}"
+            if clear
+            else f"{_SESSION_COOKIE}={token}; Path=/; Max-Age=2592000; {flags}"
+        )
+        return "Set-Cookie", value
 
     def _plugin_download(self) -> None:
         body = _research_plugin_archive()
@@ -221,6 +282,9 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
             "commercial.css",
             "assets.css",
             "tech-ui.css",
+            "login.html",
+            "auth.css",
+            "auth.js",
         }:
             self._error("Not found", 404)
             return
@@ -242,6 +306,12 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
         try:
             if path.startswith("/api/") and path not in {
                 "/api/health",
+                _AUTH_SESSION_ROUTE,
+            }:
+                self._require_authenticated()
+            if path.startswith("/api/") and path not in {
+                "/api/health",
+                _AUTH_SESSION_ROUTE,
                 _ACCOUNT_ROUTE,
                 _PLANS_ROUTE,
                 _TEAM_ROUTE,
@@ -251,6 +321,9 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._require("workspace.read")
             if path == "/api/health":
                 self._json({"status": "ok", "service": "1688-to-ozon-erp"})
+            elif path == _AUTH_SESSION_ROUTE:
+                user = self._current_user()
+                self._json({"authenticated": user is not None, "user": user})
             elif path == "/api/config-status":
                 self._json(self.service.config_status())
             elif path == "/api/pipelines":
@@ -377,7 +450,15 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                     )
                 )
             elif path in {"/", "/index.html"}:
-                self._serve_static("index.html")
+                if self._current_user() is None:
+                    self._redirect("/login")
+                else:
+                    self._serve_static("index.html")
+            elif path in {"/login", "/login.html"}:
+                if self._current_user() is not None:
+                    self._redirect("/")
+                else:
+                    self._serve_static("login.html")
             elif path.startswith("/static/"):
                 self._serve_static(path.removeprefix("/static/"))
             else:
@@ -392,6 +473,29 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
         self._begin_activity(path)
         try:
             body = self._body()
+            if path == _AUTH_REGISTER_ROUTE:
+                result = self.service.register_account(body)
+                self._json(
+                    {"user": result["user"], "member": result["member"]},
+                    201,
+                    extra_headers=[self._session_cookie(result["token"])],
+                )
+                return
+            if path == _AUTH_LOGIN_ROUTE:
+                result = self.service.login_account(body)
+                self._json(
+                    {"user": result["user"]},
+                    extra_headers=[self._session_cookie(result["token"])],
+                )
+                return
+            if path == _AUTH_LOGOUT_ROUTE:
+                self.service.logout_account(self._session_token())
+                self._json(
+                    {"status": "logged_out"},
+                    extra_headers=[self._session_cookie("", clear=True)],
+                )
+                return
+            self._require_authenticated()
             if path == _NOTIFICATIONS_READ_ROUTE:
                 self._json(
                     self.service.mark_notifications_read(self._username(), body)
@@ -596,6 +700,7 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         self._begin_activity(path)
         try:
+            self._require_authenticated()
             if path == _AI_PROVIDER_ROUTE:
                 self._require("ai.manage")
                 self.service.delete_ai_provider()
