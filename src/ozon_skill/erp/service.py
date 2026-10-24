@@ -1754,6 +1754,77 @@ class PipelineService:
         except TeamError as exc:
             raise PipelineError(str(exc), status=exc.status) from exc
 
+    def registered_accounts(self, username: str) -> dict[str, Any]:
+        self.require_permission(username, "team.manage")
+        members = {
+            str(item.get("username")): item
+            for item in self.team.list_public(username)["members"]
+        }
+        accounts = []
+        for user in self.auth.list_public():
+            member = members.get(str(user.get("username"))) or {}
+            accounts.append(
+                {
+                    **user,
+                    "role": member.get("role") or "unassigned",
+                    "role_name": member.get("role_name") or "未加入工作区",
+                    "is_owner": member.get("role") == "owner",
+                    "store_count": len(
+                        self.stores.list_public(
+                            owner_username=str(user.get("username") or "")
+                        )
+                    ),
+                }
+            )
+        return {"accounts": accounts, "total": len(accounts)}
+
+    def set_account_authorized(
+        self, username: str, target: str, authorized: bool
+    ) -> dict[str, Any]:
+        self.require_permission(username, "team.manage")
+        target = str(target or "").strip()
+        member = next(
+            (
+                item
+                for item in self.team.list_public(username)["members"]
+                if str(item.get("username")) == target
+            ),
+            None,
+        )
+        if member and member.get("role") == "owner":
+            raise PipelineError("不能解除工作区所有者的授权", status=403)
+        try:
+            return self.auth.set_authorized(target, authorized)
+        except AuthError as exc:
+            raise PipelineError(str(exc), status=exc.status) from exc
+
+    def delete_registered_account(self, username: str, target: str) -> dict[str, Any]:
+        self.require_permission(username, "team.manage")
+        target = str(target or "").strip()
+        if target == username:
+            raise PipelineError("不能删除当前登录账号", status=403)
+        account = self.auth.get_public(target)
+        if account is None:
+            raise PipelineError("注册账号不存在", status=404)
+        member = next(
+            (
+                item
+                for item in self.team.list_public(username)["members"]
+                if str(item.get("username")) == target
+            ),
+            None,
+        )
+        if member and member.get("role") == "owner":
+            raise PipelineError("不能删除工作区所有者", status=403)
+        removed_stores = self.stores.delete_by_owner(target)
+        if member is not None:
+            try:
+                self.team.delete_member(username, target)
+            except TeamError as exc:
+                raise PipelineError(str(exc), status=exc.status) from exc
+        self.auth.delete_user(target)
+        return {"status": "deleted", "removed_store_ids": removed_stores}
+
     def save_team_member(self, username: str, value: Mapping[str, Any]) -> dict[str, Any]:
         try:
             team = self.team.list_public(username)

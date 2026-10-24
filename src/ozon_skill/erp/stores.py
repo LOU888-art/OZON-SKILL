@@ -199,3 +199,23 @@ class StoreRegistry:
                 raise StoreAuthorizationError(f"未找到 OZON 店铺授权：{store_id}")
             document["stores"] = remaining
             self._write(document)
+
+    def delete_by_owner(self, owner_username: str) -> list[str]:
+        """Remove all credentials owned by one self-service account."""
+
+        normalized = str(owner_username or "").casefold()
+        with self._lock:
+            document = self._read()
+            removed = [
+                str(item.get("store_id") or "")
+                for item in document["stores"]
+                if str(item.get("owner_username") or "").casefold() == normalized
+            ]
+            if removed:
+                document["stores"] = [
+                    item
+                    for item in document["stores"]
+                    if str(item.get("owner_username") or "").casefold() != normalized
+                ]
+                self._write(document)
+            return removed

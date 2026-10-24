@@ -95,6 +95,29 @@ class AuthRegistryTests(unittest.TestCase):
                     }
                 )
 
+    def test_authorization_revokes_sessions_and_can_be_restored(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            registry = AuthRegistry(Path(directory) / "auth.json")
+            account = registry.register(
+                {
+                    "identifier": "seller@example.com",
+                    "password": "SellerPass123",
+                    "display_name": "测试卖家",
+                }
+            )
+            token, _ = registry.login("seller@example.com", "SellerPass123")
+
+            revoked = registry.set_authorized(account["username"], False)
+
+            self.assertFalse(revoked["authorized"])
+            self.assertIsNone(registry.session(token))
+            with self.assertRaises(AuthError) as context:
+                registry.login("seller@example.com", "SellerPass123")
+            self.assertEqual(context.exception.status, 403)
+            registry.set_authorized(account["username"], True)
+            _, restored = registry.login("seller@example.com", "SellerPass123")
+            self.assertTrue(restored["authorized"])
+
 
 class PublicRegistrationHttpTests(unittest.TestCase):
     def test_registration_creates_trial_session_and_protects_workspace(self) -> None:
@@ -158,6 +181,136 @@ class PublicRegistrationHttpTests(unittest.TestCase):
             self.assertEqual(account["identity"]["role"], "trial")
             self.assertEqual(workspace_status, 403)
             self.assertEqual(stores_status, 200)
+
+    def test_owner_can_manage_registered_account_authorization(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            server = create_server("127.0.0.1", 0, Path(directory))
+            server.pipeline_service.auth.bootstrap(
+                "admin@northstar.local", "AdminPass123", "admin"
+            )
+            server.pipeline_service.team.identity("admin")
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+            def request(
+                path: str,
+                *,
+                method: str = "GET",
+                body: dict[str, object] | None = None,
+                cookie: str = "",
+            ) -> tuple[int, dict[str, object], str]:
+                data = json.dumps(body).encode() if body is not None else None
+                headers = {"Content-Type": "application/json"}
+                if cookie:
+                    headers["Cookie"] = cookie
+                value = Request(
+                    base_url + path, data=data, headers=headers, method=method
+                )
+                try:
+                    with urlopen(value, timeout=5) as response:
+                        return (
+                            response.status,
+                            json.loads(response.read()),
+                            response.headers.get("Set-Cookie", ""),
+                        )
+                except HTTPError as exc:
+                    return exc.code, json.loads(exc.read()), ""
+
+            def cookie_from(header: str) -> str:
+                parsed = SimpleCookie()
+                parsed.load(header)
+                return f"northstar_session={parsed['northstar_session'].value}"
+
+            try:
+                owner_status, _, owner_header = request(
+                    "/api/auth/login",
+                    method="POST",
+                    body={
+                        "identifier": "admin@northstar.local",
+                        "password": "AdminPass123",
+                    },
+                )
+                owner_cookie = cookie_from(owner_header)
+                register_status, registered, trial_header = request(
+                    "/api/auth/register",
+                    method="POST",
+                    body={
+                        "identifier": "seller@example.com",
+                        "password": "SellerPass123",
+                        "display_name": "注册卖家",
+                    },
+                )
+                trial_cookie = cookie_from(trial_header)
+                target = registered["user"]["username"]
+                list_status, listing, _ = request(
+                    "/api/registrations", cookie=owner_cookie
+                )
+                forbidden_status, _, _ = request(
+                    "/api/registrations", cookie=trial_cookie
+                )
+                revoke_status, _, _ = request(
+                    f"/api/registrations/{target}/revoke",
+                    method="POST",
+                    body={},
+                    cookie=owner_cookie,
+                )
+                revoked_session_status, _, _ = request(
+                    "/api/account", cookie=trial_cookie
+                )
+                revoked_login_status, _, _ = request(
+                    "/api/auth/login",
+                    method="POST",
+                    body={
+                        "identifier": "seller@example.com",
+                        "password": "SellerPass123",
+                    },
+                )
+                authorize_status, _, _ = request(
+                    f"/api/registrations/{target}/authorize",
+                    method="POST",
+                    body={},
+                    cookie=owner_cookie,
+                )
+                restored_login_status, _, _ = request(
+                    "/api/auth/login",
+                    method="POST",
+                    body={
+                        "identifier": "seller@example.com",
+                        "password": "SellerPass123",
+                    },
+                )
+                delete_status, deleted, _ = request(
+                    f"/api/registrations/{target}",
+                    method="DELETE",
+                    cookie=owner_cookie,
+                )
+                deleted_login_status, _, _ = request(
+                    "/api/auth/login",
+                    method="POST",
+                    body={
+                        "identifier": "seller@example.com",
+                        "password": "SellerPass123",
+                    },
+                )
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+            self.assertEqual(owner_status, 200)
+            self.assertEqual(register_status, 201)
+            self.assertEqual(list_status, 200)
+            self.assertEqual(listing["total"], 2)
+            self.assertEqual(forbidden_status, 403)
+            self.assertEqual(revoke_status, 200)
+            self.assertEqual(revoked_session_status, 401)
+            self.assertEqual(revoked_login_status, 403)
+            self.assertEqual(authorize_status, 200)
+            self.assertEqual(restored_login_status, 200)
+            self.assertEqual(delete_status, 200)
+            self.assertEqual(deleted["status"], "deleted")
+            self.assertEqual(deleted_login_status, 401)
 
 
 if __name__ == "__main__":

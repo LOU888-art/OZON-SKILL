@@ -97,7 +97,7 @@
   }
 }
 
-/* Commercial account registration surface. Authentication remains at the HTTPS gateway. */
+/* Commercial account registration and owner-managed application access. */
 .account-dialog-shell {
   width: min(980px, calc(100vw - 28px));
 }

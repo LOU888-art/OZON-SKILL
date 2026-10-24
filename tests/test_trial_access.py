@@ -82,6 +82,13 @@ class TrialRoleTests(unittest.TestCase):
                 registry.credentials("store-b", owner_username="trial1")
             with self.assertRaises(StoreAuthorizationError):
                 registry.delete("store-b", owner_username="trial1")
+            removed = registry.delete_by_owner("trial1")
+            self.assertEqual(removed, ["store-a"])
+            self.assertEqual(registry.list_public(owner_username="trial1"), [])
+            self.assertEqual(
+                [item["store_id"] for item in registry.list_public(owner_username="trial2")],
+                ["store-b"],
+            )
 
 
 class TrialHttpAccessTests(unittest.TestCase):

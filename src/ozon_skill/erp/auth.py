@@ -157,8 +157,43 @@ class AuthRegistry:
             "identifier": masked,
             "identifier_type": user.get("identifier_type"),
             "display_name": user.get("display_name"),
+            "authorized": user.get("authorized") is not False,
             "created_at": user.get("created_at"),
+            "updated_at": user.get("updated_at"),
+            "last_login_at": user.get("last_login_at"),
         }
+
+    def list_public(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [self._public(item) for item in self._read()["users"]]
+
+    def get_public(self, username: str) -> dict[str, Any] | None:
+        with self._lock:
+            user = next(
+                (item for item in self._read()["users"] if item.get("username") == username),
+                None,
+            )
+            return self._public(user) if user else None
+
+    def set_authorized(self, username: str, authorized: bool) -> dict[str, Any]:
+        with self._lock:
+            document = self._read()
+            user = next(
+                (item for item in document["users"] if item.get("username") == username),
+                None,
+            )
+            if user is None:
+                raise AuthError("注册账号不存在", status=404)
+            user["authorized"] = bool(authorized)
+            user["updated_at"] = _timestamp()
+            if not authorized:
+                document["sessions"] = [
+                    item
+                    for item in document["sessions"]
+                    if item.get("username") != username
+                ]
+            self._write(document)
+            return self._public(user)
 
     def register(self, value: Mapping[str, Any]) -> dict[str, Any]:
         identifier, identifier_type = normalize_identifier(value.get("identifier"))
@@ -333,6 +368,8 @@ class AuthRegistry:
                 attempts.append(_now())
                 self._failed_logins[identifier] = attempts
                 raise AuthError("邮箱/手机号或密码错误", status=401)
+            if user.get("authorized") is False:
+                raise AuthError("账号授权已解除，请联系运营人员", status=403)
             self._failed_logins.pop(identifier, None)
             token = secrets.token_urlsafe(32)
             expires_at = _now() + timedelta(days=30)
@@ -349,6 +386,8 @@ class AuthRegistry:
                     "expires_at": _timestamp(expires_at),
                 }
             )
+            user["last_login_at"] = _timestamp()
+            user["updated_at"] = user["last_login_at"]
             self._write(document)
             return token, self._public(user)
 
@@ -368,7 +407,7 @@ class AuthRegistry:
                 (item for item in document["users"] if item.get("username") == session.get("username")),
                 None,
             )
-            return self._public(user) if user else None
+            return self._public(user) if user and user.get("authorized") is not False else None
 
     def logout(self, token: str) -> None:
         if not token:

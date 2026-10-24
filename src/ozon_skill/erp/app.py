@@ -31,6 +31,11 @@ _AUTH_SESSION_ROUTE = "/api/auth/session"
 _AUTH_LOGIN_ROUTE = "/api/auth/login"
 _AUTH_REGISTER_ROUTE = "/api/auth/register"
 _AUTH_LOGOUT_ROUTE = "/api/auth/logout"
+_REGISTRATIONS_ROUTE = "/api/registrations"
+_REGISTRATION_ACTION_ROUTE = re.compile(
+    r"^/api/registrations/([^/]+)/(authorize|revoke)$"
+)
+_REGISTRATION_ROUTE = re.compile(r"^/api/registrations/([^/]+)$")
 _SESSION_COOKIE = "northstar_session"
 _PLANS_ROUTE = "/api/plans"
 _TEAM_ROUTE = "/api/team"
@@ -317,6 +322,7 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 _TEAM_ROUTE,
                 "/api/stores",
                 _PRICING_CATEGORIES_ROUTE,
+                _REGISTRATIONS_ROUTE,
             }:
                 self._require("workspace.read")
             if path == "/api/health":
@@ -340,6 +346,9 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._json({"plans": PLAN_CATALOG})
             elif path == _TEAM_ROUTE:
                 self._json(self.service.team_status(self._username()))
+            elif path == _REGISTRATIONS_ROUTE:
+                self._require("team.manage")
+                self._json(self.service.registered_accounts(self._username()))
             elif path == _OPERATIONS_ROUTE:
                 self._require("orders.read")
                 self._require("inventory.read")
@@ -496,6 +505,19 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 )
                 return
             self._require_authenticated()
+            if registration_match := _REGISTRATION_ACTION_ROUTE.fullmatch(path):
+                self._require("team.manage")
+                action = registration_match.group(2)
+                self._json(
+                    {
+                        "account": self.service.set_account_authorized(
+                            self._username(),
+                            unquote(registration_match.group(1)),
+                            action == "authorize",
+                        )
+                    }
+                )
+                return
             if path == _NOTIFICATIONS_READ_ROUTE:
                 self._json(
                     self.service.mark_notifications_read(self._username(), body)
@@ -701,6 +723,14 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
         self._begin_activity(path)
         try:
             self._require_authenticated()
+            if registration_match := _REGISTRATION_ROUTE.fullmatch(path):
+                self._require("team.manage")
+                self._json(
+                    self.service.delete_registered_account(
+                        self._username(), unquote(registration_match.group(1))
+                    )
+                )
+                return
             if path == _AI_PROVIDER_ROUTE:
                 self._require("ai.manage")
                 self.service.delete_ai_provider()
