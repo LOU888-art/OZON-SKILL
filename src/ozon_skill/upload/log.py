@@ -31,10 +31,18 @@ class UploadLog:
             "INFO_LIST_ERROR",
             "UNARCHIVE_ERROR",
         }
+        uncertain_submission_statuses = {
+            "SUBMITTING",
+            "SUBMISSION_OUTCOME_UNKNOWN",
+            "IMPORT_RESPONSE_MISSING_TASK_ID",
+        }
         return any(
             isinstance(entry, dict)
             and entry.get("store_id") == store_id
-            and entry.get("task_id") is not None
+            and (
+                entry.get("task_id") is not None
+                or entry.get("status") in uncertain_submission_statuses
+            )
             and offer_id in (entry.get("offer_ids") or [])
             and entry.get("status") not in retryable_terminal_statuses
             for entry in self.data["entries"]
@@ -49,7 +57,6 @@ class UploadLog:
                 and entry.get("store_id") == store_id
                 and entry.get("payload_sha256") == payload_sha256
                 and entry.get("request_sent") is True
-                and entry.get("task_id") is not None
             ):
                 return dict(entry)
         return None

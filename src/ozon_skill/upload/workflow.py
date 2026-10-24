@@ -519,6 +519,19 @@ def run_upload_workflow(
         if previous_status in {"FAILED", "VERIFIED"}:
             previous["reused_existing_result"] = True
             return previous
+        if previous_status in {
+            "SUBMITTING",
+            "SUBMISSION_OUTCOME_UNKNOWN",
+            "IMPORT_RESPONSE_MISSING_TASK_ID",
+        } and not isinstance(previous.get("task_id"), int):
+            previous["reused_existing_result"] = True
+            previous["manual_reconciliation_required"] = True
+            previous.setdefault(
+                "error",
+                "上一次请求可能已经到达 Ozon，但没有取得 task_id；"
+                "为防止重复创建，系统已停止自动重提，请先在 Ozon 后台按 offer_id 核对",
+            )
+            return previous
         previous_run_id = previous.get("run_id")
         log_index = next(
             (
@@ -579,23 +592,65 @@ def run_upload_workflow(
             upload_log.append(entry)
             return entry
 
-        import_response = client.product_import(import_payload)
-        task_id = _task_id(import_response)
+        # Persist the intent before touching Ozon. If the process exits or the
+        # response is lost after the request starts, the next run must not
+        # blindly create the same offers again.
+        entry["request_sent"] = True
+        entry["status"] = "SUBMITTING"
+        entry["history"].append({"at": _now(), "status": "SUBMITTING"})
+        log_index = upload_log.append(entry)
+        try:
+            import_response = client.product_import(import_payload)
+        except Exception as exc:
+            error = (
+                "Ozon 提交结果不确定：请求过程中连接中断。为防止重复创建，"
+                "系统不会自动重提；请先在 Ozon 后台按 offer_id 核对。"
+                f"原始错误：{str(exc)[:500]}"
+            )
+            entry["history"].append(
+                {"at": _now(), "status": "SUBMISSION_OUTCOME_UNKNOWN", "error": error}
+            )
+            upload_log.update(
+                log_index,
+                status="SUBMISSION_OUTCOME_UNKNOWN",
+                error=error,
+                history=entry["history"],
+            )
+            return upload_log.data["entries"][log_index]
+        task_id = _task_id(import_response) if isinstance(import_response, Mapping) else None
         if task_id is None:
-            entry["status"] = "IMPORT_RESPONSE_MISSING_TASK_ID"
-            entry["request_sent"] = True
-            entry["history"].append({"at": _now(), "status": entry["status"]})
-            upload_log.append(entry)
-            return entry
+            error = (
+                "Ozon 已响应但没有返回 task_id。为防止重复创建，系统不会自动重提；"
+                "请先在 Ozon 后台按 offer_id 核对"
+            )
+            entry["history"].append(
+                {
+                    "at": _now(),
+                    "status": "IMPORT_RESPONSE_MISSING_TASK_ID",
+                    "error": error,
+                }
+            )
+            upload_log.update(
+                log_index,
+                status="IMPORT_RESPONSE_MISSING_TASK_ID",
+                error=error,
+                history=entry["history"],
+            )
+            return upload_log.data["entries"][log_index]
 
         # Persist the task before any polling or follow-up request.
-        entry["request_sent"] = True
         entry["task_id"] = task_id
         entry["status"] = "SUBMITTED"
         entry["history"].append(
             {"at": _now(), "status": "SUBMITTED", "task_id": task_id}
         )
-        log_index = upload_log.append(entry)
+        upload_log.update(
+            log_index,
+            task_id=task_id,
+            status="SUBMITTED",
+            error=None,
+            history=entry["history"],
+        )
 
     if not resume_verification:
         final_state = "PENDING"

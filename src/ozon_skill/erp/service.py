@@ -472,7 +472,15 @@ def _upload_error_messages(value: Mapping[str, Any]) -> list[str]:
     messages: list[str] = []
     top_level_error = value.get("error")
     if top_level_error:
-        messages.append(f"Ozon API 回查失败：{str(top_level_error)[:1200]}")
+        status = str(value.get("status") or "")
+        if status in {
+            "SUBMITTING",
+            "SUBMISSION_OUTCOME_UNKNOWN",
+            "IMPORT_RESPONSE_MISSING_TASK_ID",
+        }:
+            messages.append(str(top_level_error)[:1200])
+        else:
+            messages.append(f"Ozon API 回查失败：{str(top_level_error)[:1200]}")
     verification = value.get("attribute_verification")
     if isinstance(verification, Mapping):
         missing_by_offer = verification.get("missing_by_offer_id")
