@@ -245,6 +245,8 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 _ACCOUNT_ROUTE,
                 _PLANS_ROUTE,
                 _TEAM_ROUTE,
+                "/api/stores",
+                _PRICING_CATEGORIES_ROUTE,
             }:
                 self._require("workspace.read")
             if path == "/api/health":
@@ -284,7 +286,7 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                     }
                 )
             elif path == _PRICING_CATEGORIES_ROUTE:
-                self._require("finance.read")
+                self._require("pricing.use")
                 self._json(
                     self.service.pricing_categories(
                         (query.get("q") or [""])[0],
@@ -340,7 +342,10 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 body, content_type = self.service.asset_preview(match.group(1))
                 self._image(body, content_type)
             elif path == "/api/stores":
-                self._json({"stores": self.service.list_stores()})
+                self._require("stores.manage")
+                self._json(
+                    {"stores": self.service.list_stores(self._username())}
+                )
             elif path == _AI_PROVIDER_ROUTE:
                 self._json({"provider": self.service.ai_provider_status()})
             elif path == _OBJECT_STORAGE_ROUTE:
@@ -482,7 +487,14 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/stores":
                 self._require("stores.manage")
-                self._json({"store": self.service.authorize_store(body)}, 201)
+                self._json(
+                    {
+                        "store": self.service.authorize_store(
+                            body, self._username()
+                        )
+                    },
+                    201,
+                )
                 return
             if path == _AI_PROVIDER_ROUTE:
                 self._require("ai.manage")
@@ -508,13 +520,17 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 )
                 return
             if path == _PRICING_ROUTE:
-                self._require("finance.read")
+                self._require("pricing.use")
                 self._json({"calculation": self.service.pricing_calculation(body)})
                 return
             if store_match := _STORE_VERIFY_ROUTE.fullmatch(path):
                 self._require("stores.manage")
                 self._json(
-                    {"store": self.service.verify_store(unquote(store_match.group(1)))}
+                    {
+                        "store": self.service.verify_store(
+                            unquote(store_match.group(1)), self._username()
+                        )
+                    }
                 )
                 return
             if path == "/api/pipelines":
@@ -620,7 +636,7 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._error("Not found", 404)
                 return
             self._require("stores.manage")
-            self.service.delete_store(unquote(match.group(1)))
+            self.service.delete_store(unquote(match.group(1)), self._username())
             self._json({"status": "deleted"})
         except PipelineError as exc:
             self._error(str(exc), exc.status)

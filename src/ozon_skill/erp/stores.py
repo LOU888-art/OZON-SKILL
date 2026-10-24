@@ -84,18 +84,34 @@ class StoreRegistry:
             "updated_at": store.get("updated_at"),
         }
 
-    def list_public(self) -> list[dict[str, Any]]:
-        with self._lock:
-            return [self._public(item) for item in self._read()["stores"]]
+    @staticmethod
+    def _owned_by(store: Mapping[str, Any], owner_username: str | None) -> bool:
+        if owner_username is None:
+            return True
+        return str(store.get("owner_username") or "").casefold() == owner_username.casefold()
 
-    def credentials(self, store_id: str) -> dict[str, Any]:
+    def list_public(self, *, owner_username: str | None = None) -> list[dict[str, Any]]:
+        with self._lock:
+            return [
+                self._public(item)
+                for item in self._read()["stores"]
+                if self._owned_by(item, owner_username)
+            ]
+
+    def credentials(
+        self, store_id: str, *, owner_username: str | None = None
+    ) -> dict[str, Any]:
         with self._lock:
             for store in self._read()["stores"]:
-                if store.get("store_id") == store_id:
+                if store.get("store_id") == store_id and self._owned_by(
+                    store, owner_username
+                ):
                     return dict(store)
         raise StoreAuthorizationError(f"未找到 OZON 店铺授权：{store_id}")
 
-    def authorize(self, value: Mapping[str, Any]) -> dict[str, Any]:
+    def authorize(
+        self, value: Mapping[str, Any], *, owner_username: str | None = None
+    ) -> dict[str, Any]:
         store_id = str(value.get("store_id") or "").strip()
         name = str(value.get("name") or "").strip()
         client_id = str(value.get("client_id") or "").strip()
@@ -121,6 +137,8 @@ class StoreRegistry:
             existing = next(
                 (item for item in stores if item.get("store_id") == store_id), None
             )
+            if existing is not None and not self._owned_by(existing, owner_username):
+                raise StoreAuthorizationError("该店铺标识已由其他账号绑定")
             timestamp = _now()
             record = {
                 "store_id": store_id,
@@ -131,6 +149,11 @@ class StoreRegistry:
                 "verified_at": timestamp,
                 "created_at": existing.get("created_at") if existing else timestamp,
                 "updated_at": timestamp,
+                "owner_username": (
+                    owner_username
+                    if owner_username is not None
+                    else existing.get("owner_username") if existing else None
+                ),
             }
             if existing is None:
                 stores.append(record)
@@ -139,8 +162,10 @@ class StoreRegistry:
             self._write(document)
             return self._public(record)
 
-    def verify(self, store_id: str) -> dict[str, Any]:
-        store = self.credentials(store_id)
+    def verify(
+        self, store_id: str, *, owner_username: str | None = None
+    ) -> dict[str, Any]:
+        store = self.credentials(store_id, owner_username=owner_username)
         try:
             self.client_factory(store["client_id"], store["api_key"]).category_tree(
                 language="RU"
@@ -150,18 +175,25 @@ class StoreRegistry:
         with self._lock:
             document = self._read()
             for item in document["stores"]:
-                if item.get("store_id") == store_id:
+                if item.get("store_id") == store_id and self._owned_by(
+                    item, owner_username
+                ):
                     item["verified_at"] = _now()
                     item["updated_at"] = item["verified_at"]
                     self._write(document)
                     return self._public(item)
         raise StoreAuthorizationError(f"未找到 OZON 店铺授权：{store_id}")
 
-    def delete(self, store_id: str) -> None:
+    def delete(self, store_id: str, *, owner_username: str | None = None) -> None:
         with self._lock:
             document = self._read()
             remaining = [
-                item for item in document["stores"] if item.get("store_id") != store_id
+                item
+                for item in document["stores"]
+                if not (
+                    item.get("store_id") == store_id
+                    and self._owned_by(item, owner_username)
+                )
             ]
             if len(remaining) == len(document["stores"]):
                 raise StoreAuthorizationError(f"未找到 OZON 店铺授权：{store_id}")

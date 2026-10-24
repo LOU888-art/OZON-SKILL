@@ -14,17 +14,21 @@ from typing import Any, Mapping
 
 _USERNAME = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 ROLE_DEFINITIONS = {
+    "trial": {
+        "name": "受限试用",
+        "permissions": ["pricing.use", "stores.manage"],
+    },
     "owner": {
         "name": "所有者",
-        "permissions": ["workspace.read", "orders.read", "inventory.read", "finance.read", "finance.manage", "pipeline.create", "stage.run", "images.manage", "listing.publish", "stores.manage", "ai.manage", "storage.manage", "team.manage", "billing.view", "audit.read"],
+        "permissions": ["workspace.read", "orders.read", "inventory.read", "finance.read", "finance.manage", "pricing.use", "pipeline.create", "stage.run", "images.manage", "listing.publish", "stores.manage", "ai.manage", "storage.manage", "team.manage", "billing.view", "audit.read"],
     },
     "admin": {
         "name": "管理员",
-        "permissions": ["workspace.read", "orders.read", "inventory.read", "finance.read", "finance.manage", "pipeline.create", "stage.run", "images.manage", "listing.publish", "stores.manage", "ai.manage", "storage.manage", "team.manage", "audit.read"],
+        "permissions": ["workspace.read", "orders.read", "inventory.read", "finance.read", "finance.manage", "pricing.use", "pipeline.create", "stage.run", "images.manage", "listing.publish", "stores.manage", "ai.manage", "storage.manage", "team.manage", "audit.read"],
     },
     "operator": {
         "name": "运营",
-        "permissions": ["workspace.read", "orders.read", "inventory.read", "finance.read", "finance.manage", "pipeline.create", "stage.run", "images.manage", "listing.publish"],
+        "permissions": ["workspace.read", "orders.read", "inventory.read", "finance.read", "finance.manage", "pricing.use", "pipeline.create", "stage.run", "images.manage", "listing.publish"],
     },
     "designer": {
         "name": "设计",
@@ -32,9 +36,9 @@ ROLE_DEFINITIONS = {
     },
     "reviewer": {
         "name": "审核",
-        "permissions": ["workspace.read", "orders.read", "inventory.read", "finance.read", "stage.run"],
+        "permissions": ["workspace.read", "orders.read", "inventory.read", "finance.read", "pricing.use", "stage.run"],
     },
-    "viewer": {"name": "只读", "permissions": ["workspace.read", "orders.read", "inventory.read", "finance.read"]},
+    "viewer": {"name": "只读", "permissions": ["workspace.read", "orders.read", "inventory.read", "finance.read", "pricing.use"]},
 }
 
 
@@ -132,12 +136,21 @@ class TeamRegistry:
         actor_identity = self.require(actor, "team.manage")
         username = self._safe_username(value.get("username"))
         display_name = str(value.get("display_name") or username).strip()[:80]
-        role = str(value.get("role") or "viewer").strip().lower()
+        role = str(value.get("role") or "trial").strip().lower()
         if role not in ROLE_DEFINITIONS or role == "owner":
-            raise TeamError("成员角色必须是管理员、运营、设计、审核或只读")
+            raise TeamError("成员角色必须是受限试用、管理员、运营、设计、审核或只读")
         with self._lock:
             document = self._read()
             existing = next((item for item in document["members"] if str(item.get("username") or "").casefold() == username.casefold()), None)
+            full_roles_enabled = str(
+                os.environ.get("ERP_ENABLE_FULL_MEMBER_ROLES") or ""
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            if existing is None and role != "trial" and not full_roles_enabled:
+                raise TeamError(
+                    "新注册账号当前仅开放受限试用；请设置 "
+                    "ERP_ENABLE_FULL_MEMBER_ROLES=1 后再创建完整角色",
+                    status=403,
+                )
             if existing and existing.get("role") == "owner":
                 raise TeamError("不能修改工作区所有者", status=403)
             timestamp = _now()

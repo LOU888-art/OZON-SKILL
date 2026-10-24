@@ -501,7 +501,7 @@
               <div class="field registration-field"><label for="memberUsername"><span>01</span>登录用户名</label><input id="memberUsername" required pattern="[A-Za-z0-9._@-]{1,64}" autocomplete="username" placeholder="例如 operator01"><small>支持字母、数字、点、下划线、@ 和连字符</small></div>
               <div class="field registration-field"><label for="memberDisplayName"><span>02</span>成员姓名</label><input id="memberDisplayName" required autocomplete="name" placeholder="例如 王小明"><small>用于任务分配、通知与审计记录</small></div>
             </div>
-            <div class="field registration-field role-field"><label for="memberRole"><span>03</span>工作角色</label><select id="memberRole"><option value="admin">管理员</option><option value="operator" selected>运营</option><option value="designer">设计</option><option value="reviewer">审核</option><option value="viewer">只读</option></select><small id="memberRoleHint">可管理商品流程，但不能修改团队、店铺密钥和系统级配置。</small></div>
+            <div class="field registration-field role-field"><label for="memberRole"><span>03</span>工作角色</label><select id="memberRole"><option value="trial" selected>受限试用（仅定价与店铺）</option></select><small id="memberRoleHint">仅可使用定价工具并绑定自己的 Ozon 店铺，其他模块暂未开放。</small></div>
             <div class="registration-submit"><span><i></i> 保存后还需由服务器管理员创建同名登录凭证</span><button type="submit" class="primary">注册成员 <b>→</b></button></div>
           </form>
         </div>

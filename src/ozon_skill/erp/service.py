@@ -1350,8 +1350,19 @@ class PipelineService:
     def delete_ai_provider(self) -> None:
         self.ai_provider.delete()
 
-    def list_stores(self) -> list[dict[str, Any]]:
-        return self.stores.list_public()
+    def _store_owner_scope(self, username: str = "") -> str | None:
+        if not username:
+            return None
+        try:
+            identity = self.team.identity(username)
+        except TeamError as exc:
+            raise PipelineError(str(exc), status=exc.status) from exc
+        return identity["username"] if identity.get("role") == "trial" else None
+
+    def list_stores(self, username: str = "") -> list[dict[str, Any]]:
+        return self.stores.list_public(
+            owner_username=self._store_owner_scope(username)
+        )
 
     def finance_settings(self, store_id: str) -> dict[str, Any]:
         if not any(item["store_id"] == store_id for item in self.list_stores()):
@@ -1608,12 +1619,17 @@ class PipelineService:
     def commercial_status(self, username: str = "") -> dict[str, Any]:
         """Return the current workspace identity, plan and metered usage."""
 
+        try:
+            identity = self.team.identity(username)
+        except TeamError as exc:
+            raise PipelineError(str(exc), status=exc.status) from exc
+        restricted_trial = identity.get("role") == "trial"
         plan_code = str(os.environ.get("ERP_PLAN") or "business").strip().lower()
         if plan_code not in PLAN_CATALOG:
             plan_code = "business"
         plan = PLAN_CATALOG[plan_code]
         month = datetime.now(timezone.utc).strftime("%Y-%m")
-        monthly_pipelines = [
+        monthly_pipelines = [] if restricted_trial else [
             item
             for item in self.list_pipelines()
             if str(item.get("created_at") or item.get("updated_at") or "").startswith(month)
@@ -1633,17 +1649,19 @@ class PipelineService:
                 action = str(image.get("plan_action") or image.get("action") or "")
                 if action in {"reference_8", "sku_main", "ai_generate"}:
                     ai_images += 1
-        try:
-            identity = self.team.identity(username)
-            team = self.team.list_public(username)
-        except TeamError as exc:
-            raise PipelineError(str(exc), status=exc.status) from exc
+        if restricted_trial:
+            member_count = 1
+        else:
+            try:
+                member_count = len(self.team.list_public(username)["members"])
+            except TeamError as exc:
+                raise PipelineError(str(exc), status=exc.status) from exc
         limits = dict(plan["limits"])
         usage = {
             "products": len(monthly_pipelines),
-            "stores": len(self.list_stores()),
+            "stores": len(self.list_stores(username)),
             "ai_images": ai_images,
-            "members": len(team["members"]),
+            "members": member_count,
         }
         return {
             "schema_version": "1.0",
@@ -1654,6 +1672,7 @@ class PipelineService:
                     label
                     for permission, label in {
                         "pipeline.create": "商品管理",
+                        "pricing.use": "定价工具",
                         "stores.manage": "店铺授权",
                         "listing.publish": "真实上架",
                         "team.manage": "团队管理",
@@ -1727,21 +1746,29 @@ class PipelineService:
                 status=402,
             )
 
-    def authorize_store(self, value: Mapping[str, Any]) -> dict[str, Any]:
+    def authorize_store(
+        self, value: Mapping[str, Any], username: str = ""
+    ) -> dict[str, Any]:
         try:
-            return self.stores.authorize(value)
+            return self.stores.authorize(
+                value, owner_username=self._store_owner_scope(username)
+            )
         except StoreAuthorizationError as exc:
             raise PipelineError(str(exc), status=422) from exc
 
-    def verify_store(self, store_id: str) -> dict[str, Any]:
+    def verify_store(self, store_id: str, username: str = "") -> dict[str, Any]:
         try:
-            return self.stores.verify(store_id)
+            return self.stores.verify(
+                store_id, owner_username=self._store_owner_scope(username)
+            )
         except StoreAuthorizationError as exc:
             raise PipelineError(str(exc), status=422) from exc
 
-    def delete_store(self, store_id: str) -> None:
+    def delete_store(self, store_id: str, username: str = "") -> None:
         try:
-            self.stores.delete(store_id)
+            self.stores.delete(
+                store_id, owner_username=self._store_owner_scope(username)
+            )
         except StoreAuthorizationError as exc:
             raise PipelineError(str(exc), status=404) from exc
 
