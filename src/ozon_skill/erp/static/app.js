@@ -141,6 +141,62 @@ openStage=openStageWithPriceEditor;
 runStage=runStageWithPriceEditor;
 const baseOpenStageWithSavedSettings=openStage;
 openStage=async function(n){await baseOpenStageWithSavedSettings(n);if(n!==4)return;const settings=state.current?.product_settings||{};const dimensions=settings.dimension_defaults||{};if(settings.store_id&&state.stores.some(store=>store.store_id===settings.store_id))$('#stageStore').value=settings.store_id;if(settings.cny_to_rub_rate)$('#rate').value=settings.cny_to_rub_rate;if([dimensions.depth,dimensions.width,dimensions.height,dimensions.weight].every(value=>value!==null&&value!==undefined))$('#dims').value=`${dimensions.depth} / ${dimensions.width} / ${dimensions.height} / ${dimensions.weight}`;const target=$('#requiredAttributes');if(target&&!$('#stageVat'))target.insertAdjacentHTML('beforebegin',`<div class="field"><label for="stageVat">VAT</label><select id="stageVat"><option value="0">0%</option><option value="0.05">5%</option><option value="0.07">7%</option><option value="0.1">10%</option><option value="0.12">12%</option><option value="0.2">20%</option></select></div>`);if($('#stageVat'))$('#stageVat').value=settings.vat||'0'};
+const baseRunStageWithCompletePreflight=runStage;
+runStage=async function(event){
+  if(state.dialogStage!==4)return baseRunStageWithCompletePreflight(event);
+  event.preventDefault();
+  const issues=[];
+  const dimensionLabels=['包装长度/深度','包装宽度','包装高度','包装重量'];
+  const dims=$('#dims').value.split('/').map(value=>Number(value.trim()));
+  if(dims.length!==4){
+    issues.push('尺寸必须按“深 / 宽 / 高 / 重量”填写四项');
+  }else{
+    dims.forEach((value,index)=>{
+      if(!Number.isFinite(value)||value<=0)issues.push(`${dimensionLabels[index]}必须是大于 0 的数字`);
+    });
+  }
+  const rate=$('#rate').value.trim();
+  if(!Number.isFinite(Number(rate))||Number(rate)<=0)issues.push('CNY → 店铺币种汇率必须大于 0');
+  const skuPriceOverrides={};
+  document.querySelectorAll('[data-sku-price]').forEach(control=>{
+    const value=control.value.trim();
+    const sku=control.dataset.skuPrice;
+    if(!value)issues.push(`SKU ${sku} 缺少人民币采购价`);
+    else if(!Number.isFinite(Number(value))||Number(value)<=0)issues.push(`SKU ${sku} 的采购价必须大于 0`);
+    else skuPriceOverrides[sku]=value;
+  });
+  const attributeOverrides={};
+  document.querySelectorAll('[data-required-attribute]').forEach(control=>{
+    const value=control.value.trim();
+    const label=control.previousElementSibling?.textContent||`Ozon 属性 ${control.dataset.requiredAttribute}`;
+    if(!value&&control.dataset.isRequired==='true')issues.push(`${label}不能为空`);
+    if(!value)return;
+    const changed=value!==String(control.dataset.original??'');
+    if(changed||control.dataset.overrideRequired==='true'){
+      if(control.dataset.attributeKind==='dictionary'){
+        const dictionaryId=Number(value);
+        if(!Number.isInteger(dictionaryId)||dictionaryId<=0)issues.push(`${label}必须选择 Ozon 官方候选值`);
+        else attributeOverrides[control.dataset.requiredAttribute]={dictionary_value_id:dictionaryId};
+      }else attributeOverrides[control.dataset.requiredAttribute]={value};
+    }
+  });
+  if(issues.length){
+    $('#console').textContent=`第四阶段一次性预检发现 ${issues.length} 项问题：\n- ${issues.join('\n- ')}`;
+    toast(`请一次性修复全部 ${issues.length} 项问题，详情已显示在运行记录`,true);
+    return;
+  }
+  try{
+    const body={store_config:{store_id:$('#stageStore').value,cny_to_rub_rate:rate,dimension_defaults:{depth:dims[0],width:dims[1],height:dims[2],weight:dims[3],dimension_unit:'mm',weight_unit:'g'},vat:$('#stageVat')?.value||'0',sku_price_overrides:skuPriceOverrides,attribute_overrides:attributeOverrides}};
+    $('#stageDialog').close();
+    $('#console').textContent='预检通过，正在计算全部 SKU 售价并组装 Ozon Payload…';
+    const result=await api(`/api/pipelines/${encodeURIComponent(state.current.pipeline_id)}/stages/4`,{method:'POST',body:JSON.stringify(body)});
+    const failures=result.failures||[];
+    if(failures.length)$('#console').textContent=`第四阶段一次性预检发现 ${failures.length} 项问题：\n- ${failures.join('\n- ')}`;
+    toast(`阶段 4：${result.status}${failures.length?` · 共 ${failures.length} 项待修复`:''}`,result.status==='FAIL');
+    await selectPipeline(state.current.pipeline_id);
+    if(state.current.artifacts?.['4'])await viewArtifact(4);
+  }catch(error){toast(error.message,true)}
+};
 async function authorizeStore(event){event.preventDefault();const payload={store_id:$('#storeId').value.trim(),name:$('#storeName').value.trim(),client_id:$('#ozonClientId').value.trim(),api_key:$('#ozonApiKey').value.trim(),currency_code:$('#ozonCurrency').value};try{toast('正在通过 OZON 只读接口验证凭证…');await api('/api/stores',{method:'POST',body:JSON.stringify(payload)});$('#ozonApiKey').value='';await load();toast('OZON 店铺授权成功')}catch(error){$('#ozonApiKey').value='';toast(error.message,true)}}
 async function verifyStore(storeId){try{await api(`/api/stores/${encodeURIComponent(storeId)}/verify`,{method:'POST',body:'{}'});await load();toast('店铺凭证验证通过')}catch(error){toast(error.message,true)}}
 async function deleteStore(storeId){if(!confirm(`确认删除店铺授权 ${storeId}？已生成的流水线产物不会删除。`))return;try{await api(`/api/stores/${encodeURIComponent(storeId)}`,{method:'DELETE'});await load();toast('店铺授权已删除')}catch(error){toast(error.message,true)}}

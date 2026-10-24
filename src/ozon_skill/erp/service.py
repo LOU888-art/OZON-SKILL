@@ -3741,6 +3741,53 @@ class PipelineService:
         ozon_currency = str(authorized_store["currency_code"]).strip().upper()
         with self._lock:
             raw = deepcopy(self.read_artifact(pipeline_id, 1))
+            input_failures: list[str] = []
+
+            def fail_preflight(failures: list[str]) -> dict[str, Any]:
+                unique_failures = list(dict.fromkeys(failures))
+                diagnostic = {
+                    "items": [],
+                    "preflight": {
+                        "status": "FAIL",
+                        "issue_count": len(unique_failures),
+                        "issues": unique_failures,
+                    },
+                }
+                safe_store_config = {
+                    key: deepcopy(store_config.get(key))
+                    for key in (
+                        "store_id",
+                        "currency_code",
+                        "cny_to_rub_rate",
+                        "dimension_defaults",
+                        "vat",
+                    )
+                    if store_config.get(key) is not None
+                }
+                safe_store_config["store_id"] = authorized_store["store_id"]
+                safe_store_config["currency_code"] = ozon_currency
+                _atomic_json(self.path(pipeline_id, 4), diagnostic)
+                _atomic_json(
+                    self.directory(pipeline_id) / "04_context.json",
+                    {
+                        "store_config": safe_store_config,
+                        "offer_ids": [],
+                        "warnings": [],
+                        "validation_errors": unique_failures,
+                        "preflight": diagnostic["preflight"],
+                    },
+                )
+                self._record(pipeline_id, 4, False, unique_failures)
+                self._assign_store(pipeline_id, str(authorized_store["store_id"]))
+                return {
+                    "stage": 4,
+                    "status": "FAIL",
+                    "failures": unique_failures,
+                    "warnings": [],
+                    "preflight": diagnostic["preflight"],
+                    "artifact": STAGE_FILES[4],
+                }
+
             price_overrides = store_config.get("sku_price_overrides") or {}
             if not isinstance(price_overrides, Mapping):
                 raise PipelineError("SKU 采购价补充值必须是对象")
@@ -3758,16 +3805,21 @@ class PipelineService:
                     f"采购价补充值包含未知 SKU：{', '.join(unknown_skus)}"
                 )
             price_override_provenance: list[dict[str, Any]] = []
+            invalid_price_override_ids: set[str] = set()
             for raw_sku_id, raw_price in price_overrides.items():
                 sku_id = str(raw_sku_id)
                 if raw_price in (None, ""):
                     continue
                 try:
                     price = Decimal(str(raw_price).strip())
-                except (InvalidOperation, ValueError) as exc:
-                    raise PipelineError(f"SKU {sku_id} 的人民币采购价不是数字") from exc
+                except (InvalidOperation, ValueError):
+                    input_failures.append(f"SKU {sku_id} 的人民币采购价不是数字")
+                    invalid_price_override_ids.add(sku_id)
+                    continue
                 if not price.is_finite() or price <= 0:
-                    raise PipelineError(f"SKU {sku_id} 的人民币采购价必须大于 0")
+                    input_failures.append(f"SKU {sku_id} 的人民币采购价必须大于 0")
+                    invalid_price_override_ids.add(sku_id)
+                    continue
                 sku_by_id[sku_id]["purchase_price_cny"] = str(price)
                 price_override_provenance.append(
                     {
@@ -3779,17 +3831,46 @@ class PipelineService:
             dimensions = store_config.get("dimension_defaults") or {}
             if not isinstance(dimensions, Mapping):
                 raise PipelineError("尺寸与重量配置必须是对象")
-            try:
-                dimension_factor = Decimal("0.1") if str(dimensions.get("dimension_unit") or "mm").lower() == "mm" else Decimal("1")
-                weight_factor = Decimal("1000") if str(dimensions.get("weight_unit") or "g").lower() == "kg" else Decimal("1")
-                pricing_dimensions = {
-                    "length_cm": Decimal(str(dimensions.get("depth"))) * dimension_factor,
-                    "width_cm": Decimal(str(dimensions.get("width"))) * dimension_factor,
-                    "height_cm": Decimal(str(dimensions.get("height"))) * dimension_factor,
-                    "weight_g": Decimal(str(dimensions.get("weight"))) * weight_factor,
-                }
-            except (InvalidOperation, TypeError, ValueError) as exc:
-                raise PipelineError("尺寸与重量必须是有效数字") from exc
+            dimension_factor = (
+                Decimal("0.1")
+                if str(dimensions.get("dimension_unit") or "mm").lower() == "mm"
+                else Decimal("1")
+            )
+            weight_factor = (
+                Decimal("1000")
+                if str(dimensions.get("weight_unit") or "g").lower() == "kg"
+                else Decimal("1")
+            )
+            pricing_dimensions: dict[str, Decimal] = {}
+            for source_key, target_key, label, factor in (
+                ("depth", "length_cm", "包装长度/深度", dimension_factor),
+                ("width", "width_cm", "包装宽度", dimension_factor),
+                ("height", "height_cm", "包装高度", dimension_factor),
+                ("weight", "weight_g", "包装重量", weight_factor),
+            ):
+                try:
+                    parsed = Decimal(str(dimensions.get(source_key)))
+                except (InvalidOperation, TypeError, ValueError):
+                    input_failures.append(f"{label}不是有效数字")
+                    continue
+                if not parsed.is_finite() or parsed <= 0:
+                    input_failures.append(f"{label}必须大于 0")
+                    continue
+                pricing_dimensions[target_key] = parsed * factor
+            if not sku_rows:
+                input_failures.append("采集结果没有可上架的 SKU")
+            for sku_id, sku in sku_by_id.items():
+                if sku_id in invalid_price_override_ids:
+                    continue
+                try:
+                    purchase_price = Decimal(str(sku.get("purchase_price_cny")))
+                except (InvalidOperation, TypeError, ValueError):
+                    input_failures.append(f"SKU {sku_id} 缺少有效的人民币采购价")
+                    continue
+                if not purchase_price.is_finite() or purchase_price <= 0:
+                    input_failures.append(f"SKU {sku_id} 的人民币采购价必须大于 0")
+            if input_failures:
+                return fail_preflight(input_failures)
             pricing_settings = self.finance.get(str(authorized_store["store_id"]))
             if ozon_currency != "CNY" and store_config.get("cny_to_rub_rate") not in (None, ""):
                 pricing_settings = {
@@ -3797,6 +3878,7 @@ class PipelineService:
                     "cny_to_rub_rate": store_config.get("cny_to_rub_rate"),
                 }
             pricing_provenance: list[dict[str, Any]] = []
+            pricing_failures: list[str] = []
             for sku_id, sku in sku_by_id.items():
                 try:
                     pricing = calculate_target_pricing(
@@ -3807,7 +3889,8 @@ class PipelineService:
                         }
                     )
                 except PricingError as exc:
-                    raise PipelineError(f"SKU {sku_id} 自动定价失败：{exc}") from exc
+                    pricing_failures.append(f"SKU {sku_id} 自动定价失败：{exc}")
+                    continue
                 sku["sale_price_cny"] = pricing["suggested_price_cny"]
                 pricing_provenance.append(
                     {
@@ -3819,6 +3902,8 @@ class PipelineService:
                         "source": "WORKBOOK_TARGET_PRICING",
                     }
                 )
+            if pricing_failures:
+                return fail_preflight(pricing_failures)
             final = self.read_artifact(pipeline_id, 3)
             final, override_provenance = self._apply_required_attribute_overrides(
                 final,
