@@ -274,8 +274,9 @@ class AuthRegistry:
                 ),
                 None,
             )
+            migrated_from = str(conflict.get("username") or "") if conflict else ""
             if conflict is not None:
-                raise AuthError("该手机号或邮箱已经绑定其他账户", status=409)
+                document["users"].remove(conflict)
             user = next(
                 (
                     item
@@ -304,10 +305,12 @@ class AuthRegistry:
             document["sessions"] = [
                 item
                 for item in document["sessions"]
-                if item.get("username") != username
+                if item.get("username") not in {username, migrated_from}
             ]
             self._write(document)
-            return self._public(user)
+            result = self._public(user)
+            result["migrated_from"] = migrated_from or None
+            return result
 
     def login(self, identifier_value: Any, password_value: Any) -> tuple[str, dict[str, Any]]:
         identifier, _ = normalize_identifier(identifier_value)

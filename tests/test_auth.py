@@ -64,6 +64,28 @@ class AuthRegistryTests(unittest.TestCase):
             self.assertIsNone(registry.session(old_token))
             _, logged_in = registry.login("19603830666", "NewOwner123")
             self.assertEqual(logged_in["username"], "owner")
+
+    def test_primary_login_absorbs_existing_trial_registration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            registry = AuthRegistry(Path(directory) / "auth.json")
+            registry.bootstrap("admin@example.com", "AdminPass123", "owner")
+            trial = registry.register(
+                {
+                    "identifier": "19603830666",
+                    "password": "TrialPass123",
+                    "display_name": "运营账号",
+                }
+            )
+            trial_token, _ = registry.login("19603830666", "TrialPass123")
+
+            owner = registry.set_primary_login(
+                "19603830666", "OwnerPass123", "owner"
+            )
+
+            self.assertEqual(owner["migrated_from"], trial["username"])
+            self.assertIsNone(registry.session(trial_token))
+            _, logged_in = registry.login("19603830666", "OwnerPass123")
+            self.assertEqual(logged_in["username"], "owner")
             with self.assertRaises(AuthError):
                 registry.register(
                     {
