@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 from ozon_skill.upload.assembler import AssemblyResult
 from ozon_skill.upload.config import StoreConfig
@@ -16,12 +17,17 @@ class _ImportClient:
         self.error = error
         self.response = response or {}
         self.product_import_calls = 0
+        self.import_info_calls = 0
 
     def product_import(self, payload: dict) -> dict:
         self.product_import_calls += 1
         if self.error is not None:
             raise self.error
         return self.response
+
+    def import_info(self, task_id: int) -> dict:
+        self.import_info_calls += 1
+        return {"result": {"items": []}}
 
 
 def _assembly(*, marker: str = "first") -> AssemblyResult:
@@ -53,6 +59,31 @@ def _store() -> StoreConfig:
 
 
 class UploadIdempotencyTests(unittest.TestCase):
+    def test_workflow_deadline_stops_polling_and_preserves_task_for_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "upload.json"
+            client = _ImportClient(response={"result": {"task_id": 12345}})
+
+            with patch(
+                "ozon_skill.upload.workflow.time.monotonic",
+                side_effect=[0.0, 500.0],
+            ):
+                result = run_upload_workflow(
+                    store=_store(),
+                    assembly=_assembly(),
+                    upload_log=UploadLog(path),
+                    execute=True,
+                    client=client,
+                    deadline_seconds=420,
+                )
+
+            self.assertEqual(result["status"], "WORKFLOW_TIMEOUT")
+            self.assertEqual(result["task_id"], 12345)
+            self.assertTrue(result["request_sent"])
+            self.assertEqual(client.product_import_calls, 1)
+            self.assertEqual(client.import_info_calls, 0)
+            self.assertIn("不会重复创建商品", result["error"])
+
     def test_connection_error_is_persisted_and_exact_retry_is_not_resubmitted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "upload.json"

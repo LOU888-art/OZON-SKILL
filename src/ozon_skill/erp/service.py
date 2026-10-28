@@ -4577,6 +4577,10 @@ class PipelineService:
         self._require_previous(pipeline_id, 5)
         environment_execute = os.environ.get("DRY_RUN", "true").strip().lower() == "false"
         execute = bool(request_execute and environment_execute)
+        # Only protect the local snapshot.  Ozon import/polling can take several
+        # minutes and must never hold the service-wide lock for that duration.
+        # Holding it here used to make the HTTP request look permanently stuck
+        # and prevented unrelated pipeline work from progressing.
         with self._lock:
             assembly, store = self._assembly_from_files(pipeline_id)
             client = None
@@ -4589,45 +4593,46 @@ class PipelineService:
             fallback_source_images = self._fallback_source_images_by_offer(
                 pipeline_id, assembly
             )
-            result = run_upload_workflow(
-                store=store,
-                assembly=assembly,
-                upload_log=upload_log,
-                execute=execute,
-                client=client,
-                fallback_source_images_by_offer=fallback_source_images,
-            )
-            if request_execute and not environment_execute:
-                result["execution_guard"] = "请求了执行，但环境仍为 DRY_RUN=true；未发送请求"
-            failures = []
-            if not execute:
-                if request_execute:
-                    failures.append(
-                        "服务器仍为 DRY_RUN=true，未向 Ozon 发送上架请求；"
-                        "请先启用 LIVE MODE 并重启服务"
-                    )
-                else:
-                    failures.append(
-                        "未勾选“我明确要求执行真实提交”，未向 Ozon 发送上架请求"
-                    )
-                if result.get("request_sent") or result.get("task_id") is not None:
-                    failures.append("dry-run 日志异常出现请求或 task_id")
-            if execute:
-                if result.get("request_sent") is not True:
-                    failures.append("执行模式没有真实发送 Ozon 请求")
-                if result.get("task_id") is None:
-                    failures.append("执行模式未取得 task_id")
-                if result.get("status") != "VERIFIED":
-                    details = _upload_error_messages(result)
-                    failures.extend(
-                        details
-                        or [f"Ozon 执行未完成：{result.get('status')}"]
-                    )
-                if result.get("status") in {"VERIFIED", "VERIFICATION_FAILED"} and not isinstance(
-                    result.get("attribute_verification"), Mapping
-                ):
-                    failures.append("执行模式缺少 attribute_verification 回查结果")
-            passed = not failures
+        result = run_upload_workflow(
+            store=store,
+            assembly=assembly,
+            upload_log=upload_log,
+            execute=execute,
+            client=client,
+            fallback_source_images_by_offer=fallback_source_images,
+        )
+        if request_execute and not environment_execute:
+            result["execution_guard"] = "请求了执行，但环境仍为 DRY_RUN=true；未发送请求"
+        failures = []
+        if not execute:
+            if request_execute:
+                failures.append(
+                    "服务器仍为 DRY_RUN=true，未向 Ozon 发送上架请求；"
+                    "请先启用 LIVE MODE 并重启服务"
+                )
+            else:
+                failures.append(
+                    "未勾选“我明确要求执行真实提交”，未向 Ozon 发送上架请求"
+                )
+            if result.get("request_sent") or result.get("task_id") is not None:
+                failures.append("dry-run 日志异常出现请求或 task_id")
+        if execute:
+            if result.get("request_sent") is not True:
+                failures.append("执行模式没有真实发送 Ozon 请求")
+            if result.get("task_id") is None:
+                failures.append("执行模式未取得 task_id")
+            if result.get("status") != "VERIFIED":
+                details = _upload_error_messages(result)
+                failures.extend(
+                    details
+                    or [f"Ozon 执行未完成：{result.get('status')}"]
+                )
+            if result.get("status") in {"VERIFIED", "VERIFICATION_FAILED"} and not isinstance(
+                result.get("attribute_verification"), Mapping
+            ):
+                failures.append("执行模式缺少 attribute_verification 回查结果")
+        passed = not failures
+        with self._lock:
             self._record(pipeline_id, 5, passed, failures)
             if passed:
                 # Ozon is already committed at this point. Asset index failures must
@@ -4636,7 +4641,55 @@ class PipelineService:
                     self._protect_published_assets(pipeline_id)
                 except (AssetRegistryError, PipelineError, OSError):
                     pass
-            return {"stage": 5, "status": "PASS" if passed else "FAIL", "failures": failures, "executed": execute, "result": result, "artifact": STAGE_FILES[5]}
+        return {"stage": 5, "status": "PASS" if passed else "FAIL", "failures": failures, "executed": execute, "result": result, "artifact": STAGE_FILES[5]}
+
+    def start_stage_5(
+        self, pipeline_id: Any, *, request_execute: bool = False
+    ) -> dict[str, Any]:
+        """Run the slow Ozon submit-and-verify workflow in the background."""
+
+        pipeline_id = _safe_pipeline_id(pipeline_id)
+        self._require_previous(pipeline_id, 5)
+        key = (pipeline_id, 5)
+        with self._lock:
+            existing = self._background_jobs.get(key)
+            if existing is not None and existing.is_alive():
+                raise PipelineError("阶段 5 正在后台执行，请等待完成", status=409)
+            self._record_running(pipeline_id, 5)
+
+            def worker() -> None:
+                try:
+                    self.run_stage_5(
+                        pipeline_id, request_execute=request_execute
+                    )
+                except PipelineError as exc:
+                    with self._lock:
+                        self._record(pipeline_id, 5, False, [str(exc)[:800]])
+                except Exception as exc:  # keep worker failures visible and retryable
+                    with self._lock:
+                        self._record(
+                            pipeline_id,
+                            5,
+                            False,
+                            [f"阶段 5 后台执行失败：{str(exc)[:700]}"],
+                        )
+                finally:
+                    with self._lock:
+                        self._background_jobs.pop(key, None)
+
+            thread = threading.Thread(
+                target=worker,
+                name=f"ozon-stage-5-{pipeline_id}",
+                daemon=True,
+            )
+            self._background_jobs[key] = thread
+            thread.start()
+        return {
+            "stage": 5,
+            "status": "RUNNING",
+            "failures": [],
+            "artifact": STAGE_FILES[5],
+        }
 
     def audit(self, pipeline_id: Any) -> dict[str, Any]:
         pipeline_id = _safe_pipeline_id(pipeline_id)

@@ -707,7 +707,7 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                     pipeline_id, store_config=body.get("store_config")
                 )
             else:
-                result = self.service.run_stage_5(
+                result = self.service.start_stage_5(
                     pipeline_id, request_execute=body.get("execute") is True
                 )
             self._json(result)

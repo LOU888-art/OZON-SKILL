@@ -465,13 +465,15 @@ def run_upload_workflow(
     client: Any | None = None,
     supplemental_attributes: list[dict[str, Any]] | None = None,
     poll_interval_seconds: float = 5.0,
-    max_polls: int = 60,
-    verification_max_polls: int = 12,
-    image_hosting_max_polls: int = 24,
+    max_polls: int = 36,
+    verification_max_polls: int = 8,
+    image_hosting_max_polls: int = 12,
+    deadline_seconds: float = 420.0,
     fallback_source_images_by_offer: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
     """Run one store independently; dry-run never calls the supplied client."""
 
+    started_at = time.monotonic()
     run_id = str(uuid.uuid4())
     entry: dict[str, Any] = {
         "run_id": run_id,
@@ -509,6 +511,26 @@ def run_upload_workflow(
         return entry
     if client is None:
         raise ValueError("an OZON client is required in execute mode")
+
+    def deadline_exceeded(phase: str) -> bool:
+        if deadline_seconds <= 0 or time.monotonic() - started_at < deadline_seconds:
+            return False
+        error = (
+            f"Ozon 第五阶段超过 {int(deadline_seconds)} 秒安全时限，已停止等待；"
+            f"当前环节：{phase}。已取得的 task_id 会保留，下次运行将继续回查，"
+            "不会重复创建商品"
+        )
+        entry.setdefault("history", []).append(
+            {"at": _now(), "status": "WORKFLOW_TIMEOUT", "phase": phase, "error": error}
+        )
+        if log_index is not None:
+            upload_log.update(
+                log_index,
+                status="WORKFLOW_TIMEOUT",
+                error=error,
+                history=entry["history"],
+            )
+        return True
 
     previous = upload_log.latest_for_payload(store.store_id, entry["payload_sha256"])
     log_index: int | None = None
@@ -655,6 +677,8 @@ def run_upload_workflow(
     if not resume_verification:
         final_state = "PENDING"
         for poll_number in range(1, max_polls + 1):
+            if deadline_exceeded("商品导入任务回查"):
+                return upload_log.data["entries"][log_index]
             try:
                 response = client.import_info(task_id)
             except Exception as exc:
@@ -791,6 +815,8 @@ def run_upload_workflow(
         picture_task_diagnostics: dict[str, Any] = {}
         image_poll_limit = max(1, image_hosting_max_polls)
         for image_poll in range(1, image_poll_limit + 1):
+            if deadline_exceeded("Ozon 图片托管与富内容准备"):
+                return upload_log.data["entries"][log_index]
             picture_task_diagnostics = {}
             for offer_id, picture_task_id in picture_task_ids.items():
                 try:
@@ -1052,6 +1078,8 @@ def run_upload_workflow(
         assembly.payload, assembly.required_attribute_ids
     )
     for verification_poll in range(1, max(1, verification_max_polls) + 1):
+        if deadline_exceeded("商品属性回查验证"):
+            return upload_log.data["entries"][log_index]
         try:
             attribute_response = client.product_info_attributes(assembly.offer_ids)
         except Exception as exc:
