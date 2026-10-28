@@ -328,7 +328,7 @@
       <form id="batchProcessForm">
         <div class="field-grid"><div class="field"><label for="batchProcessStore">目标 Ozon 店铺</label><select id="batchProcessStore" required></select></div><div class="field"><label for="batchTargetStage">运行到</label><select id="batchTargetStage"><option value="2">第 2 阶段 · 类目映射</option><option value="3">第 3 阶段 · 俄语与图片</option><option value="4" selected>第 4 阶段 · Payload 组装</option></select></div></div>
         <div class="field"><label for="batchConfidence">类目自动匹配置信度</label><input id="batchConfidence" type="number" min="0" max="1" step="0.01" value="0.70" required><small>自动类目映射失败的商品会单独停在第二阶段，之后可人工修复。</small></div>
-        <div id="batchStage3Fields" class="field-grid"><div class="field"><label for="batchMediaMode">图片处理方式</label><select id="batchMediaMode"><option value="image_plan" selected>使用每个商品已保存的逐图方案</option><option value="alphashop_translate">全部 AlphaShop 翻译</option><option value="ai_generate">全部逐张 AI 生图</option></select></div><div class="field"><label for="batchTextMode">俄语文本方式</label><select id="batchTextMode"><option value="ai_generate" selected>AI 生成</option><option value="built_in">内置规则</option></select></div></div>
+        <div id="batchStage3Fields" class="field-grid"><div class="field"><label for="batchMediaMode">图片处理方式</label><select id="batchMediaMode"><option value="image_plan" selected>AI 逐图方案（推荐）</option><option value="ai_generate">全部逐张 AI 生图</option><option value="alphashop_translate">遨虾图片翻译（可选，失败自动转 AI）</option></select></div><div class="field"><label for="batchTextMode">俄语文本方式</label><select id="batchTextMode"><option value="ai_generate" selected>接入 API 生成</option><option value="built_in">服务异常时的内置后备</option></select></div></div>
         <div id="batchStage4Fields"><div class="field-grid"><div class="field"><label for="batchRate">CNY → RUB 汇率</label><input id="batchRate" type="number" min="0.01" step="0.01" value="12.50"></div><div class="field"><label for="batchDims">默认尺寸：深 / 宽 / 高 / 重量(g)</label><input id="batchDims" value="80 / 80 / 200 / 350"></div></div><div class="warning">第四阶段使用各 SKU 已采集的真实采购价和店铺利润参数。缺少采购价或必填属性的商品会门禁失败，不会填入虚假值。</div></div>
         <label class="batch-confirm"><input id="batchProcessConfirm" type="checkbox" required> 我确认系统可以逐件调用 AlphaShop、AI 和 Ozon 只读接口；第三阶段可能产生翻译或 AI 生图费用。</label>
         <div id="batchProcessProgress" class="batch-import-progress hidden"></div>
@@ -447,7 +447,7 @@
   <dialog id="aiProviderDialog">
     <div class="dialog-card stores-dialog">
       <div class="dialog-head"><div><span class="eyebrow">AI RELAY</span><h3>AI 文本与生图服务</h3></div><button id="closeAiProviderBtn" class="close" type="button">×</button></div>
-      <p class="dialog-note">顶部勾号仅表示密钥已安全保存，不代表模型通道可用。保存后可在第三阶段选择 AlphaShop 翻译或 AI 生图。</p>
+      <p class="dialog-note">顶部勾号仅表示密钥已安全保存，不代表模型通道可用。第三阶段默认由该 API 生成俄语文案和商品图；遨虾仅用于 1688 采集，图片翻译为可选增强。</p>
       <form id="aiProviderForm" class="store-form">
         <div class="field"><label for="aiBaseUrl">API 地址</label><input id="aiBaseUrl" type="url" required></div>
         <div class="field-grid">

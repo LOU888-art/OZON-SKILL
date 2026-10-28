@@ -307,14 +307,16 @@ def gate_stage_3(value: Mapping[str, Any]) -> list[str]:
     segments = value.get("title_segments")
     if not isinstance(segments, Mapping) or segments.get("brand") != "без бренда":
         failures.append("title_segments.brand 必须为无品牌")
-    try:
-        validate_rich_content(value.get("rich_content_json"))
-    except ValueError as exc:
-        failures.append(f"rich_content_json：{exc}")
+    rich_content = value.get("rich_content_json")
+    if rich_content is not None:
+        try:
+            validate_rich_content(rich_content)
+        except ValueError as exc:
+            failures.append(f"rich_content_json：{exc}")
     localized = value.get("localized_images")
-    if not isinstance(localized, list) or not localized:
-        failures.append("localized_images 为空")
-    else:
+    if localized is not None and not isinstance(localized, list):
+        failures.append("localized_images 必须是数组")
+    elif isinstance(localized, list):
         for index, item in enumerate(localized):
             url = item.get("final_public_url") if isinstance(item, Mapping) else None
             try:
@@ -2220,7 +2222,14 @@ class PipelineService:
         items = _image_items(source)
         path = self._image_selection_path(pipeline_id)
         if not path.exists():
-            return [{**item, "action": "translate"} for item in items]
+            # Default to an AI-generated eight-image commercial set.  AlphaShop
+            # remains responsible only for 1688 collection unless the operator
+            # explicitly chooses image translation.
+            return (
+                [{**items[0], "action": "reference_8"}]
+                if items
+                else []
+            )
         selection = _read_object(path)
         image_plan = selection.get("image_plan")
         if isinstance(image_plan, list):
@@ -3652,8 +3661,8 @@ class PipelineService:
         pipeline_id: Any,
         *,
         media_manifest: Any = None,
-        media_mode: Any = "alphashop_translate",
-        text_mode: Any = "built_in",
+        media_mode: Any = "image_plan",
+        text_mode: Any = "ai_generate",
     ) -> dict[str, Any]:
         pipeline_id = _safe_pipeline_id(pipeline_id)
         self._require_previous(pipeline_id, 3)
@@ -3702,10 +3711,16 @@ class PipelineService:
                             },
                         )
 
+                    translator = None
+                    if any(str(row.get("action")) == "translate" for row in planned_items):
+                        try:
+                            translator = AlphaShopClient.from_environment()
+                        except AlphaShopApiError:
+                            translator = None
                     inspection = process_image_plan(
                         planned_items,
                         self.ai_provider.client(),
-                        AlphaShopClient.from_environment(),
+                        translator,
                         raw,
                         progress=save_progress,
                         existing_results=existing_results,
@@ -3716,14 +3731,41 @@ class PipelineService:
                         self._selected_image_items(pipeline_id, raw), relay, raw
                     )
                 else:
-                    inspection = translate_all_images(
-                        self._selected_image_items(pipeline_id, raw),
-                        AlphaShopClient.from_environment(),
+                    planned_items = [
+                        {**item, "action": "translate"}
+                        for item in self._selected_image_items(pipeline_id, raw)
+                    ]
+                    try:
+                        translator = AlphaShopClient.from_environment()
+                    except AlphaShopApiError:
+                        translator = None
+                    inspection = process_image_plan(
+                        planned_items, self.ai_provider.client(), translator, raw
                     )
-            except AlphaShopInsufficientPointsError as exc:
-                failures = [str(exc)]
-                self._record(pipeline_id, 3, False, failures)
-                raise PipelineError(str(exc), status=402) from exc
+                # Translation-only plans produce Rich Content assets, but Ozon
+                # still needs a normal product image.  Generate one through the
+                # connected AI API so an optional AlphaShop workflow can never
+                # leave stage 4 without a primary image.
+                has_product_image = any(
+                    item.get("final_public_url")
+                    and item.get("image_usage") != "rich_content"
+                    for item in inspection
+                    if isinstance(item, Mapping)
+                )
+                if not has_product_image:
+                    source_images = _image_items(raw)
+                    if source_images:
+                        ai_main = generate_all_images(
+                            source_images[:1], self.ai_provider.client(), raw
+                        )[0]
+                        ai_main.update(
+                            {
+                                "plan_action": "automatic_ai_main",
+                                "image_usage": "shared_main",
+                                "shared_across_skus": True,
+                            }
+                        )
+                        inspection.append(ai_main)
             except (AiRelayError, AiProviderConfigurationError) as exc:
                 progress_note = ""
                 if progress_path.exists():
@@ -3812,8 +3854,8 @@ class PipelineService:
         pipeline_id: Any,
         *,
         media_manifest: Any = None,
-        media_mode: Any = "alphashop_translate",
-        text_mode: Any = "built_in",
+        media_mode: Any = "image_plan",
+        text_mode: Any = "ai_generate",
     ) -> dict[str, Any]:
         """Start the slow image/content stage without holding an HTTP request open."""
 
@@ -3831,10 +3873,8 @@ class PipelineService:
             raise PipelineError("图片模式必须是逐图方案、AlphaShop 翻译或 AI 生图")
         if normalized_text_mode not in {"built_in", "ai_generate"}:
             raise PipelineError("文本模式必须是内置规则或 AI 生成")
-        if normalized_media_mode == "image_plan" and not self._image_selection_path(
-            pipeline_id
-        ).exists():
-            raise PipelineError("请先在阶段 1 的“图片”中保存逐图处理方案", status=409)
+        # A missing manual image plan is valid: the first collected image is
+        # automatically used to generate the standard AI eight-image set.
 
         key = (pipeline_id, 3)
         with self._lock:
@@ -4612,7 +4652,10 @@ class PipelineService:
             return not trace_failures, "所有字典值 ID 均有 attribute/values 调用记录" if not trace_failures else "; ".join(trace_failures)
 
         def rich_shape() -> tuple[bool, str]:
-            validate_rich_content(self.read_artifact(pipeline_id, 3).get("rich_content_json"))
+            rich = self.read_artifact(pipeline_id, 3).get("rich_content_json")
+            if rich is None:
+                return True, "未生成图片富内容，已安全沿用俄语商品简介"
+            validate_rich_content(rich)
             return True, "最外层为 content + version 0.3，内部为 raShowcase"
 
         def image_hosts() -> tuple[bool, str]:

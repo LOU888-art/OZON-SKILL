@@ -699,8 +699,8 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 result = self.service.start_stage_3(
                     pipeline_id,
                     media_manifest=body.get("media_manifest"),
-                    media_mode=body.get("media_mode", "alphashop_translate"),
-                    text_mode=body.get("text_mode", "built_in"),
+                    media_mode=body.get("media_mode", "image_plan"),
+                    text_mode=body.get("text_mode", "ai_generate"),
                 )
             elif stage == 4:
                 result = self.service.run_stage_4(

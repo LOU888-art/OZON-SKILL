@@ -371,10 +371,11 @@ def build_final_listing(
             or item.get("field") == "ozon_category_id"
         )
     ]
+    # Rich Content is an enhancement, not a prerequisite for an Ozon listing.
+    # When no reviewed/generated image is available the normal Russian product
+    # description remains the canonical content instead of blocking assembly.
     blockers = bool(
-        blocking_confirmations
-        or rich_content is None
-        or title_validation["status"] != "VALID"
+        blocking_confirmations or title_validation["status"] != "VALID"
     )
     return {
         "schema_version": "1.0",
@@ -393,6 +394,9 @@ def build_final_listing(
         "tags_ru": tags,
         "tag_groups": tag_groups,
         "rich_content_json": rich_content,
+        "rich_content_strategy": (
+            "AI_OR_TRANSLATED_IMAGES" if rich_content is not None else "DESCRIPTION_ONLY"
+        ),
         "image_processing": list(media_inspection),
         "ocr_translated_images": modified_images,
         "needs_confirmation": confirmations,

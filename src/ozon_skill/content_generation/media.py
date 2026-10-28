@@ -392,7 +392,7 @@ def _generate_with_retry(
 def process_image_plan(
     image_items: Sequence[Mapping[str, Any]],
     relay: AiRelayClient,
-    translator: AlphaShopClient,
+    translator: AlphaShopClient | None,
     source: Mapping[str, Any],
     *,
     progress: Callable[[Sequence[Mapping[str, Any]]], None] | None = None,
@@ -426,7 +426,37 @@ def process_image_plan(
                 results.append(cached_row)
                 checkpoint()
                 continue
-            translated = translate_all_images([item], translator)[0]
+            translated: dict[str, Any] | None = None
+            translation_error: str | None = None
+            if translator is not None:
+                try:
+                    translated = translate_all_images([item], translator)[0]
+                except AlphaShopApiError as exc:
+                    # Image translation is optional.  Missing credentials or
+                    # insufficient AlphaShop points must never block listing.
+                    translation_error = str(exc)[:500]
+            if translated is None:
+                generated_url = _generate_with_retry(
+                    relay,
+                    source_url,
+                    str(item.get("source_role") or "") or None,
+                    source,
+                    _listing_image_prompt(source, 2, sku_main=False),
+                )
+                validate_public_image_url(generated_url)
+                translated = {
+                    "source_url": source_url,
+                    "source_role": item.get("source_role"),
+                    "sku_id": item.get("sku_id"),
+                    "download_status": "NOT_REQUIRED_REMOTE_API",
+                    "ocr_status": "REVIEWED",
+                    "contains_chinese": False,
+                    "translation_status": "AI_GENERATED",
+                    "final_public_url": generated_url,
+                    "generation_provider": "AI_RELAY",
+                    "generation_model": relay.image_model,
+                    "translation_fallback_reason": translation_error or "ALPHASHOP_UNAVAILABLE",
+                }
             translated.update(
                 {
                     "plan_action": action,

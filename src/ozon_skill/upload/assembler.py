@@ -442,9 +442,7 @@ def assemble_import_payload(
         errors.append("ozon_category_id is missing")
     if final.get("listing_readiness") != "READY_FOR_PAYLOAD_ASSEMBLY":
         errors.append("ozon-listing-final.json is not READY_FOR_PAYLOAD_ASSEMBLY")
-    if final.get("rich_content_json") is None:
-        errors.append("rich_content_json is not ready")
-    else:
+    if final.get("rich_content_json") is not None:
         try:
             upgrade_legacy_rich_content(
                 final.get("rich_content_json"),
