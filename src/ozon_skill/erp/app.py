@@ -59,6 +59,8 @@ _BATCH_PROCESS_ROUTE = re.compile(r"^/api/batch-processes/([a-f0-9]{32})$")
 _PRODUCTS_ROUTE = "/api/products"
 _RESEARCH_ROUTE = "/api/research"
 _RESEARCH_PLUGIN_ROUTE = "/api/research/plugin"
+_COLLECTOR_1688_ROUTE = "/api/collector/1688"
+_COLLECTOR_1688_PLUGIN_ROUTE = "/api/collector/1688/plugin"
 _RESEARCH_RULES_ROUTE = "/api/research/rules"
 _RESEARCH_INGEST_ROUTE = "/api/research/ingest"
 _RESEARCH_CANDIDATE_ROUTE = re.compile(r"^/api/research/candidates/([^/]+)$")
@@ -97,27 +99,36 @@ _PLUGIN_FILES = (
     "popup.js",
     "README.md",
 )
+_COLLECTOR_PLUGIN_FILES = _PLUGIN_FILES
 
 
 def _research_plugin_archive() -> bytes:
+    return _extension_archive("northstar-ozon-research", _PLUGIN_FILES)
+
+
+def _collector_1688_plugin_archive() -> bytes:
+    return _extension_archive("northstar-1688-collector", _COLLECTOR_PLUGIN_FILES)
+
+
+def _extension_archive(folder: str, files: Sequence[str]) -> bytes:
     candidates = (
-        Path.cwd() / "browser-extension" / "northstar-ozon-research",
+        Path.cwd() / "browser-extension" / folder,
         Path(__file__).resolve().parents[3]
         / "browser-extension"
-        / "northstar-ozon-research",
+        / folder,
     )
     extension_root = next(
-        (path for path in candidates if all((path / name).is_file() for name in _PLUGIN_FILES)),
+        (path for path in candidates if all((path / name).is_file() for name in files)),
         None,
     )
     if extension_root is None:
-        raise PipelineError("服务器缺少 Ozon 选品插件文件，请重新部署当前版本", status=500)
+        raise PipelineError(f"服务器缺少插件文件：{folder}，请重新部署当前版本", status=500)
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for name in _PLUGIN_FILES:
+        for name in files:
             archive.write(
                 extension_root / name,
-                arcname=f"northstar-ozon-research/{name}",
+                arcname=f"{folder}/{name}",
             )
     return output.getvalue()
 
@@ -242,6 +253,20 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
         self.send_header(
             "Content-Disposition",
             'attachment; filename="northstar-ozon-research.zip"',
+        )
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _collector_1688_plugin_download(self) -> None:
+        body = _collector_1688_plugin_archive()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header(
+            "Content-Disposition",
+            'attachment; filename="northstar-1688-collector.zip"',
         )
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -418,6 +443,8 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._json(self.service.market_research_status())
             elif path == _RESEARCH_PLUGIN_ROUTE:
                 self._plugin_download()
+            elif path == _COLLECTOR_1688_PLUGIN_ROUTE:
+                self._collector_1688_plugin_download()
             elif match := _PRODUCT_VERSIONS_ROUTE.fullmatch(path):
                 self._json(
                     self.service.product_versions(unquote(match.group(1)))
@@ -666,6 +693,15 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/pipelines":
                 self._require("pipeline.create")
                 self._json(self.service.run_stage_1(body.get("offer_id")), 201)
+                return
+            if path == _COLLECTOR_1688_ROUTE:
+                self._require("pipeline.create")
+                self._json(
+                    self.service.ingest_1688_browser_capture(
+                        body, self._username()
+                    ),
+                    201,
+                )
                 return
             if sku_restore_match := _SKU_RESTORE_ROUTE.fullmatch(path):
                 self._require("stage.run")

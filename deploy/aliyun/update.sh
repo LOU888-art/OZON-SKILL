@@ -67,6 +67,10 @@ if ! grep -q '只保留 AI 优化图与俄语翻译图' "$runtime_index"; then
   echo "运行包校验失败：没有发现新版图片资产页面" >&2
   exit 1
 fi
+if [ ! -f "$app_dir/browser-extension/northstar-1688-collector/manifest.json" ]; then
+  echo "运行包校验失败：没有发现1688浏览器采集插件" >&2
+  exit 1
+fi
 
 revision=$(git -C "$project_root" rev-parse --short HEAD 2>/dev/null || true)
 echo

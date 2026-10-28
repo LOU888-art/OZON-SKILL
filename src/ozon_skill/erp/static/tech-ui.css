@@ -498,3 +498,4 @@ dialog::backdrop { background: rgba(4, 17, 27, .72); }
 .sku-manager-row div{min-width:0}.sku-manager-row b,.sku-manager-row small{display:block}.sku-manager-row small{margin-top:5px;color:#667f91;overflow-wrap:anywhere}
 .sku-manager-row button{white-space:nowrap}.sku-manager-row.excluded button{border-color:#159ab1;color:#087d93}
 @media(max-width:640px){.sku-manager-row{grid-template-columns:54px minmax(0,1fr)}.sku-manager-row img,.sku-manager-row .sku-placeholder{width:54px;height:54px}.sku-manager-row button{grid-column:1/-1}}
+.collector-download{display:block;text-align:center;text-decoration:none}

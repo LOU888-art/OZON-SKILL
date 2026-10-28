@@ -49,8 +49,9 @@
           <input id="offerId" name="offer_id" autocomplete="off" placeholder="输入 offer_id / num_iid" required>
           <button type="submit" class="primary">开始采集 <span>→</span></button>
           <button id="batchImportBtn" type="button" class="batch-import-trigger">批量导入 ID / 链接</button>
+          <a class="batch-import-trigger collector-download" href="/api/collector/1688/plugin" download="northstar-1688-collector.zip">下载1688采集插件</a>
         </div>
-        <small>仅调用 1688 开放平台，不使用网页爬虫。</small>
+        <small>支持遨虾接口采集，也可使用浏览器插件读取你登录后当前页面中可见的商品数据。</small>
       </form>
 
       <div class="list-head"><div><span class="section-label">商品工作区</span><small id="pipelineCount">0 个任务</small></div><span class="live-dot">实时</span></div>

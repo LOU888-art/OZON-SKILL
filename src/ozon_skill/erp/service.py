@@ -15,7 +15,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlparse
 
 from ozon_skill.ai_relay.client import AiRelayError
@@ -3575,6 +3575,182 @@ class PipelineService:
                     "response_preview": exchange.response_preview,
                 },
             }
+
+    def ingest_1688_browser_capture(
+        self, value: Mapping[str, Any], actor: str = ""
+    ) -> dict[str, Any]:
+        """Create stage 1 from data visible in the operator's logged-in browser."""
+
+        product = value.get("product") if isinstance(value.get("product"), Mapping) else value
+        product_url = str(product.get("product_url") or "").strip()
+        raw_offer_id = product.get("source_offer_id") or product_url
+        try:
+            pipeline_id = _safe_pipeline_id(extract_offer_id(raw_offer_id))
+        except ValueError as exc:
+            raise PipelineError("无法从当前1688页面识别商品ID") from exc
+        title = str(product.get("title_zh") or "").strip()
+        if not title or len(title) > 500:
+            raise PipelineError("1688商品标题为空或超过500个字符")
+
+        def image_rows(raw_values: Any, limit: int) -> list[dict[str, Any]]:
+            rows: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            if not isinstance(raw_values, list):
+                return rows
+            for raw_value in raw_values[: limit * 3]:
+                item = raw_value if isinstance(raw_value, Mapping) else {"url": raw_value}
+                url = str(item.get("url") or "").strip()
+                parsed = urlparse(url)
+                if parsed.scheme != "https" or not parsed.hostname or url in seen:
+                    continue
+                seen.add(url)
+                rows.append(
+                    {
+                        "url": url[:2000],
+                        "width": item.get("width") if isinstance(item.get("width"), int) else None,
+                        "height": item.get("height") if isinstance(item.get("height"), int) else None,
+                    }
+                )
+                if len(rows) >= limit:
+                    break
+            return rows
+
+        images = image_rows(product.get("images"), 40)
+        detail_images = image_rows(product.get("detail_images"), 120)
+        if not images:
+            raise PipelineError("当前页面没有识别到可用的HTTPS商品主图")
+
+        raw_skus = product.get("sku_list")
+        if not isinstance(raw_skus, list) or not raw_skus:
+            raise PipelineError("当前页面没有识别到SKU，请等待页面规格加载完成后重试")
+        sku_rows: list[dict[str, Any]] = []
+        seen_skus: set[str] = set()
+        for index, raw_sku in enumerate(raw_skus[:500]):
+            if not isinstance(raw_sku, Mapping):
+                continue
+            sku_id = str(raw_sku.get("sku_id") or f"{pipeline_id}-default-{index + 1}").strip()
+            if not sku_id or sku_id in seen_skus or len(sku_id) > 160:
+                continue
+            seen_skus.add(sku_id)
+            specification: list[dict[str, Any]] = []
+            for part in raw_sku.get("specification_zh") or []:
+                if not isinstance(part, Mapping):
+                    continue
+                name = str(part.get("name") or "").strip()[:120] or None
+                part_value = str(part.get("value") or "").strip()[:240] or None
+                if name or part_value:
+                    specification.append({"name": name, "value": part_value})
+            price_value: str | None = None
+            raw_price = raw_sku.get("purchase_price_cny")
+            if raw_price not in (None, ""):
+                try:
+                    price = Decimal(str(raw_price).replace(",", "").strip())
+                except (InvalidOperation, ValueError):
+                    price = Decimal("0")
+                if price.is_finite() and price > 0:
+                    price_value = format(price, "f")
+            stock_value = raw_sku.get("stock")
+            try:
+                stock = int(stock_value) if stock_value not in (None, "") else None
+            except (TypeError, ValueError):
+                stock = None
+            sku_image = image_rows([raw_sku.get("image_url")], 1)
+            specification_text = str(raw_sku.get("specification_text_zh") or "").strip()
+            if not specification_text:
+                specification_text = "; ".join(
+                    f"{part['name']}:{part['value']}" if part["name"] else str(part["value"])
+                    for part in specification
+                    if part.get("value")
+                )
+            sku_rows.append(
+                {
+                    "sku_id": sku_id,
+                    "specification_zh": specification,
+                    "specification_text_zh": specification_text[:1000] or None,
+                    "purchase_price_cny": price_value,
+                    "stock": max(0, stock) if stock is not None else None,
+                    "image_url": sku_image[0]["url"] if sku_image else None,
+                }
+            )
+        if not sku_rows:
+            raise PipelineError("SKU数据格式无效，未创建商品任务")
+
+        raw_attributes = product.get("attributes_zh") or {}
+        attributes: dict[str, Any] = {}
+        if isinstance(raw_attributes, Mapping):
+            iterable = raw_attributes.items()
+        elif isinstance(raw_attributes, list):
+            iterable = (
+                (item.get("name"), item.get("value"))
+                for item in raw_attributes
+                if isinstance(item, Mapping)
+            )
+        else:
+            iterable = []
+        for raw_name, raw_attribute_value in iterable:
+            name = str(raw_name or "").strip()[:120]
+            if not name or any(marker in name.casefold() for marker in ("品牌", "商标", "brand")):
+                continue
+            attributes[name] = str(raw_attribute_value or "").strip()[:1000]
+            if len(attributes) >= 200:
+                break
+
+        category_id = str(product.get("category_id") or "").strip()
+        warnings: list[str] = []
+        if not category_id:
+            category_id = "browser-capture-unresolved"
+            warnings.append("1688页面未暴露类目ID，第二阶段必须人工选择Ozon官方类目")
+        category_path = [
+            {"id": None, "name_zh": str(item).strip()[:120]}
+            for item in product.get("category_path_zh") or []
+            if str(item).strip()
+        ][:20]
+        supplier = product.get("supplier_info") or {}
+        supplier = supplier if isinstance(supplier, Mapping) else {}
+        raw = {
+            "source_offer_id": pipeline_id,
+            "title_zh": title,
+            "images": images,
+            "detail_images": detail_images,
+            "sku_list": sku_rows,
+            "attributes_zh": attributes,
+            "category_path_zh": category_path,
+            "category_id": category_id,
+            "supplier_info": {
+                "name": str(supplier.get("name") or "").strip()[:300] or None,
+                "min_order": supplier.get("min_order"),
+                "ship_from": str(supplier.get("ship_from") or "").strip()[:300] or None,
+            },
+            "browser_capture": {
+                "product_url": product_url[:2000] or None,
+                "captured_at": str(product.get("captured_at") or _now())[:80],
+                "collector": "northstar-1688-collector",
+                "collector_version": str(value.get("collector_version") or "0.1.0")[:40],
+                "actor": str(actor or "")[:80],
+                "warnings": warnings,
+            },
+        }
+        failures = gate_stage_1(raw)
+        if failures:
+            raise PipelineError("；".join(failures))
+        if not self._state_path(pipeline_id).exists():
+            self.ensure_product_quota()
+        with self._lock:
+            self._image_selection_path(pipeline_id).unlink(missing_ok=True)
+            (self.directory(pipeline_id) / "03_media_progress.json").unlink(missing_ok=True)
+            _atomic_json(self.path(pipeline_id, 1), raw)
+            self._record(pipeline_id, 1, True, [])
+        return {
+            "pipeline_id": pipeline_id,
+            "stage": 1,
+            "status": "PASS",
+            "failures": [],
+            "warnings": warnings,
+            "sku_count": len(sku_rows),
+            "image_count": len(images),
+            "artifact": STAGE_FILES[1],
+            "collection_source": "BROWSER_EXTENSION",
+        }
 
     def category_options(
         self,

@@ -76,6 +76,8 @@ bash deploy/aliyun/update.sh
 
 生产流水线通过 AlphaShop 的 `alphashop.openclaw.offer.detail.query/1.0` 实时获取商品详情，并输出固定的 `01_raw.json`。输入既可以是纯数字商品 ID，也可以是包含 `/offer/<id>.html` 的 1688 商品链接。
 
+也可以从 ERP 左侧下载 `Northstar 1688 商品采集` 浏览器插件。插件读取运营人员已登录的 1688 商品详情页中可见的标题、图片、SKU、价格、库存和属性，允许在发送前取消不想上架的 SKU，然后直接创建相同格式的第一阶段产物；这条路径不调用 AlphaShop。插件不会保存 ERP/1688 密码或 Cookie，也不会绕过登录、验证码、风控或访问权限。安装与使用说明见 [browser-extension/northstar-1688-collector/README.md](browser-extension/northstar-1688-collector/README.md)。
+
 运行真实请求前，通过环境变量提供凭证：
 
 - `ALPHASHOP_ACCESS_KEY`
