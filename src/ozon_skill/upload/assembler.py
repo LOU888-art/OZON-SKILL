@@ -7,7 +7,7 @@ import json
 import math
 import re
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Mapping, Sequence
 
 from ozon_skill.content_generation.rich_content import upgrade_legacy_rich_content
@@ -191,6 +191,50 @@ def _is_single_valued(attribute: Mapping[str, Any]) -> bool:
     )
 
 
+_KNOWN_DECIMAL_ATTRIBUTE_IDS = {6392}
+_NUMERIC_TOKEN = re.compile(r"[+-]?\d+(?:[.,]\d+)?")
+
+
+def _numeric_kind(attribute: Mapping[str, Any]) -> str | None:
+    attribute_id = attribute.get("attribute_id")
+    if attribute_id in _KNOWN_DECIMAL_ATTRIBUTE_IDS:
+        return "decimal"
+    attribute_type = str(attribute.get("attribute_type") or "").strip().lower()
+    if any(token in attribute_type for token in ("integer", "int64", "int32")):
+        return "integer"
+    if any(
+        token in attribute_type
+        for token in ("decimal", "float", "double", "number", "numeric")
+    ):
+        return "decimal"
+    return None
+
+
+def _normalize_numeric_value(value: Any, kind: str) -> str:
+    if isinstance(value, bool):
+        raise ValueError("boolean is not a number")
+    text = str(value).strip().replace("\u00a0", " ")
+    tokens = _NUMERIC_TOKEN.findall(text)
+    if len(tokens) != 1:
+        raise ValueError("value must contain exactly one number")
+    # Units are accepted because Ozon defines the unit on the attribute itself.
+    remainder = _NUMERIC_TOKEN.sub("", text, count=1).strip()
+    if remainder and re.search(r"\d", remainder):
+        raise ValueError("value contains more than one number")
+    try:
+        number = Decimal(tokens[0].replace(",", "."))
+    except InvalidOperation as exc:
+        raise ValueError("value is not decimal") from exc
+    if not number.is_finite():
+        raise ValueError("value is not finite")
+    if kind == "integer" and number != number.to_integral_value():
+        raise ValueError("value must be an integer")
+    normalized = format(number, "f")
+    if "." in normalized:
+        normalized = normalized.rstrip("0").rstrip(".")
+    return normalized or "0"
+
+
 def _sku_source_values(
     attribute: Mapping[str, Any], sku: Mapping[str, Any] | None
 ) -> list[Any]:
@@ -336,6 +380,9 @@ def _api_attributes(
                 if not tag_value:
                     errors.append(f"hashtag attribute {attribute_id} has no valid #tags")
                 else:
+                    # Ozon accepts exactly one value for this attribute.  The
+                    # value may contain multiple space-separated hashtags, but
+                    # every individual hashtag is limited to 30 symbols.
                     values = [{"value": tag_value}]
             elif _is_rich_content_attribute(attribute):
                 if len(raw_values) != 1:
@@ -371,11 +418,28 @@ def _api_attributes(
             else:
                 if _is_color_attribute(attribute):
                     raw_values = [_russian_color(item) for item in raw_values]
-                values = [
-                    {"value": str(item).strip()}
-                    for item in raw_values
-                    if item is not None and str(item).strip()
-                ]
+                numeric_kind = _numeric_kind(attribute)
+                if numeric_kind:
+                    for item in raw_values:
+                        if item is None or not str(item).strip():
+                            continue
+                        try:
+                            normalized = _normalize_numeric_value(item, numeric_kind)
+                        except ValueError:
+                            sku_id = str((sku or {}).get("sku_id") or "default")
+                            errors.append(
+                                f"数值属性 {attribute_id} 的 SKU {sku_id} 必须填写单个"
+                                f"{'整数' if numeric_kind == 'integer' else '十进制数字'}，"
+                                f"当前值为 {str(item)!r}"
+                            )
+                        else:
+                            values.append({"value": normalized})
+                else:
+                    values = [
+                        {"value": str(item).strip()}
+                        for item in raw_values
+                        if item is not None and str(item).strip()
+                    ]
 
         values = _deduplicate_values(values)
         if _is_color_attribute(attribute):

@@ -6,6 +6,65 @@ from ozon_skill.upload.assembler import _api_attributes
 
 
 class AttributePayloadTests(unittest.TestCase):
+    def test_decimal_attribute_is_normalized_before_ozon_submission(self) -> None:
+        payload, errors, _ = _api_attributes(
+            [
+                {
+                    "attribute_id": 6392,
+                    "attribute_name_ru": "Вес товара, г",
+                    "attribute_type": "Decimal",
+                    "is_dictionary": False,
+                    "value": "120,50 г",
+                }
+            ],
+            {"sku_id": "sku-a"},
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(payload[0]["values"], [{"value": "120.5"}])
+
+    def test_invalid_decimal_is_blocked_during_payload_assembly(self) -> None:
+        payload, errors, _ = _api_attributes(
+            [
+                {
+                    "attribute_id": 6392,
+                    "attribute_type": "Decimal",
+                    "is_dictionary": False,
+                    "value": "большой",
+                }
+            ],
+            {"sku_id": "sku-b"},
+        )
+
+        self.assertEqual(payload, [])
+        self.assertIn("数值属性 6392 的 SKU sku-b", errors[0])
+
+    def test_hashtags_use_one_value_and_each_token_respects_symbol_limit(self) -> None:
+        payload, errors, _ = _api_attributes(
+            [
+                {
+                    "attribute_id": 23171,
+                    "attribute_name_ru": "Хештег",
+                    "is_collection": True,
+                    "max_count": 30,
+                    "is_dictionary": False,
+                    "value": [
+                        "аромат для дома",
+                        "очень длинный декоративный ароматический аксессуар для комнаты",
+                    ],
+                }
+            ]
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(payload[0]["values"]), 1)
+        tags = payload[0]["values"][0]["value"].split()
+        self.assertEqual(len(tags), 2)
+        self.assertTrue(
+            all(len(tag) <= 30 for tag in tags)
+        )
+        self.assertTrue(all(" " not in tag for tag in tags))
+
     def test_dictionary_uses_direct_validated_id_when_projection_is_missing(self) -> None:
         attributes = [
             {
