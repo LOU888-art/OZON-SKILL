@@ -25,6 +25,7 @@ class OzonUploadClient:
     ATTRIBUTES_UPDATE_PATH = "/v1/product/attributes/update"
     UNARCHIVE_PATH = "/v1/product/unarchive"
     INFO_LIST_PATH = "/v3/product/info/list"
+    INFO_LIST_FALLBACK_PATH = "/v2/product/info/list"
     PICTURES_INFO_PATH = "/v2/product/pictures/info"
     # Ozon disabled /v1/product/pictures/import on 2026-10-01.  V2 uses
     # seller offer_id values and a batched `items` request shape.
@@ -50,10 +51,44 @@ class OzonUploadClient:
         return self._post(self.UNARCHIVE_PATH, {"product_id": product_ids})
 
     def product_info_list(self, offer_ids: list[str]) -> dict[str, Any]:
-        return self._post(
-            self.INFO_LIST_PATH,
-            {"offer_id": offer_ids, "product_id": [], "sku": []},
-        )
+        # V3 no longer accepts the flat V2 request shape. Sending the old
+        # body to the V3 route can reach Ozon's gateway but fail in its
+        # internal ItemFront service with HTTP 501 / `unknown service`.
+        # Prefer the supported V3 filter contract and retain a narrow V2
+        # fallback while stores are migrated between Ozon API versions.
+        try:
+            return self._post(
+                self.INFO_LIST_PATH,
+                {
+                    "filter": {
+                        "offer_id": offer_ids,
+                        "product_id": [],
+                        "visibility": "ALL",
+                    },
+                    "last_id": "",
+                    "limit": min(1000, max(1, len(offer_ids))),
+                },
+            )
+        except OzonUploadApiError as exc:
+            detail = str(exc).lower()
+            route_unavailable = (
+                "http 501" in detail
+                or "http 404" in detail
+                or "unknown service" in detail
+                or "unimplemented" in detail
+            )
+            if not route_unavailable:
+                raise
+            try:
+                return self._post(
+                    self.INFO_LIST_FALLBACK_PATH,
+                    {"offer_id": offer_ids, "product_id": [], "sku": []},
+                )
+            except OzonUploadApiError as fallback_exc:
+                raise OzonUploadApiError(
+                    "Ozon 商品回查接口暂不可用："
+                    f"V3={str(exc)[:500]}；V2={str(fallback_exc)[:500]}"
+                ) from fallback_exc
 
     def product_info_attributes(self, offer_ids: list[str]) -> dict[str, Any]:
         return self._post(
