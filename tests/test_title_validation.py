@@ -6,6 +6,20 @@ from ozon_skill.content_generation.generator import _title_validation
 
 
 class RussianTitleValidationTests(unittest.TestCase):
+    def test_natural_synonym_does_not_block_title(self) -> None:
+        title = (
+            "Ароматизатор для шкафа и комнаты с ароматом розы, декоративная "
+            "восковая подвеска для дома и повседневного использования"
+        )
+        result = _title_validation(
+            title,
+            {"core_product_name": "Ароматическая восковая подвеска"},
+        )
+
+        self.assertEqual(result["status"], "VALID")
+        self.assertFalse(result["core_keyword_in_first_60"])
+        self.assertTrue(result["warnings"])
+
     def test_repeated_function_words_do_not_fail_natural_russian_title(self) -> None:
         title = (
             "Ароматическая гипсовая подвеска для дома и шкафа — декор для "

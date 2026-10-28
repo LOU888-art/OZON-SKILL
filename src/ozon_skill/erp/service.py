@@ -303,8 +303,8 @@ def gate_stage_3(value: Mapping[str, Any]) -> list[str]:
     ):
         failures.append("title_ru 必须是自然俄语且不得包含中文")
     validation = value.get("title_validation")
-    if not isinstance(validation, Mapping) or not validation.get("core_keyword_in_first_60"):
-        failures.append("title_ru 前 60 字符未验证包含核心词")
+    if not isinstance(validation, Mapping):
+        failures.append("title_ru 缺少标题规则校验结果")
     elif validation.get("status") != "VALID":
         failures.append("title_ru 未通过重复词根等标题规则")
     segments = value.get("title_segments")

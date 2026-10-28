@@ -166,14 +166,25 @@ def _title_validation(title: str, segments: Mapping[str, str | None]) -> dict[st
     warnings: list[str] = []
     if not 60 <= length <= 160:
         issues.append("标题长度必须为 60–160 个字符")
-    if core and core not in first_60:
-        issues.append("核心产品名不在前 60 个字符内")
+    normalized_core = re.sub(r"\s+", " ", core.casefold().replace("ё", "е")).strip()
+    normalized_prefix = re.sub(
+        r"\s+", " ", first_60.casefold().replace("ё", "е")
+    ).strip()
+    core_keyword_in_first_60 = bool(
+        normalized_core and normalized_core in normalized_prefix
+    )
+    if core and not core_keyword_in_first_60:
+        # Russian product names are highly inflected and AI copy may use a
+        # natural synonym in the title while returning the canonical form in
+        # title_segments.  Ozon does not require a byte-for-byte phrase match,
+        # so this is useful review metadata, not a listing blocker.
+        warnings.append("核心产品名与标题前 60 字符不是完全相同的俄语短语")
     if excessive:
         issues.append("标题含有重复三次以上的实义词根，可能触发 Ozon 重复标题规则")
     return {
         "length": length,
         "first_60_characters": first_60,
-        "core_keyword_in_first_60": bool(core and core in first_60),
+        "core_keyword_in_first_60": core_keyword_in_first_60,
         "repeated_roots_3_or_more": excessive,
         "warnings": warnings,
         "status": "VALID" if not issues else "NEEDS_CONFIRMATION",
