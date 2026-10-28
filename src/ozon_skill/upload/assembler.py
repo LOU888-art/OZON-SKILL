@@ -104,6 +104,13 @@ def _images(final: Mapping[str, Any], sku_id: str | None = None) -> list[str]:
         url = item.get("final_public_url")
         if not isinstance(url, str) or not url:
             continue
+        # Original 1688 and merely translated images are evidence assets only.
+        # The sellable Ozon gallery is strictly the eight-image AI set.
+        if not (
+            item.get("generation_provider") == "AI_RELAY"
+            and item.get("translation_status") == "AI_GENERATED"
+        ):
+            continue
         usage = item.get("image_usage")
         if usage == "rich_content":
             continue
@@ -122,7 +129,7 @@ def _images(final: Mapping[str, Any], sku_id: str | None = None) -> list[str]:
         if specific
         else shared_main + shared_gallery + legacy
     )
-    return list(dict.fromkeys(ordered))
+    return list(dict.fromkeys(ordered))[:8]
 
 
 _CJK = re.compile(r"[\u3400-\u9fff]")
@@ -571,10 +578,17 @@ def assemble_import_payload(
         sku_id_value = sku.get("sku_id")
         sku_id = str(sku_id_value) if sku_id_value is not None else None
         images = _images(final, sku_id)
-        if not images:
+        if len(images) != 8:
             errors.append(
-                f"SKU {sku_id or 'default'} has no verified public product images"
+                f"SKU {sku_id or 'default'} 必须具有 8 张独立 AI 生成图，当前为 {len(images)} 张"
             )
+        sku_titles = final.get("sku_titles_ru")
+        sku_title = (
+            str(sku_titles.get(sku_id) or "").strip()
+            if isinstance(sku_titles, Mapping) and sku_id is not None
+            else ""
+        )
+        item_title = sku_title or title
         offer_id = (
             str(assigned_offer_ids[sku_index])
             if assigned_offer_ids is not None and sku_index < len(assigned_offer_ids)
@@ -602,7 +616,7 @@ def assemble_import_payload(
                 price = sale_cny * store.cny_to_rub_rate
         item = {
             "offer_id": offer_id,
-            "name": title,
+            "name": item_title,
             "price": _money(price),
             "old_price": _money(price * 2),
             "currency_code": store.currency_code,

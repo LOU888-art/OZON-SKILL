@@ -90,6 +90,7 @@ IMAGE_SELECTION_FILE = "image-selection.json"
 PRODUCT_SETTINGS_FILE = "product-settings.json"
 PRODUCT_VERSIONS_FILE = "product-versions.json"
 IMAGE_ACTIONS = {"exclude", "translate", "reference_8", "sku_main"}
+AI_GALLERY_POLICY_VERSION = "ozon-ai-gallery-8-v2"
 _PIPELINE_ID = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 _BATCH_JOB_ID = re.compile(r"^[a-f0-9]{32}$")
 _MAX_BATCH_IMPORT_ITEMS = 100
@@ -292,8 +293,8 @@ def gate_stage_2(value: Mapping[str, Any]) -> list[str]:
 def gate_stage_3(value: Mapping[str, Any]) -> list[str]:
     failures: list[str] = []
     title = value.get("title_ru")
-    if not isinstance(title, str) or not 150 <= len(title) <= 200:
-        failures.append("title_ru 长度不在 150–200 字符")
+    if not isinstance(title, str) or not 60 <= len(title) <= 160:
+        failures.append("title_ru 长度不在 60–160 字符")
     if isinstance(title, str) and (
         not re.search(r"[А-Яа-яЁё]", title)
         or re.search(r"[\u3400-\u9fff]", title)
@@ -326,6 +327,17 @@ def gate_stage_3(value: Mapping[str, Any]) -> list[str]:
                 failures.append(
                     f"localized_images[{index}]：{str(detail)[:240] if detail else exc}"
                 )
+        gallery = [
+            item
+            for item in localized
+            if isinstance(item, Mapping)
+            and item.get("generation_provider") == "AI_RELAY"
+            and item.get("translation_status") == "AI_GENERATED"
+            and item.get("image_usage") in {"shared_main", "shared_gallery"}
+            and item.get("final_public_url")
+        ]
+        if len({str(item["final_public_url"]) for item in gallery}) != 8:
+            failures.append("Ozon 商品图库必须恰好包含 8 张独立 AI 生成图（1 张主图 + 7 张副图）")
     tags = value.get("tags_ru")
     if not isinstance(tags, list) or not tags or len(tags) > 30:
         failures.append("tags_ru 必须为 1–30 项的数组")
@@ -352,6 +364,16 @@ def gate_stage_4(value: Mapping[str, Any]) -> list[str]:
     for field in ("offer_id", "type_id", "price", "attributes"):
         if item.get(field) in (None, "", []):
             failures.append(f"items[0].{field} 为空")
+    for index, candidate in enumerate(items):
+        if not isinstance(candidate, Mapping):
+            failures.append(f"items[{index}] 不是对象")
+            continue
+        images = candidate.get("images")
+        if not isinstance(images, list) or len(list(dict.fromkeys(images))) != 8:
+            failures.append(f"items[{index}].images 必须恰好包含 8 张独立 AI 图片")
+        name = str(candidate.get("name") or "")
+        if not 60 <= len(name) <= 160 or re.search(r"[\u3400-\u9fff]", name):
+            failures.append(f"items[{index}].name 必须是 60–160 字符的自然俄语标题")
     return failures
 
 
@@ -3702,11 +3724,27 @@ class PipelineService:
             mapped = self.read_artifact(pipeline_id, 2)
             progress_path = self.directory(pipeline_id) / "03_media_progress.json"
             try:
-                if media_mode == "image_plan":
-                    planned_items = self._selected_image_items(pipeline_id, raw)
+                if media_mode in {"image_plan", "ai_generate", "alphashop_translate"}:
+                    selected_items = self._selected_image_items(pipeline_id, raw)
+                    if not selected_items:
+                        raise PipelineError("没有可作为 AI 八图参考的 1688 商品图片")
+                    reference = next(
+                        (
+                            item
+                            for item in selected_items
+                            if str(item.get("action")) == "reference_8"
+                        ),
+                        selected_items[0],
+                    )
+                    # Listing media is now AI-only. The original 1688 image is
+                    # reference evidence and is never copied into the payload.
+                    planned_items = [{**reference, "action": "reference_8"}]
                     plan_sha256 = hashlib.sha256(
                         json.dumps(
-                            planned_items,
+                            {
+                                "policy_version": AI_GALLERY_POLICY_VERSION,
+                                "items": planned_items,
+                            },
                             ensure_ascii=False,
                             sort_keys=True,
                             separators=(",", ":"),
@@ -3734,36 +3772,13 @@ class PipelineService:
                             },
                         )
 
-                    translator = None
-                    if any(str(row.get("action")) == "translate" for row in planned_items):
-                        try:
-                            translator = AlphaShopClient.from_environment()
-                        except AlphaShopApiError:
-                            translator = None
                     inspection = process_image_plan(
                         planned_items,
                         self.ai_provider.client(),
-                        translator,
+                        None,
                         raw,
                         progress=save_progress,
                         existing_results=existing_results,
-                    )
-                elif media_mode == "ai_generate":
-                    relay = self.ai_provider.client()
-                    inspection = generate_all_images(
-                        self._selected_image_items(pipeline_id, raw), relay, raw
-                    )
-                else:
-                    planned_items = [
-                        {**item, "action": "translate"}
-                        for item in self._selected_image_items(pipeline_id, raw)
-                    ]
-                    try:
-                        translator = AlphaShopClient.from_environment()
-                    except AlphaShopApiError:
-                        translator = None
-                    inspection = process_image_plan(
-                        planned_items, self.ai_provider.client(), translator, raw
                     )
                 # Translation-only plans produce Rich Content assets, but Ozon
                 # still needs a normal product image.  Generate one through the
@@ -3807,6 +3822,48 @@ class PipelineService:
                 self._record(pipeline_id, 3, False, failures)
                 raise PipelineError(failures[0], status=502) from exc
             inspection = self._mirror_generated_images(pipeline_id, inspection)
+            mapped = deepcopy(mapped)
+            auto_translation_fields: list[dict[str, Any]] = []
+            for attribute in mapped.get("ozon_attributes") or []:
+                if not isinstance(attribute, dict) or attribute.get("is_dictionary"):
+                    continue
+                raw_value = attribute.get("value")
+                if (
+                    isinstance(raw_value, str)
+                    and re.search(r"[\u3400-\u9fff]", raw_value)
+                    and isinstance(attribute.get("attribute_id"), int)
+                ):
+                    auto_translation_fields.append(
+                        {
+                            "attribute_id": attribute["attribute_id"],
+                            "attribute_name_ru": attribute.get("attribute_name_ru"),
+                            "value_zh": raw_value,
+                        }
+                    )
+            if auto_translation_fields:
+                try:
+                    translated = self.ai_provider.client().translate_attribute_values(
+                        auto_translation_fields
+                    )
+                except (AiRelayError, AiProviderConfigurationError) as exc:
+                    failures = [f"自动翻译 Ozon 商品特征失败：{exc}"]
+                    self._record(pipeline_id, 3, False, failures)
+                    raise PipelineError(failures[0], status=502) from exc
+                for attribute in mapped.get("ozon_attributes") or []:
+                    if not isinstance(attribute, dict):
+                        continue
+                    attribute_id = attribute.get("attribute_id")
+                    value = translated.get(str(attribute_id))
+                    if value:
+                        attribute["value"] = value
+                        attribute["mapping_status"] = "MAPPED_AI_TRANSLATED_FACT"
+                        attribute["mapping_confidence"] = 0.95
+                        attribute.setdefault("source_refs", []).append(
+                            {
+                                "location": "stage_3.ai_attribute_translation",
+                                "value": value,
+                            }
+                        )
             generated_copy = None
             copy_fallback_reason = None
             if text_mode == "ai_generate":
@@ -3815,10 +3872,9 @@ class PipelineService:
                         _source_for_mapper(raw), mapped
                     )
                 except (AiRelayError, AiProviderConfigurationError) as exc:
-                    # Image generation may already have incurred a charge.  A text
-                    # provider outage must not discard that completed work or block
-                    # the deterministic, strictly validated built-in copy fallback.
-                    copy_fallback_reason = str(exc)[:800]
+                    failures = [f"AI 俄语商品文案生成失败：{exc}"]
+                    self._record(pipeline_id, 3, False, failures)
+                    raise PipelineError(failures[0], status=502) from exc
             final = build_final_listing(
                 mapped,
                 _source_for_mapper(raw),
@@ -3854,6 +3910,8 @@ class PipelineService:
                     "storage_size_bytes": item.get("storage_size_bytes"),
                     "storage_bucket": item.get("storage_bucket"),
                     "storage_endpoint": item.get("storage_endpoint"),
+                    "generation_provider": item.get("generation_provider"),
+                    "generation_model": item.get("generation_model"),
                 }
                 for item in inspection
             ]
@@ -4171,6 +4229,8 @@ class PipelineService:
                             "storage_size_bytes",
                             "storage_bucket",
                             "storage_endpoint",
+                            "generation_provider",
+                            "generation_model",
                         )
                     }
                     for item in mirrored_rows
@@ -4647,16 +4707,15 @@ class PipelineService:
                     authorized_store["client_id"], authorized_store["api_key"]
                 )
             upload_log = UploadLog(self.path(pipeline_id, 5))
-            fallback_source_images = self._fallback_source_images_by_offer(
-                pipeline_id, assembly
-            )
         result = run_upload_workflow(
             store=store,
             assembly=assembly,
             upload_log=upload_log,
             execute=execute,
             client=client,
-            fallback_source_images_by_offer=fallback_source_images,
+            # Never recover with original 1688 images. A missing AI gallery
+            # must be repaired in stage 3 and cannot silently reach Ozon.
+            fallback_source_images_by_offer=None,
         )
         if request_execute and not environment_execute:
             result["execution_guard"] = "请求了执行，但环境仍为 DRY_RUN=true；未发送请求"

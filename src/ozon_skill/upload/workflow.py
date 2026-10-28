@@ -473,6 +473,10 @@ def run_upload_workflow(
 ) -> dict[str, Any]:
     """Run one store independently; dry-run never calls the supplied client."""
 
+    # Original supplier media is evidence only. Never send 1688 images to
+    # Ozon as a recovery path when the required AI gallery is unavailable.
+    fallback_source_images_by_offer = None
+
     started_at = time.monotonic()
     run_id = str(uuid.uuid4())
     entry: dict[str, Any] = {
@@ -1002,6 +1006,7 @@ def run_upload_workflow(
                     history=entry["history"],
                 )
                 return upload_log.data["entries"][log_index]
+        rich_content_deferred = False
         if rich_errors or len(rich_updates) != len(rich_content_plans):
             error = (
                 "; ".join(rich_errors)
@@ -1030,50 +1035,81 @@ def run_upload_workflow(
                     separators=(",", ":"),
                 )
                 error += f"；图片任务诊断：{task_text[:1800]}"
+            hard_picture_failure = bool(
+                picture_import_errors
+                or fallback_import_errors
+                or failed_picture_tasks
+            )
+            if hard_picture_failure:
+                entry["history"].append(
+                    {
+                        "at": _now(),
+                        "status": "RICH_CONTENT_IMAGES_MISSING",
+                        "error": error[:1200],
+                    }
+                )
+                upload_log.update(
+                    log_index,
+                    status="RICH_CONTENT_IMAGES_MISSING",
+                    error=error[:1200],
+                    history=entry["history"],
+                )
+                return upload_log.data["entries"][log_index]
+            # The product import is already committed. Ozon can take much
+            # longer to expose CDN renditions than it takes to publish the
+            # card. Rich Content is optional and the Russian description is
+            # already present, so a zero-image readback without an explicit
+            # task error is a post-publish warning, not a failed listing.
+            rich_content_deferred = True
+            warning = (
+                "商品已提交；Ozon 暂未返回托管图片，富内容已延后，"
+                "商品简介继续生效。" + error
+            )[:1600]
             entry["history"].append(
                 {
                     "at": _now(),
-                    "status": "RICH_CONTENT_IMAGES_MISSING",
-                    "error": error[:1200],
+                    "status": "RICH_CONTENT_DEFERRED",
+                    "warning": warning,
                 }
             )
             upload_log.update(
                 log_index,
-                status="RICH_CONTENT_IMAGES_MISSING",
-                error=error[:1200],
+                status="RICH_CONTENT_DEFERRED",
+                error=None,
+                post_publish_warnings=[warning],
                 history=entry["history"],
             )
-            return upload_log.data["entries"][log_index]
-        try:
-            rich_response = client.attributes_update(rich_updates)
-        except Exception as exc:
+        if not rich_content_deferred:
+            try:
+                rich_response = client.attributes_update(rich_updates)
+            except Exception as exc:
+                entry["history"].append(
+                    {
+                        "at": _now(),
+                        "status": "RICH_CONTENT_UPDATE_ERROR",
+                        "error": str(exc)[:1200],
+                    }
+                )
+                upload_log.update(
+                    log_index,
+                    status="RICH_CONTENT_UPDATE_ERROR",
+                    error=str(exc)[:1200],
+                    history=entry["history"],
+                )
+                return upload_log.data["entries"][log_index]
             entry["history"].append(
                 {
                     "at": _now(),
-                    "status": "RICH_CONTENT_UPDATE_ERROR",
-                    "error": str(exc)[:1200],
+                    "status": "RICH_CONTENT_UPDATED",
+                    "offer_count": len(rich_updates),
                 }
             )
             upload_log.update(
                 log_index,
-                status="RICH_CONTENT_UPDATE_ERROR",
-                error=str(exc)[:1200],
+                rich_content_update=rich_response,
+                rich_content_offer_count=len(rich_updates),
                 history=entry["history"],
             )
-            return upload_log.data["entries"][log_index]
-        entry["history"].append(
-            {
-                "at": _now(),
-                "status": "RICH_CONTENT_UPDATED",
-                "offer_count": len(rich_updates),
-            }
-        )
-        upload_log.update(
-            log_index,
-            rich_content_update=rich_response,
-            rich_content_offer_count=len(rich_updates),
-            history=entry["history"],
-        )
 
     attribute_verification: dict[str, Any] = {}
     implicit_type_attributes = _top_level_type_attribute_ids(

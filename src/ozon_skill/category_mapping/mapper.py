@@ -36,6 +36,11 @@ ATTRIBUTE_CONCEPTS = (
     Concept("size", ("尺寸", "大小", "规格"), ("размер",)),
     Concept("brand", ("品牌",), ("бренд", "торговая марка")),
     Concept("country", ("产地", "原产地"), ("страна производства",)),
+    Concept("scent", ("香型", "香味", "气味", "味道"), ("аромат", "запах")),
+    Concept("quantity", ("数量", "件数", "包装数量"), ("количество",)),
+    Concept("shape", ("形状", "造型"), ("форма",)),
+    Concept("model", ("型号", "货号"), ("модель",)),
+    Concept("purpose", ("用途", "适用范围", "使用场景"), ("назначение",)),
 )
 
 VALUE_CONCEPTS = (
@@ -44,6 +49,7 @@ VALUE_CONCEPTS = (
     Concept("black", ("黑色", "曜石黑", "黑"), ("черный", "чёрный")),
     Concept("white", ("白色", "珍珠白", "白"), ("белый",)),
     Concept("blue", ("蓝色", "蓝"), ("синий", "голубой")),
+    Concept("china", ("中国", "Китай"), ("китай",)),
 )
 
 
@@ -540,6 +546,15 @@ def _map_attributes(
                 {
                     "location": "listing_policy.no_brand",
                     "value": NO_BRAND_VALUE_RU,
+                }
+            ]
+        if concept is not None and concept.name == "country" and not values:
+            values = ["Китай"]
+            source_refs = [
+                {
+                    "location": "listing_policy.default_origin_country",
+                    "value": "Китай",
+                    "reason": "中国跨境直发商品默认原产国",
                 }
             ]
 

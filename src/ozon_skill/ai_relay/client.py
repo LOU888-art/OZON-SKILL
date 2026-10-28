@@ -265,7 +265,11 @@ class AiRelayClient:
             "category_path_zh": source.get("category_path_zh"),
             "attributes_zh": source.get("attributes_zh"),
             "sku_specs": [
-                item.get("specification") or item.get("specification_zh")
+                {
+                    "sku_id": item.get("sku_id"),
+                    "specification": item.get("specification")
+                    or item.get("specification_zh"),
+                }
                 for item in (source.get("sku_list") or [])[:20]
                 if isinstance(item, Mapping)
             ],
@@ -281,14 +285,52 @@ class AiRelayClient:
             ],
         }
         prompt = (
-            "Ты редактор карточек OZON. Используй только факты из входного JSON. "
-            "Бренда нет: не придумывай бренд и укажи сегмент brand как 'без бренда'. "
-            "Верни только JSON с ключами title_ru, title_segments, description_ru, tags_ru. "
-            "title_segments должен содержать core_product_name, key_attributes, "
-            "use_case_or_core_benefit, brand. Заголовок: естественный русский язык, "
-            "150–200 символов, core_product_name в первых 60 символах, без повторения "
-            "одного корня 3 раза. tags_ru — уникальный массив максимум из 30 русских "
-            "тегов. Не добавляй неподтвержденные характеристики.\nFACTS:\n"
+            "Ты — старший эксперт по управлению товарами на российском OZON, "
+            "носитель русского языка, SEO-редактор и специалист по конверсии карточек. "
+            "Продавец закупает готовый товар на 1688 и отправляет его из Китая. "
+            "Сначала составь внутренний список подтвержденных фактов и используй только "
+            "их. Не выдумывай бренд, материал, размер, объем, вес, мощность, свойства, "
+            "сертификацию, комплектацию, подарок или обещание результата. Отделяй товар "
+            "от реквизита и рекламного текста поставщика. Пиши естественно для покупателя "
+            "из России, без механического перевода, преувеличений и набивки ключевыми "
+            "словами. Цель — релевантный поиск, понятный выбор и снижение возвратов; не "
+            "обещай позиции или продажи.\n"
+            "Верни строго JSON без Markdown со следующими ключами: "
+            "product_identification, title_ru, title_variants, title_segments, "
+            "sku_titles_ru, short_description_ru, short_description_zh, "
+            "selling_points, description_ru, description_zh, tags, core_keywords, "
+            "long_tail_keywords, usage_keywords, excluded_keywords, "
+            "attribute_suggestions, conversion_optimization, review_prevention, "
+            "preflight_check. product_identification содержит китайское и русское "
+            "стандартное название, категорию, назначение, подтвержденные факты, "
+            "неподтвержденные параметры и отличие товара от реквизита. "
+            "title_variants содержит A_precision, B_click, C_balanced; каждый вариант "
+            "имеет ru и zh. title_ru должен точно совпадать с C_balanced.ru. Каждый "
+            "заголовок — естественная "
+            "русская фраза примерно 60–160 знаков: точное название товара в первых 60 "
+            "знаках, без повторения одного значимого слова или корня три раза. "
+            "title_segments содержит core_product_name, key_attributes, "
+            "use_case_or_core_benefit, brand; brand всегда 'без бренда'. "
+            "sku_titles_ru — объект {sku_id: заголовок}; создай отдельный правдивый "
+            "заголовок для каждого SKU из FACTS.sku_specs, различая только подтвержденные "
+            "варианты. Если различие нельзя надежно перевести, используй title_ru. "
+            "short_description_ru — 200–350 знаков, short_description_zh — точный перевод. "
+            "selling_points — от 3 до 5 объектов {ru, zh} без повторов. description_ru — естественное описание "
+            "примерно 600–1000 знаков либо короче при недостатке фактов, включая назначение, "
+            "подтвержденные особенности, применение, состав комплекта и предупреждения. "
+            "description_zh — полный перевод. tags — 5–10 объектов {ru, zh}. "
+            "core_keywords, long_tail_keywords, usage_keywords и excluded_keywords — "
+            "массивы объектов {ru, zh}. Ключевые слова являются "
+            "только семантическими кандидатами, не заявляй проверенный спрос без данных. "
+            "attribute_suggestions — массив {name_zh, value_ru, evidence_zh, "
+            "needs_confirmation}; неизвестные поля помечай 待确认 и не выдумывай. "
+            "conversion_optimization объясняет, что показать в поиске и на изображениях, "
+            "что мешает добавлению в корзину и что текст не может решить. "
+            "review_prevention содержит до пяти реальных рисков и честное пояснение. "
+            "preflight_check сверяет название, цвет, размер, количество, материал, "
+            "комплектацию и функции и перечисляет вопросы продавцу. В русском товарном "
+            "тексте не должно быть китайских слов.\n"
+            "FACTS:\n"
             + json.dumps(facts, ensure_ascii=False, separators=(",", ":"))
         )
         text_model = normalize_text_model(self.text_model) or DEFAULT_TEXT_MODEL

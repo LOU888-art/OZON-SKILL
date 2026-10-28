@@ -20,7 +20,7 @@ class RussianTitleValidationTests(unittest.TestCase):
         self.assertEqual(result["status"], "VALID")
         self.assertNotIn("для", result["repeated_roots_3_or_more"])
 
-    def test_repeated_meaningful_root_is_warning_not_blocker(self) -> None:
+    def test_repeated_meaningful_root_blocks_keyword_stuffing(self) -> None:
         title = (
             "Ароматическая подвеска ароматическая для дома — ароматическая "
             "композиция для шкафа, спальни, автомобиля и подарка близким, "
@@ -31,9 +31,9 @@ class RussianTitleValidationTests(unittest.TestCase):
             {"core_product_name": "Ароматическая подвеска"},
         )
 
-        self.assertEqual(result["status"], "VALID")
+        self.assertEqual(result["status"], "NEEDS_CONFIRMATION")
         self.assertTrue(result["repeated_roots_3_or_more"])
-        self.assertTrue(result["warnings"])
+        self.assertTrue(result["issues"])
 
 
 if __name__ == "__main__":

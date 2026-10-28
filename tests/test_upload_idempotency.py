@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from decimal import Decimal
@@ -59,6 +60,115 @@ def _store() -> StoreConfig:
 
 
 class UploadIdempotencyTests(unittest.TestCase):
+    def test_published_product_passes_when_only_rich_content_cdn_is_delayed(self) -> None:
+        class _Client:
+            attributes_update_calls = 0
+
+            def product_import(self, _payload: dict) -> dict:
+                return {"result": {"task_id": 123}}
+
+            def import_info(self, _task_id: int) -> dict:
+                return {
+                    "result": {
+                        "items": [
+                            {
+                                "offer_id": "QSM102401",
+                                "product_id": 777,
+                                "status": "imported",
+                                "errors": [],
+                            }
+                        ]
+                    }
+                }
+
+            def product_info_list(self, _offer_ids: list[str]) -> dict:
+                return {"items": [{"offer_id": "QSM102401", "id": 777}]}
+
+            def product_pictures_info(self, _product_ids: list[int]) -> dict:
+                return {
+                    "items": [
+                        {
+                            "product_id": 777,
+                            "photo": None,
+                            "primary_photo": None,
+                            "color_photo": None,
+                            "errors": [],
+                        }
+                    ]
+                }
+
+            def product_pictures_import(
+                self, _offer_id: str, _images: list[str]
+            ) -> dict:
+                return {"result": {"task_id": 456}}
+
+            def attributes_update(self, _items: list[dict]) -> dict:
+                self.attributes_update_calls += 1
+                return {"result": {}}
+
+            def product_info_attributes(self, _offer_ids: list[str]) -> dict:
+                return {"items": [{"offer_id": "QSM102401", "attributes": []}]}
+
+        rich = {
+            "version": 0.3,
+            "content": [
+                {
+                    "widgetName": "raShowcase",
+                    "blocks": [
+                        {
+                            "img": {
+                                "src": "https://cdn.example.com/ai-2.jpg",
+                                "srcMobile": "https://cdn.example.com/ai-2.jpg",
+                            }
+                        }
+                    ],
+                }
+            ],
+        }
+        assembly = AssemblyResult(
+            payload={
+                "items": [
+                    {
+                        "offer_id": "QSM102401",
+                        "name": "Ароматическая подвеска для шкафа и комнаты, декоративный ароматизатор для домашнего пространства",
+                        "attributes": [
+                            {
+                                "id": 999,
+                                "complex_id": 0,
+                                "values": [{"value": json.dumps(rich)}],
+                            }
+                        ],
+                        "images": [
+                            f"https://cdn.example.com/ai-{index}.jpg"
+                            for index in range(1, 9)
+                        ],
+                    }
+                ]
+            },
+            offer_ids=["QSM102401"],
+            validation_errors=[],
+            warnings=[],
+            dimension_source="test",
+            required_attribute_ids=[],
+        )
+        client = _Client()
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run_upload_workflow(
+                store=_store(),
+                assembly=assembly,
+                upload_log=UploadLog(Path(temporary) / "upload.json"),
+                execute=True,
+                client=client,
+                poll_interval_seconds=0,
+                image_hosting_max_polls=1,
+                verification_max_polls=1,
+            )
+
+        self.assertEqual(result["status"], "VERIFIED")
+        self.assertTrue(result["post_publish_warnings"])
+        self.assertIn("富内容已延后", result["post_publish_warnings"][0])
+        self.assertEqual(client.attributes_update_calls, 0)
+
     def test_workflow_deadline_stops_polling_and_preserves_task_for_resume(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "upload.json"

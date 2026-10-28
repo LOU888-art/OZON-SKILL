@@ -14,7 +14,7 @@ from .tags import format_ozon_hashtags
 
 NO_BRAND_TITLE_RU = "без бренда"
 
-# Function words naturally occur many times in a fluent 150–200 character
+# Function words naturally occur many times in a fluent marketplace
 # Russian title.  They are not keyword stuffing and must never fail a listing.
 _RUSSIAN_TITLE_STOPWORDS = {
     "а",
@@ -164,15 +164,12 @@ def _title_validation(title: str, segments: Mapping[str, str | None]) -> dict[st
     excessive = {root: count for root, count in repeated_roots.items() if count >= 3}
     issues: list[str] = []
     warnings: list[str] = []
-    if not 150 <= length <= 200:
-        issues.append("标题长度必须为 150–200 个字符")
+    if not 60 <= length <= 160:
+        issues.append("标题长度必须为 60–160 个字符")
     if core and core not in first_60:
         issues.append("核心产品名不在前 60 个字符内")
     if excessive:
-        # This is a copy-quality signal, not an Ozon schema requirement.
-        # Russian derivations such as ароматический/ароматизатор/аромата can
-        # share a prefix while remaining natural and semantically distinct.
-        warnings.append("检测到可能重复的实义词根，已作为质量提示但不阻断上架")
+        issues.append("标题含有重复三次以上的实义词根，可能触发 Ozon 重复标题规则")
     return {
         "length": length,
         "first_60_characters": first_60,
@@ -349,11 +346,13 @@ def build_final_listing(
         }
         description = str(generated_copy.get("description_ru") or "").strip()
         raw_tags = generated_copy.get("tags_ru")
+        if not isinstance(raw_tags, list):
+            raw_tags = generated_copy.get("tags")
         tags = []
         seen: set[str] = set()
         if isinstance(raw_tags, list):
             for value in raw_tags:
-                tag = str(value).strip()
+                tag = str(value.get("ru") if isinstance(value, Mapping) else value).strip()
                 key = tag.casefold()
                 if tag and key not in seen:
                     seen.add(key)
@@ -361,6 +360,22 @@ def build_final_listing(
         tags = tags[:30]
         tag_groups = {"ai_generated": tags}
         copy_provider = "AI_RELAY"
+    sku_titles_ru: dict[str, str] = {}
+    if generated_copy is not None and isinstance(
+        generated_copy.get("sku_titles_ru"), Mapping
+    ):
+        for raw_sku_id, raw_title in generated_copy["sku_titles_ru"].items():
+            sku_id = str(raw_sku_id).strip()
+            sku_title = str(raw_title or "").strip()
+            if (
+                sku_id
+                and 60 <= len(sku_title) <= 160
+                and re.search(r"[А-Яа-яЁё]", sku_title)
+                and not re.search(r"[\u3400-\u9fff]", sku_title)
+                and _title_validation(sku_title, {"core_product_name": ""})["status"]
+                == "VALID"
+            ):
+                sku_titles_ru[sku_id] = sku_title
     title_validation = _title_validation(title, segments)
     rich_content = _rich_content(media_inspection, description)
     attributes, attribute_changes = _bind_generated_attributes(
@@ -421,9 +436,60 @@ def build_final_listing(
         "ozon_attributes": attributes,
         "attribute_changes": attribute_changes,
         "title_ru": title,
+        "title_variants": (
+            deepcopy(generated_copy.get("title_variants") or {})
+            if generated_copy is not None
+            else {}
+        ),
+        "sku_titles_ru": sku_titles_ru,
         "title_segments": segments,
         "title_validation": title_validation,
         "description_ru": description,
+        "short_description_ru": (
+            str(generated_copy.get("short_description_ru") or "").strip()
+            if generated_copy is not None
+            else description.split("\n\n", 1)[0]
+        ),
+        "selling_points_ru": (
+            [
+                str(item.get("ru") if isinstance(item, Mapping) else item).strip()
+                for item in (
+                    generated_copy.get("selling_points_ru")
+                    or generated_copy.get("selling_points")
+                    or []
+                )
+                if str(item.get("ru") if isinstance(item, Mapping) else item).strip()
+            ][:5]
+            if generated_copy is not None
+            else []
+        ),
+        "copy_analysis": (
+            {
+                key: deepcopy(generated_copy.get(key))
+                for key in (
+                    "core_keywords_ru",
+                    "long_tail_keywords_ru",
+                    "usage_keywords_ru",
+                    "excluded_keywords_ru",
+                    "product_identification",
+                    "short_description_zh",
+                    "description_zh",
+                    "selling_points",
+                    "tags",
+                    "core_keywords",
+                    "long_tail_keywords",
+                    "usage_keywords",
+                    "excluded_keywords",
+                    "attribute_suggestions",
+                    "conversion_optimization",
+                    "review_prevention",
+                    "preflight_check",
+                )
+                if generated_copy.get(key) is not None
+            }
+            if generated_copy is not None
+            else {}
+        ),
         "copy_provider": copy_provider,
         "tags_ru": tags,
         "tag_groups": tag_groups,
