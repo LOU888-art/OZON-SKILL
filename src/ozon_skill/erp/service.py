@@ -90,7 +90,7 @@ IMAGE_SELECTION_FILE = "image-selection.json"
 PRODUCT_SETTINGS_FILE = "product-settings.json"
 PRODUCT_VERSIONS_FILE = "product-versions.json"
 IMAGE_ACTIONS = {"exclude", "translate", "reference_8", "sku_main"}
-AI_GALLERY_POLICY_VERSION = "ozon-ai-gallery-8-v2"
+AI_GALLERY_POLICY_VERSION = "ozon-ai-gallery-8-v3-per-sku"
 _PIPELINE_ID = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 _BATCH_JOB_ID = re.compile(r"^[a-f0-9]{32}$")
 _MAX_BATCH_IMPORT_ITEMS = 100
@@ -239,6 +239,8 @@ def _image_items(source: Mapping[str, Any]) -> list[Mapping[str, Any]]:
                 "url": url,
                 "source_role": "sku_image",
                 "sku_id": sku.get("sku_id"),
+                "specification_zh": sku.get("specification_zh")
+                or sku.get("specification"),
             }
         )
     return result
@@ -327,16 +329,10 @@ def gate_stage_3(value: Mapping[str, Any]) -> list[str]:
                 failures.append(
                     f"localized_images[{index}]：{str(detail)[:240] if detail else exc}"
                 )
-        gallery = [
-            item
-            for item in localized
-            if isinstance(item, Mapping)
-            and item.get("generation_provider") == "AI_RELAY"
-            and item.get("translation_status") == "AI_GENERATED"
-            and item.get("image_usage") in {"shared_main", "shared_gallery"}
-            and item.get("final_public_url")
-        ]
-        if len({str(item["final_public_url"]) for item in gallery}) != 8:
+        gallery_validation = value.get("ai_gallery_validation")
+        if not isinstance(gallery_validation, Mapping) or not gallery_validation.get(
+            "all_skus_have_8"
+        ):
             failures.append("Ozon 商品图库必须恰好包含 8 张独立 AI 生成图（1 张主图 + 7 张副图）")
     tags = value.get("tags_ru")
     if not isinstance(tags, list) or not tags or len(tags) > 30:
@@ -3728,17 +3724,41 @@ class PipelineService:
                     selected_items = self._selected_image_items(pipeline_id, raw)
                     if not selected_items:
                         raise PipelineError("没有可作为 AI 八图参考的 1688 商品图片")
-                    reference = next(
-                        (
-                            item
-                            for item in selected_items
-                            if str(item.get("action")) == "reference_8"
-                        ),
-                        selected_items[0],
+                    raw_sku_ids = [
+                        str(item.get("sku_id"))
+                        for item in raw.get("sku_list") or []
+                        if isinstance(item, Mapping) and item.get("sku_id") is not None
+                    ]
+                    sku_references: dict[str, Mapping[str, Any]] = {}
+                    for item in _image_items(raw):
+                        sku_id = item.get("sku_id")
+                        if item.get("source_role") == "sku_image" and sku_id is not None:
+                            sku_references.setdefault(str(sku_id), item)
+                    per_sku_gallery = bool(raw_sku_ids) and all(
+                        sku_id in sku_references for sku_id in raw_sku_ids
                     )
-                    # Listing media is now AI-only. The original 1688 image is
-                    # reference evidence and is never copied into the payload.
-                    planned_items = [{**reference, "action": "reference_8"}]
+                    if per_sku_gallery:
+                        planned_items = [
+                            {**sku_references[sku_id], "action": "reference_8"}
+                            for sku_id in dict.fromkeys(raw_sku_ids)
+                        ]
+                    else:
+                        reference = next(
+                            (
+                                item
+                                for item in selected_items
+                                if str(item.get("action")) == "reference_8"
+                            ),
+                            selected_items[0],
+                        )
+                        planned_items = [
+                            {
+                                **reference,
+                                "sku_id": None,
+                                "specification_zh": None,
+                                "action": "reference_8",
+                            }
+                        ]
                     plan_sha256 = hashlib.sha256(
                         json.dumps(
                             {
@@ -3881,6 +3901,35 @@ class PipelineService:
                 inspection,
                 generated_copy=generated_copy,
             )
+            ai_urls_by_sku: dict[str, list[str]] = {}
+            shared_ai_urls: list[str] = []
+            for item in inspection:
+                if not isinstance(item, Mapping) or not (
+                    item.get("generation_provider") == "AI_RELAY"
+                    and item.get("translation_status") == "AI_GENERATED"
+                    and item.get("final_public_url")
+                ):
+                    continue
+                url = str(item["final_public_url"])
+                sku_id = item.get("sku_id")
+                if sku_id is None:
+                    shared_ai_urls.append(url)
+                else:
+                    ai_urls_by_sku.setdefault(str(sku_id), []).append(url)
+            sku_counts = {
+                sku_id: len(set(ai_urls_by_sku.get(sku_id) or shared_ai_urls))
+                for sku_id in dict.fromkeys(raw_sku_ids)
+            }
+            if not sku_counts:
+                sku_counts = {"default": len(set(shared_ai_urls))}
+            final["ai_gallery_validation"] = {
+                "policy_version": AI_GALLERY_POLICY_VERSION,
+                "mode": "PER_SKU" if per_sku_gallery else "SHARED_FACT_SAFE",
+                "sku_image_counts": sku_counts,
+                "all_skus_have_8": bool(sku_counts)
+                and all(count == 8 for count in sku_counts.values()),
+                "original_1688_images_allowed": False,
+            }
             final["generation_options"] = {
                 "media_mode": media_mode,
                 "text_mode": text_mode,

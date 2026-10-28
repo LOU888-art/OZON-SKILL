@@ -323,16 +323,27 @@ _DETAIL_MODULES = (
 def _listing_image_prompt(
     source: Mapping[str, Any], module_number: int, *, sku_main: bool = False
 ) -> str:
+    sku_id = None
+    sku_specification = None
+    if sku_main:
+        # The caller supplies a SKU reference image; expose only the matching
+        # structured facts so the model does not blend neighboring variants.
+        sku_id = source.get("_active_sku_id")
+        sku_specification = source.get("_active_sku_specification")
     facts = {
         "product_name": source.get("title_zh"),
         "attributes": source.get("attributes_zh"),
         "category": source.get("category_path_zh"),
+        "sku_id": sku_id,
+        "sku_specification": sku_specification,
     }
+    module = _DETAIL_MODULES[module_number - 1]
     if sku_main:
-        module = _DETAIL_MODULES[0]
-        purpose = "Это отдельное главное изображение конкретного SKU."
+        purpose = (
+            f"Это кадр {module_number} отдельной серии из 8 изображений конкретного SKU; "
+            "не смешивай цвет, аромат, количество или упаковку с другими вариантами."
+        )
     else:
-        module = _DETAIL_MODULES[module_number - 1]
         purpose = f"Это модуль {module_number} из единой серии из 8 изображений."
     return (
         "Ты — старший визуальный эксперт российского OZON, коммерческий фотограф и "
@@ -487,22 +498,32 @@ def process_image_plan(
                 "generation_model": relay.image_model,
                 "image_usage": (
                     "sku_main"
-                    if action == "sku_main"
+                    if item.get("sku_id") and module_number == 1
+                    else "sku_gallery"
+                    if item.get("sku_id")
                     else "shared_main"
                     if module_number == 1
                     else "shared_gallery"
                 ),
-                "shared_across_skus": action == "reference_8",
+                "shared_across_skus": action == "reference_8" and not item.get("sku_id"),
             }
             try:
                 validate_public_image_url(source_url)
+                prompt_source = dict(source)
+                if item.get("sku_id"):
+                    prompt_source["_active_sku_id"] = item.get("sku_id")
+                    prompt_source["_active_sku_specification"] = item.get(
+                        "specification_zh"
+                    )
                 generated_url = _generate_with_retry(
                     relay,
                     source_url,
                     str(item.get("source_role") or "") or None,
-                    source,
+                    prompt_source,
                     _listing_image_prompt(
-                        source, module_number, sku_main=action == "sku_main"
+                        prompt_source,
+                        module_number,
+                        sku_main=bool(item.get("sku_id")),
                     ),
                 )
                 validate_public_image_url(generated_url)

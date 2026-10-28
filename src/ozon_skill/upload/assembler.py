@@ -117,6 +117,9 @@ def _images(final: Mapping[str, Any], sku_id: str | None = None) -> list[str]:
         if usage == "sku_main":
             if sku_id is not None and str(item.get("sku_id")) == sku_id:
                 specific.append(url)
+        elif usage == "sku_gallery":
+            if sku_id is not None and str(item.get("sku_id")) == sku_id:
+                specific.append(url)
         elif usage == "shared_main":
             shared_main.append(url)
         elif usage == "shared_gallery":
