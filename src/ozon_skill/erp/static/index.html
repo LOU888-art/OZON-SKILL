@@ -282,7 +282,7 @@
         <div class="field-grid"><div class="field"><label for="ossBucket">Bucket</label><input id="ossBucket" placeholder="northstar-images" required></div><div class="field"><label for="ossPrefix">对象目录</label><input id="ossPrefix" value="northstar" placeholder="northstar"></div></div>
         <div class="field"><label for="ossPublicBaseUrl">公开访问或 CDN 地址</label><input id="ossPublicBaseUrl" type="url" placeholder="https://northstar-images.oss-cn-hongkong.aliyuncs.com" required><small>必须使用浏览器和 Ozon 均可直接访问、无需签名且证书可信的 HTTPS 地址。</small></div>
         <div class="field-grid"><div class="field"><label for="ossAccessKeyId">AccessKey ID</label><input id="ossAccessKeyId" autocomplete="off" required></div><div class="field"><label for="ossAccessKeySecret">AccessKey Secret</label><input id="ossAccessKeySecret" type="password" autocomplete="new-password" placeholder="已配置时留空可保持不变"></div></div>
-        <div class="warning">建议创建仅允许当前 Bucket PutObject 的 RAM 子账号；如需从资产库清理孤儿图片，再增加 DeleteObject 权限。不要使用阿里云主账号 AccessKey。Bucket 需允许对象设置为 public-read，或配置能公开回源的 CDN。</div>
+        <div class="warning">建议创建仅允许当前 Bucket PutObject 的 RAM 子账号；如需从资产库清理孤儿图片，再增加 DeleteObject 权限。不要使用阿里云主账号 AccessKey。ERP 不会修改单个对象 ACL；请将 Bucket“读写权限”设为公共读，或使用已配置公开回源的 CDN / Bucket Policy。</div>
         <div class="dialog-actions"><button id="deleteObjectStorageBtn" class="secondary" type="button">删除配置</button><button class="primary" type="submit">验证并保存</button></div>
       </form>
     </div>

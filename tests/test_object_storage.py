@@ -52,6 +52,7 @@ class ObjectStorageTests(unittest.TestCase):
         self.assertEqual(request.full_url, "https://northstar-images.oss-cn-hongkong.aliyuncs.com/northstar/item/image.png")
         self.assertTrue(request.get_header("Authorization").startswith("OSS test-access-id:"))
         self.assertNotIn("test-secret", str(request.header_items()))
+        self.assertIsNone(request.get_header("X-oss-object-acl"))
 
     def test_delete_is_signed_and_restricted_to_configured_prefix(self) -> None:
         client = AliyunOssClient(CONFIG)

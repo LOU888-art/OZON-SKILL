@@ -157,12 +157,12 @@ class AliyunOssClient:
     def put(self, key: str, data: bytes, content_type: str) -> str:
         encoded_key = quote(key.lstrip("/"), safe="/-_.~")
         date = formatdate(usegmt=True)
-        canonical_headers = "x-oss-object-acl:public-read\n"
         canonical_resource = f"/{self.bucket}/{encoded_key}"
-        string_to_sign = (
-            f"PUT\n\n{content_type}\n{date}\n"
-            f"{canonical_headers}{canonical_resource}"
-        )
+        # Do not set a per-object public ACL.  Alibaba Cloud can prohibit
+        # PutObject requests carrying x-oss-object-acl even when Bucket-level
+        # public access blocking is disabled.  Objects inherit the Bucket ACL
+        # or Bucket Policy instead; save() verifies the resulting public URL.
+        string_to_sign = f"PUT\n\n{content_type}\n{date}\n{canonical_resource}"
         signature = base64.b64encode(
             hmac.new(
                 self._access_key_secret.encode("utf-8"),
@@ -180,7 +180,6 @@ class AliyunOssClient:
                 "Date": date,
                 "Host": self._host,
                 "User-Agent": "northstar-erp-object-storage/1.0",
-                "x-oss-object-acl": "public-read",
             },
         )
         try:
