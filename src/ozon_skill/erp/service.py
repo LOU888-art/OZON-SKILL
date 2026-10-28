@@ -98,17 +98,17 @@ PLAN_CATALOG = {
     "starter": {
         "name": "启航版",
         "monthly_price_cny": 299,
-        "limits": {"products": 50, "stores": 1, "ai_images": 100, "members": 1},
+        "limits": {"products": 50, "stores": None, "ai_images": 100, "members": 1},
     },
     "growth": {
         "name": "增长版",
         "monthly_price_cny": 899,
-        "limits": {"products": 500, "stores": 3, "ai_images": 1000, "members": 5},
+        "limits": {"products": 500, "stores": None, "ai_images": 1000, "members": 5},
     },
     "business": {
         "name": "企业版",
         "monthly_price_cny": 1999,
-        "limits": {"products": 2000, "stores": 10, "ai_images": 5000, "members": 20},
+        "limits": {"products": 2000, "stores": None, "ai_images": 5000, "members": 20},
     },
 }
 _CATEGORY_SEARCH_ALIASES = {
@@ -1894,12 +1894,25 @@ class PipelineService:
             raise PipelineError(str(exc), status=404) from exc
 
     def _selected_store(
-        self, pipeline_id: str, requested_store_id: Any = None
+        self,
+        pipeline_id: str,
+        requested_store_id: Any = None,
+        *,
+        allow_rebind: bool = False,
     ) -> dict[str, Any]:
-        selected = str(requested_store_id or "").strip()
+        requested = str(requested_store_id or "").strip()
+        selected = requested
         state_path = self._state_path(pipeline_id)
+        assigned = ""
+        if pipeline_id and state_path.exists():
+            assigned = str(_read_object(state_path).get("store_id") or "").strip()
+        if assigned and requested and assigned != requested and not allow_rebind:
+            raise PipelineError(
+                "该商品流水线已锁定到另一家 Ozon 店铺；如需更换，请回到第二阶段重新选择店铺并重新映射类目",
+                status=409,
+            )
         if not selected and state_path.exists():
-            selected = str(_read_object(state_path).get("store_id") or "").strip()
+            selected = assigned
         public_stores = self.stores.list_public()
         if not selected and len(public_stores) == 1:
             selected = str(public_stores[0]["store_id"])
@@ -2114,13 +2127,19 @@ class PipelineService:
         )
         state_path = self._state_path(pipeline_id)
         state = _read_object(state_path)
+        store_changed = bool(
+            normalized.get("store_id")
+            and normalized.get("store_id") != current.get("store_id")
+        )
         if normalized.get("store_id"):
             state["store_id"] = normalized["store_id"]
-        for stage_number in (4, 5):
+        for stage_number in ((2, 3, 4, 5) if store_changed else (4, 5)):
             stage = (state.get("stages") or {}).get(str(stage_number))
             if isinstance(stage, dict):
                 stage["status"] = "STALE"
                 stage["stale_after_product_edit"] = True
+                if store_changed:
+                    stage["stale_after_store_change"] = True
                 stage["checked_at"] = _now()
         state["updated_at"] = _now()
         _atomic_json(state_path, state)
@@ -3166,7 +3185,9 @@ class PipelineService:
         if not store_id:
             raise PipelineError("请选择目标 Ozon 店铺")
         # Validate the configured store without persisting any credentials in the job.
-        selected_store = self._selected_store(pipeline_ids[0], store_id)
+        selected_store = self._selected_store(
+            pipeline_ids[0], store_id, allow_rebind=True
+        )
         confidence_threshold = value.get("confidence_threshold", 0.70)
         try:
             threshold = float(confidence_threshold)
@@ -3466,7 +3487,7 @@ class PipelineService:
             raise PipelineError("请输入至少 2 个中文或俄文类目关键词")
         if len(search) > 80:
             raise PipelineError("类目关键词不能超过 80 个字符")
-        store = self._selected_store(pipeline_id, store_id)
+        store = self._selected_store(pipeline_id, store_id, allow_rebind=True)
         client = OzonDescriptionCategoryClient(store["client_id"], store["api_key"])
         try:
             ru_candidates = flatten_category_types(client.category_tree(language="RU"))
@@ -3569,7 +3590,9 @@ class PipelineService:
     ) -> dict[str, Any]:
         pipeline_id = _safe_pipeline_id(pipeline_id)
         self._require_previous(pipeline_id, 2)
-        authorized_store = self._selected_store(pipeline_id, store_id)
+        authorized_store = self._selected_store(
+            pipeline_id, store_id, allow_rebind=True
+        )
         try:
             threshold = float(confidence_threshold)
         except (TypeError, ValueError) as exc:
