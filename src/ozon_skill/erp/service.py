@@ -4119,6 +4119,63 @@ class PipelineService:
                 store_config.get("attribute_overrides") or {},
                 authorized_store,
             )
+            # Ozon downloads product pictures from our URLs.  Temporary AI
+            # links and 1688 anti-hotlink URLs are not reliable from Ozon's
+            # network, even when they open in the operator's browser.  Mirror
+            # every selected image to the configured permanent OSS location
+            # before assembling a payload so stage 5 never creates image-less
+            # products and waits pointlessly for hosted renditions.
+            storage_client = self.object_storage.client()
+            image_rows = [
+                dict(item)
+                for item in final.get("image_processing") or []
+                if isinstance(item, Mapping)
+            ]
+            if image_rows and storage_client is None:
+                return fail_preflight(
+                    [
+                        "Ozon 上架图片必须使用稳定的 HTTPS 公网地址。请先在“图片存储”"
+                        "配置并验证阿里云 OSS/CDN，然后重新运行第三、第四阶段"
+                    ]
+                )
+            if image_rows:
+                mirrored_rows = self._mirror_generated_images(
+                    pipeline_id, image_rows
+                )
+                mirror_failures = [
+                    str(item.get("error") or "图片固化到 OSS 失败")
+                    for item in mirrored_rows
+                    if not item.get("final_public_url")
+                ]
+                if mirror_failures:
+                    return fail_preflight(mirror_failures)
+                final["image_processing"] = mirrored_rows
+                final["localized_images"] = [
+                    {
+                        key: item.get(key)
+                        for key in (
+                            "source_url",
+                            "final_public_url",
+                            "contains_chinese",
+                            "translation_status",
+                            "plan_action",
+                            "module_number",
+                            "image_usage",
+                            "sku_id",
+                            "shared_across_skus",
+                            "error",
+                            "upstream_public_url",
+                            "storage_status",
+                            "storage_object_key",
+                            "storage_sha256",
+                            "storage_size_bytes",
+                            "storage_bucket",
+                            "storage_endpoint",
+                        )
+                    }
+                    for item in mirrored_rows
+                ]
+                _atomic_json(self.path(pipeline_id, 3), final)
             effective_store_config = {
                 **dict(store_config),
                 "store_id": authorized_store["store_id"],

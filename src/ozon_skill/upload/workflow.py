@@ -602,14 +602,16 @@ def run_upload_workflow(
                 )
 
     if log_index is None:
-        duplicate = [
+        uncertain = [
             offer_id
             for offer_id in assembly.offer_ids
-            if upload_log.has_task_for_offer(store.store_id, offer_id)
+            if upload_log.has_uncertain_submission_for_offer(
+                store.store_id, offer_id
+            )
         ]
-        if duplicate:
-            entry["status"] = "SKIPPED_EXISTING_TASK"
-            entry["duplicate_offer_ids"] = duplicate
+        if uncertain:
+            entry["status"] = "SKIPPED_UNCERTAIN_SUBMISSION"
+            entry["duplicate_offer_ids"] = uncertain
             entry["history"].append({"at": _now(), "status": entry["status"]})
             upload_log.append(entry)
             return entry

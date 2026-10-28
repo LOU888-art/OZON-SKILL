@@ -48,6 +48,30 @@ class UploadLog:
             for entry in self.data["entries"]
         )
 
+    def has_uncertain_submission_for_offer(
+        self, store_id: str, offer_id: str
+    ) -> bool:
+        """Block only requests whose original submission outcome is unknown.
+
+        A known Ozon task is safe to update with the same offer_id: product
+        import is an upsert.  Treating every known task as a duplicate used to
+        make it impossible to repair images on an already-created product.
+        """
+
+        uncertain_statuses = {
+            "SUBMITTING",
+            "SUBMISSION_OUTCOME_UNKNOWN",
+            "IMPORT_RESPONSE_MISSING_TASK_ID",
+        }
+        return any(
+            isinstance(entry, dict)
+            and entry.get("store_id") == store_id
+            and offer_id in (entry.get("offer_ids") or [])
+            and entry.get("status") in uncertain_statuses
+            and not isinstance(entry.get("task_id"), int)
+            for entry in self.data["entries"]
+        )
+
     def latest_for_payload(
         self, store_id: str, payload_sha256: str
     ) -> dict[str, Any] | None:

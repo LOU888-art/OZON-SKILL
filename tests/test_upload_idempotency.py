@@ -155,9 +155,37 @@ class UploadIdempotencyTests(unittest.TestCase):
                 client=client,
             )
 
-            self.assertEqual(changed["status"], "SKIPPED_EXISTING_TASK")
+            self.assertEqual(changed["status"], "SKIPPED_UNCERTAIN_SUBMISSION")
             self.assertEqual(changed["duplicate_offer_ids"], ["QSM102401"])
             self.assertEqual(client.product_import_calls, 1)
+
+    def test_changed_payload_upserts_when_previous_task_id_is_known(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "upload.json"
+            client = _ImportClient(response={"result": {"task_id": 24680}})
+
+            first = run_upload_workflow(
+                store=_store(),
+                assembly=_assembly(),
+                upload_log=UploadLog(path),
+                execute=True,
+                client=client,
+                max_polls=1,
+                poll_interval_seconds=0,
+            )
+            changed = run_upload_workflow(
+                store=_store(),
+                assembly=_assembly(marker="images-now-on-oss"),
+                upload_log=UploadLog(path),
+                execute=True,
+                client=client,
+                max_polls=1,
+                poll_interval_seconds=0,
+            )
+
+            self.assertEqual(first["status"], "POLL_TIMEOUT")
+            self.assertEqual(changed["status"], "POLL_TIMEOUT")
+            self.assertEqual(client.product_import_calls, 2)
 
 
 if __name__ == "__main__":
