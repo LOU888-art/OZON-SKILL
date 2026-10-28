@@ -10,7 +10,7 @@ class OzonUploadClientTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = OzonUploadClient(client_id="111", api_key="secret")
 
-    def test_product_info_list_uses_v3_filter_contract(self) -> None:
+    def test_product_info_list_sends_only_one_identifier_family(self) -> None:
         with patch.object(
             OzonUploadClient, "_post", return_value={"items": []}
         ) as post:
@@ -19,17 +19,7 @@ class OzonUploadClientTests(unittest.TestCase):
         self.assertEqual(result, {"items": []})
         path, body = post.call_args.args
         self.assertEqual(path, "/v3/product/info/list")
-        self.assertEqual(
-            body["filter"],
-            {
-                "offer_id": ["QSM102801", "QSM102802"],
-                "product_id": [],
-                "visibility": "ALL",
-            },
-        )
-        self.assertEqual(body["limit"], 2)
-        self.assertEqual(body["last_id"], "")
-        self.assertNotIn("offer_id", body)
+        self.assertEqual(body, {"offer_id": ["QSM102801", "QSM102802"]})
 
     def test_product_info_list_falls_back_to_v2_for_unavailable_v3(self) -> None:
         with patch.object(
@@ -50,7 +40,7 @@ class OzonUploadClientTests(unittest.TestCase):
         self.assertEqual(fallback_path, "/v2/product/info/list")
         self.assertEqual(
             fallback_body,
-            {"offer_id": ["QSM102801"], "product_id": [], "sku": []},
+            {"offer_id": ["QSM102801"]},
         )
 
     def test_product_info_list_does_not_hide_authentication_errors(self) -> None:

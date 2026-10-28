@@ -51,23 +51,15 @@ class OzonUploadClient:
         return self._post(self.UNARCHIVE_PATH, {"product_id": product_ids})
 
     def product_info_list(self, offer_ids: list[str]) -> dict[str, Any]:
-        # V3 no longer accepts the flat V2 request shape. Sending the old
-        # body to the V3 route can reach Ozon's gateway but fail in its
-        # internal ItemFront service with HTTP 501 / `unknown service`.
-        # Prefer the supported V3 filter contract and retain a narrow V2
-        # fallback while stores are migrated between Ozon API versions.
+        # Ozon's current gateway requires exactly one identifier family.
+        # Supplying empty `product_id`/`sku` fields alongside `offer_id`, or
+        # wrapping the identifiers in the attributes endpoint's `filter`
+        # shape, is rejected with code 3: "use either offer_id or product_id
+        # or sku". Keep this request deliberately minimal.
         try:
             return self._post(
                 self.INFO_LIST_PATH,
-                {
-                    "filter": {
-                        "offer_id": offer_ids,
-                        "product_id": [],
-                        "visibility": "ALL",
-                    },
-                    "last_id": "",
-                    "limit": min(1000, max(1, len(offer_ids))),
-                },
+                {"offer_id": offer_ids},
             )
         except OzonUploadApiError as exc:
             detail = str(exc).lower()
@@ -82,7 +74,7 @@ class OzonUploadClient:
             try:
                 return self._post(
                     self.INFO_LIST_FALLBACK_PATH,
-                    {"offer_id": offer_ids, "product_id": [], "sku": []},
+                    {"offer_id": offer_ids},
                 )
             except OzonUploadApiError as fallback_exc:
                 raise OzonUploadApiError(
