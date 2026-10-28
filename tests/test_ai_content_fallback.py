@@ -146,6 +146,89 @@ class AiContentFallbackTests(unittest.TestCase):
         )
         self.assertEqual(len(result.payload["items"][0]["images"]), 8)
 
+    def test_payload_uses_one_sku_main_and_seven_shared_ai_images(self) -> None:
+        shared_gallery = [
+            {
+                "final_public_url": f"https://cdn.example.com/shared-{index}.jpg",
+                "image_usage": "shared_gallery",
+                "generation_provider": "AI_RELAY",
+                "translation_status": "AI_GENERATED",
+            }
+            for index in range(2, 9)
+        ]
+        sku_mains = [
+            {
+                "final_public_url": f"https://cdn.example.com/{sku_id}-main.jpg",
+                "image_usage": "sku_main",
+                "sku_id": sku_id,
+                "generation_provider": "AI_RELAY",
+                "translation_status": "AI_GENERATED",
+            }
+            for sku_id in ("sku-1", "sku-2")
+        ]
+        result = assemble_import_payload(
+            {
+                "source_offer_id": "1688-1",
+                "title_ru": "Ароматическая подвеска для шкафа и комнаты",
+                "sku_titles_ru": {
+                    "sku-1": "Ароматическая подвеска с ароматом розы для шкафа",
+                    "sku-2": "Ароматическая подвеска с ароматом лаванды для шкафа",
+                },
+                "ozon_type_id": 3,
+                "ozon_category_id": 2,
+                "listing_readiness": "READY_FOR_PAYLOAD_ASSEMBLY",
+                "rich_content_json": None,
+                "ozon_attributes": [],
+                "image_processing": [
+                    {
+                        "final_public_url": "https://cdn.example.com/shared-main.jpg",
+                        "image_usage": "shared_main",
+                        "generation_provider": "AI_RELAY",
+                        "translation_status": "AI_GENERATED",
+                    },
+                    *shared_gallery,
+                    *sku_mains,
+                    {
+                        "final_public_url": "https://1688.example.com/original.jpg",
+                        "image_usage": "shared_gallery",
+                        "generation_provider": "SOURCE_1688",
+                        "translation_status": "ORIGINAL",
+                    },
+                ],
+            },
+            {
+                "sku_list": [
+                    {
+                        "sku_id": sku_id,
+                        "purchase_price_cny": "10",
+                        "sale_price_cny": "20",
+                    }
+                    for sku_id in ("sku-1", "sku-2")
+                ]
+            },
+            StoreConfig(
+                store_id="store",
+                credential_prefix="STORE",
+                cny_to_rub_rate=Decimal("12"),
+                dimension_defaults=DimensionDefaults(100, 100, 100, 100),
+            ),
+        )
+
+        self.assertEqual(result.validation_errors, [])
+        self.assertEqual(len(result.payload["items"]), 2)
+        for item, sku_id in zip(result.payload["items"], ("sku-1", "sku-2")):
+            self.assertEqual(len(item["images"]), 8)
+            self.assertEqual(
+                item["primary_image"],
+                f"https://cdn.example.com/{sku_id}-main.jpg",
+            )
+            self.assertNotIn(
+                "https://cdn.example.com/shared-main.jpg", item["images"]
+            )
+            self.assertNotIn(
+                "https://1688.example.com/original.jpg", item["images"]
+            )
+
     def test_payload_rejects_original_or_translation_only_images(self) -> None:
         result = assemble_import_payload(
             {

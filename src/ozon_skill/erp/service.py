@@ -90,7 +90,7 @@ IMAGE_SELECTION_FILE = "image-selection.json"
 PRODUCT_SETTINGS_FILE = "product-settings.json"
 PRODUCT_VERSIONS_FILE = "product-versions.json"
 IMAGE_ACTIONS = {"exclude", "translate", "reference_8", "sku_main"}
-AI_GALLERY_POLICY_VERSION = "ozon-ai-gallery-8-v3-per-sku"
+AI_GALLERY_POLICY_VERSION = "ozon-ai-gallery-8-v4-hybrid-sku"
 _PIPELINE_ID = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 _BATCH_JOB_ID = re.compile(r"^[a-f0-9]{32}$")
 _MAX_BATCH_IMPORT_ITEMS = 100
@@ -3737,28 +3737,30 @@ class PipelineService:
                     per_sku_gallery = bool(raw_sku_ids) and all(
                         sku_id in sku_references for sku_id in raw_sku_ids
                     )
+                    reference = next(
+                        (
+                            item
+                            for item in selected_items
+                            if str(item.get("action")) == "reference_8"
+                        ),
+                        selected_items[0],
+                    )
+                    planned_items = [
+                        {
+                            **reference,
+                            "sku_id": None,
+                            "specification_zh": None,
+                            "action": "reference_8",
+                        }
+                    ]
                     if per_sku_gallery:
-                        planned_items = [
-                            {**sku_references[sku_id], "action": "reference_8"}
-                            for sku_id in dict.fromkeys(raw_sku_ids)
-                        ]
-                    else:
-                        reference = next(
-                            (
-                                item
-                                for item in selected_items
-                                if str(item.get("action")) == "reference_8"
-                            ),
-                            selected_items[0],
-                        )
-                        planned_items = [
+                        planned_items.extend(
                             {
-                                **reference,
-                                "sku_id": None,
-                                "specification_zh": None,
-                                "action": "reference_8",
+                                **sku_references[sku_id],
+                                "action": "sku_main",
                             }
-                        ]
+                            for sku_id in dict.fromkeys(raw_sku_ids)
+                        )
                     plan_sha256 = hashlib.sha256(
                         json.dumps(
                             {
@@ -3916,15 +3918,33 @@ class PipelineService:
                     shared_ai_urls.append(url)
                 else:
                     ai_urls_by_sku.setdefault(str(sku_id), []).append(url)
+            shared_gallery_urls = [
+                str(item["final_public_url"])
+                for item in inspection
+                if isinstance(item, Mapping)
+                and item.get("generation_provider") == "AI_RELAY"
+                and item.get("translation_status") == "AI_GENERATED"
+                and item.get("image_usage") == "shared_gallery"
+                and item.get("final_public_url")
+            ]
             sku_counts = {
-                sku_id: len(set(ai_urls_by_sku.get(sku_id) or shared_ai_urls))
+                sku_id: len(
+                    set(
+                        (
+                            (ai_urls_by_sku.get(sku_id) or [])
+                            + shared_gallery_urls
+                        )
+                        if per_sku_gallery
+                        else shared_ai_urls
+                    )
+                )
                 for sku_id in dict.fromkeys(raw_sku_ids)
             }
             if not sku_counts:
                 sku_counts = {"default": len(set(shared_ai_urls))}
             final["ai_gallery_validation"] = {
                 "policy_version": AI_GALLERY_POLICY_VERSION,
-                "mode": "PER_SKU" if per_sku_gallery else "SHARED_FACT_SAFE",
+                "mode": "SKU_MAIN_PLUS_SHARED_7" if per_sku_gallery else "SHARED_FACT_SAFE",
                 "sku_image_counts": sku_counts,
                 "all_skus_have_8": bool(sku_counts)
                 and all(count == 8 for count in sku_counts.values()),
