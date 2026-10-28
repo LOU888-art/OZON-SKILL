@@ -31,7 +31,7 @@ class ResearchPluginDownloadTests(unittest.TestCase):
                 "northstar-1688-collector/main-probe.js", archive.namelist()
             )
         self.assertIn('"manifest_version": 3', manifest)
-        self.assertIn('"version": "0.2.0"', manifest)
+        self.assertIn('"version": "0.2.1"', manifest)
         self.assertIn('"https://*.1688.com/*"', manifest)
 
     def test_archive_contains_only_installable_extension_files(self) -> None:

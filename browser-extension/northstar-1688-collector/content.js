@@ -307,10 +307,99 @@ function visibleSkuOptionCount() {
   return values.size;
 }
 
+function visibleSkuElements() {
+  const selector = "[class*='sku'] [class*='item'],[class*='sku'] button,[class*='spec'] [class*='item'],[class*='prop'] [class*='item']";
+  const raw = [...document.querySelectorAll(selector)].filter(element => {
+    const text = cleanText(element.getAttribute("title") || element.getAttribute("aria-label") || element);
+    const rect = element.getBoundingClientRect();
+    return text && text.length <= 60 && !/^(?:\+|-|−|立即下单|加采购车|跨境铺货|立即询价)$/.test(text) && rect.width > 0 && rect.height > 0 && !element.matches(":disabled,[aria-disabled='true']");
+  });
+  return raw.filter(element => !raw.some(other => other !== element && element.contains(other)));
+}
+
+function domSkuGroups() {
+  const elements = visibleSkuElements();
+  const groups = new Map();
+  for (const element of elements) {
+    let container = element.parentElement;
+    for (let level = 0; container && level < 5; level += 1, container = container.parentElement) {
+      const contained = elements.filter(item => container.contains(item));
+      if (contained.length >= 2) {
+        if (!groups.has(container)) groups.set(container, contained);
+        break;
+      }
+    }
+  }
+  const unique = [];
+  for (const [container, items] of groups.entries()) {
+    const labels = [...new Set(items.map(item => cleanText(item.getAttribute("title") || item.getAttribute("aria-label") || item)).filter(Boolean))];
+    if (labels.length < 2) continue;
+    if (unique.some(group => group.labels.length === labels.length && group.labels.every(label => labels.includes(label)))) continue;
+    let name = cleanText(container.previousElementSibling);
+    if (!name || name.length > 30) {
+      const parentChildren = [...(container.parentElement?.children || [])];
+      const index = parentChildren.indexOf(container);
+      name = index > 0 ? cleanText(parentChildren[index - 1]) : "";
+    }
+    unique.push({ name: name && name.length <= 30 ? name : `规格${unique.length + 1}`, labels });
+  }
+  return unique.slice(0, 4);
+}
+
+function cartesian(groups, limit = 80) {
+  let result = [[]];
+  for (const group of groups) {
+    result = result.flatMap(combination => group.labels.map(label => [...combination, { name: group.name, value: label }])).slice(0, limit);
+  }
+  return result;
+}
+
+function stableSkuId(parts) {
+  const text = parts.map(item => `${item.name}:${item.value}`).join("|");
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) { hash ^= text.charCodeAt(index); hash = Math.imul(hash, 16777619); }
+  return `${offerId()}-dom-${(hash >>> 0).toString(16)}`;
+}
+
+function currentPriceAndStock() {
+  const body = cleanText(document.body?.innerText);
+  const direct = [...body.matchAll(/[¥￥]\s*(\d+(?:\.\d+)?)\s*库存\s*(\d+)/g)];
+  if (direct.length) return { price: Number(direct[0][1]), stock: Number(direct[0][2]) };
+  const stockMatch = body.match(/库存\s*(\d+)/);
+  const selectedArea = [...document.querySelectorAll("[class*='sku'],[class*='trade'],[class*='order']")].map(cleanText).find(text => /[¥￥]\s*\d/.test(text) && /库存/.test(text));
+  const priceMatch = selectedArea?.match(/[¥￥]\s*(\d+(?:\.\d+)?)/);
+  return { price: priceMatch ? Number(priceMatch[1]) : null, stock: stockMatch ? Number(stockMatch[1]) : null };
+}
+
+async function collectDomSkus(mainImage) {
+  const groups = domSkuGroups();
+  if (!groups.length) return [];
+  const combinations = cartesian(groups);
+  const result = [];
+  const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+  for (const combination of combinations) {
+    let valid = true;
+    let image = "";
+    for (const part of combination) {
+      const element = visibleSkuElements().find(candidate => cleanText(candidate.getAttribute("title") || candidate.getAttribute("aria-label") || candidate) === part.value);
+      if (!element) { valid = false; break; }
+      element.click();
+      image = image || absoluteUrl(element.querySelector("img")?.currentSrc || element.querySelector("img")?.src);
+      await delay(180);
+    }
+    if (!valid) continue;
+    const current = currentPriceAndStock();
+    if (current.price === null || current.price <= 0) continue;
+    result.push({ sku_id: stableSkuId(combination), specification_zh: combination, specification_text_zh: combination.map(item => `${item.name}:${item.value}`).join("; "), purchase_price_cny: current.price, stock: current.stock, image_url: image || mainImage || null });
+  }
+  return result;
+}
+
 async function scan() {
   const mainData = await requestMainCandidates(); const scriptRoots = parsedJsonRoots(); const roots = [...mainData.candidates, ...scriptRoots];
   if (!roots.length) throw new Error("没有捕获到1688商品接口数据。请刷新当前详情页，等待价格和规格显示后重新采集");
   const axisValues = collectAxisValues(roots); let skuList = collectStructuredSkus(roots, axisValues); const images = collectImages(roots); const shipping = collectShipping(roots); const priceRanges = collectPriceRanges(roots); const warnings = []; const visibleOptions = visibleSkuOptionCount();
+  if (!skuList.length && visibleOptions > 1) { skuList = await collectDomSkus(images.main[0]?.url); if (skuList.length) warnings.push("完整SKU由页面规格逐项校验生成"); }
   if (!skuList.length && visibleOptions <= 1) { const priceText = cleanText(document.querySelector("[class*='price']")); skuList = [{ sku_id: `${offerId()}-default`, specification_zh: [], specification_text_zh: "默认规格", purchase_price_cny: priceRanges[0]?.price_cny ?? numberValue(priceText), stock: null, image_url: images.main[0]?.url || null }]; }
   if (!skuList.length || (skuList.length === 1 && visibleOptions > 1)) throw new Error(`页面显示多个规格，但只读取到 ${skuList.length} 个SKU。请刷新详情页，等待规格和价格加载完成后重新采集`);
   const missingPrices = skuList.filter(sku => sku.purchase_price_cny === null).length;
@@ -320,7 +409,7 @@ async function scan() {
   const attributes = collectAttributes(roots); let categoryId = ""; let supplierName = "";
   walk(roots, object => { if (!categoryId) { const value = cleanText(firstValue(object, ["thirdCategoryId", "categoryId", "categoryID", "leafCategoryId"])); if (/^\d+$/.test(value)) categoryId = value; } if (!supplierName) supplierName = cleanText(firstValue(object, ["companyName", "supplierName", "shopName"])); });
   const breadcrumbs = [...document.querySelectorAll("[class*='breadcrumb'] a,[class*='crumb'] a")].map(cleanText).filter(Boolean).slice(0, 20);
-  return { source_offer_id: offerId(), product_url: location.href, title_zh: title, images: images.main, detail_images: images.detail, sku_list: skuList, price_ranges: priceRanges, attributes_zh: attributes, category_id: categoryId, category_path_zh: breadcrumbs, supplier_info: { name: supplierName || null, min_order: priceRanges.find(item => item.minimum_quantity !== null)?.minimum_quantity ?? null, ship_from: shipping.ship_from_zh }, shipping_info: shipping, capture_diagnostics: { collector_version: "0.2.0", main_candidate_count: mainData.candidates.length, intercepted_response_count: mainData.response_urls.length, visible_sku_option_count: visibleOptions, warnings }, captured_at: new Date().toISOString() };
+  return { source_offer_id: offerId(), product_url: location.href, title_zh: title, images: images.main, detail_images: images.detail, sku_list: skuList, price_ranges: priceRanges, attributes_zh: attributes, category_id: categoryId, category_path_zh: breadcrumbs, supplier_info: { name: supplierName || null, min_order: priceRanges.find(item => item.minimum_quantity !== null)?.minimum_quantity ?? null, ship_from: shipping.ship_from_zh }, shipping_info: shipping, capture_diagnostics: { collector_version: "0.2.1", main_candidate_count: mainData.candidates.length, intercepted_response_count: mainData.response_urls.length, visible_sku_option_count: visibleOptions, warnings }, captured_at: new Date().toISOString() };
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

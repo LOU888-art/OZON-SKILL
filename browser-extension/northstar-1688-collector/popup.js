@@ -77,7 +77,7 @@ async function scan() {
     const response = await scanPage(tab.id);
     if (!response?.ok) throw new Error(response?.error || "页面采集失败");
     captured = response.product;
-    if (captured?.capture_diagnostics?.collector_version !== "0.2.0") throw new Error("插件已更新，请先刷新当前1688商品页，再重新读取");
+    if (captured?.capture_diagnostics?.collector_version !== "0.2.1") throw new Error("插件已更新，请先刷新当前1688商品页，再重新读取");
     if (!captured?.source_offer_id) throw new Error("没有识别到商品ID，请打开 detail.1688.com 的商品详情页");
     render();
     setStatus("采集完成。请核对SKU数量、价格和运费，取消不想上架的SKU后再发送。", "success");
@@ -100,7 +100,7 @@ async function send() {
     if (!selected.length) throw new Error("至少保留一个SKU");
     const product = { ...captured, sku_list: selected };
     setStatus("正在发送完整商品数据到ERP第一阶段…");
-    const result = await erpCall(origin, "/api/collector/1688", { method: "POST", body: JSON.stringify({ collector_version: "0.2.0", product }) });
+    const result = await erpCall(origin, "/api/collector/1688", { method: "POST", body: JSON.stringify({ collector_version: "0.2.1", product }) });
     setStatus(`采集成功：商品 ${result.pipeline_id}，${result.sku_count} 个SKU、${result.image_count} 张主图，运费信息已保存。`, "success");
   } catch (error) {
     setStatus(error.message || String(error), "error");
