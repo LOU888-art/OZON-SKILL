@@ -542,7 +542,12 @@ def run_upload_workflow(
     final_details: list[dict[str, Any]] = []
     if previous:
         previous_status = str(previous.get("status") or "")
-        if previous_status in {"FAILED", "VERIFIED"}:
+        previous_rich_content_deferred = bool(
+            previous.get("rich_content_deferred")
+        )
+        if previous_status == "FAILED" or (
+            previous_status == "VERIFIED" and not previous_rich_content_deferred
+        ):
             previous["reused_existing_result"] = True
             return previous
         if previous_status in {
@@ -581,7 +586,10 @@ def run_upload_workflow(
                     "RICH_CONTENT_IMAGES_PENDING",
                     "RICH_CONTENT_IMAGES_MISSING",
                     "RICH_CONTENT_UPDATE_ERROR",
-                }
+                } or (
+                    previous_status == "VERIFIED"
+                    and previous_rich_content_deferred
+                )
                 final_details = list(entry.get("import_items") or [])
                 entry.setdefault("history", []).append(
                     {
@@ -801,9 +809,10 @@ def run_upload_workflow(
         product_ids_by_offer = _product_ids_by_offer(info_response, final_details)
         source_images_by_offer = _source_images_by_offer(assembly.payload)
         picture_api_is_v2 = entry.get("picture_import_api_version") == "v2-full"
-        picture_import_attempted = bool(
-            entry.get("picture_import_requested") and picture_api_is_v2
-        )
+        # Re-submitting pictures is idempotent and is safe on a later stage-5
+        # retry.  A previous Ozon image task may have timed out even though the
+        # product card itself was successfully created.
+        picture_import_attempted = False
         fallback_import_attempted = bool(
             entry.get("picture_fallback_import_requested") and picture_api_is_v2
         )
@@ -864,7 +873,12 @@ def run_upload_workflow(
                 and hasattr(client, "product_pictures_import")
             ):
                 picture_import_attempted = True
+                ready_offer_ids = {
+                    str(item.get("offer_id") or "") for item in rich_updates
+                }
                 for offer_id in product_ids_by_offer:
+                    if offer_id in ready_offer_ids:
+                        continue
                     source_images = source_images_by_offer.get(offer_id) or []
                     if not source_images:
                         picture_import_errors.append(
@@ -1035,26 +1049,33 @@ def run_upload_workflow(
                     separators=(",", ":"),
                 )
                 error += f"；图片任务诊断：{task_text[:1800]}"
-            hard_picture_failure = bool(
-                picture_import_errors
-                or fallback_import_errors
-                or failed_picture_tasks
-            )
-            if hard_picture_failure:
+            if rich_updates:
+                try:
+                    partial_rich_response = client.attributes_update(rich_updates)
+                except Exception as exc:
+                    error += f"；已就绪富内容写入失败：{str(exc)[:800]}"
+                else:
+                    entry["history"].append(
+                        {
+                            "at": _now(),
+                            "status": "RICH_CONTENT_PARTIALLY_UPDATED",
+                            "offer_count": len(rich_updates),
+                        }
+                    )
+                    upload_log.update(
+                        log_index,
+                        rich_content_update=partial_rich_response,
+                        rich_content_offer_count=len(rich_updates),
+                        history=entry["history"],
+                    )
+            if picture_import_errors or fallback_import_errors or failed_picture_tasks:
                 entry["history"].append(
                     {
                         "at": _now(),
-                        "status": "RICH_CONTENT_IMAGES_MISSING",
-                        "error": error[:1200],
+                        "status": "RICH_CONTENT_IMAGE_WARNING",
+                        "warning": error[:1600],
                     }
                 )
-                upload_log.update(
-                    log_index,
-                    status="RICH_CONTENT_IMAGES_MISSING",
-                    error=error[:1200],
-                    history=entry["history"],
-                )
-                return upload_log.data["entries"][log_index]
             # The product import is already committed. Ozon can take much
             # longer to expose CDN renditions than it takes to publish the
             # card. Rich Content is optional and the Russian description is
@@ -1076,6 +1097,7 @@ def run_upload_workflow(
                 log_index,
                 status="RICH_CONTENT_DEFERRED",
                 error=None,
+                rich_content_deferred=True,
                 post_publish_warnings=[warning],
                 history=entry["history"],
             )
@@ -1108,6 +1130,8 @@ def run_upload_workflow(
                 log_index,
                 rich_content_update=rich_response,
                 rich_content_offer_count=len(rich_updates),
+                rich_content_deferred=False,
+                post_publish_warnings=[],
                 history=entry["history"],
             )
 
