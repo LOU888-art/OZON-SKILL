@@ -24,6 +24,52 @@ def _write(path: Path, value: dict) -> None:
 
 
 class StoreSelectionTests(unittest.TestCase):
+    def test_sku_can_be_excluded_restored_and_last_sku_is_protected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _write(
+                root / "product-1" / "pipeline.json",
+                {
+                    "pipeline_id": "product-1",
+                    "stages": {
+                        str(number): {"status": "PASS", "failures": []}
+                        for number in range(1, 6)
+                    },
+                },
+            )
+            _write(
+                root / "product-1" / "01_raw.json",
+                {
+                    "source_offer_id": "product-1",
+                    "sku_list": [{"sku_id": "a"}, {"sku_id": "b"}],
+                },
+            )
+            service = PipelineService(root)
+
+            removed = service.set_sku_excluded(
+                "product-1", "a", excluded=True, actor="owner"
+            )
+            state = json.loads(
+                (root / "product-1" / "pipeline.json").read_text(encoding="utf-8")
+            )
+
+            self.assertEqual(removed["active_sku_ids"], ["b"])
+            self.assertEqual(removed["excluded_sku_ids"], ["a"])
+            self.assertEqual(state["stages"]["2"]["status"], "PASS")
+            self.assertEqual(state["stages"]["3"]["status"], "PASS")
+            self.assertEqual(state["stages"]["4"]["status"], "STALE")
+            self.assertEqual(state["stages"]["5"]["status"], "STALE")
+            with self.assertRaisesRegex(PipelineError, "至少必须保留一个"):
+                service.set_sku_excluded(
+                    "product-1", "b", excluded=True, actor="owner"
+                )
+
+            restored = service.set_sku_excluded(
+                "product-1", "a", excluded=False, actor="owner"
+            )
+            self.assertEqual(restored["excluded_sku_ids"], [])
+            self.assertEqual(restored["active_sku_ids"], ["a", "b"])
+
     def test_store_authorization_is_unlimited_for_every_plan(self) -> None:
         self.assertTrue(
             all(plan["limits"]["stores"] is None for plan in PLAN_CATALOG.values())

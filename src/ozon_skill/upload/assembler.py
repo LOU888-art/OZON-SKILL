@@ -616,7 +616,9 @@ def assemble_import_payload(
                 errors.append(f"SKU {sku_id or 'default'} has no valid CNY sale price")
                 price = Decimal("0")
             else:
-                price = sale_cny * store.cny_to_rub_rate
+                # The requested Ozon listing price is twice the actual sale
+                # price after conversion to the selected store currency.
+                price = sale_cny * store.cny_to_rub_rate * Decimal("2")
         item = {
             "offer_id": offer_id,
             "name": item_title,

@@ -329,7 +329,7 @@
         <div class="field-grid"><div class="field"><label for="batchProcessStore">目标 Ozon 店铺</label><select id="batchProcessStore" required></select></div><div class="field"><label for="batchTargetStage">运行到</label><select id="batchTargetStage"><option value="2">第 2 阶段 · 类目映射</option><option value="3">第 3 阶段 · 俄语与图片</option><option value="4" selected>第 4 阶段 · Payload 组装</option></select></div></div>
         <div class="field"><label for="batchConfidence">类目自动匹配置信度</label><input id="batchConfidence" type="number" min="0" max="1" step="0.01" value="0.70" required><small>自动类目映射失败的商品会单独停在第二阶段，之后可人工修复。</small></div>
         <div id="batchStage3Fields" class="field-grid"><div class="field"><label for="batchMediaMode">图片处理方式</label><select id="batchMediaMode"><option value="image_plan" selected>生成 1+7 共 8 张独立 AI 商品图</option></select></div><div class="field"><label for="batchTextMode">俄语文本方式</label><select id="batchTextMode"><option value="ai_generate" selected>新版 OZON 运营文案与 SKU 标题</option></select></div></div>
-        <div id="batchStage4Fields"><div class="field-grid"><div class="field"><label for="batchRate">CNY → RUB 汇率</label><input id="batchRate" type="number" min="0.01" step="0.01" value="12.50"></div><div class="field"><label for="batchDims">默认尺寸：深 / 宽 / 高 / 重量(g)</label><input id="batchDims" value="80 / 80 / 200 / 350"></div></div><div class="warning">第四阶段使用各 SKU 已采集的真实采购价和店铺利润参数。缺少采购价或必填属性的商品会门禁失败，不会填入虚假值。</div></div>
+      <div id="batchStage4Fields"><div class="field-grid"><div class="field"><label for="batchRate">CNY → RUB 汇率</label><input id="batchRate" type="number" min="0.01" step="0.01" value="12.50"></div><div class="field"><label for="batchDims">默认尺寸：深 / 宽 / 高 / 重量(g)</label><input id="batchDims" value="80 / 80 / 200 / 350"></div></div><div class="warning">第四阶段使用保留 SKU 的真实采购价和店铺利润参数计算实际售价，提交到 Ozon 的上架价格为实际售价的 2 倍。缺少采购价或必填属性的商品会门禁失败，不会填入虚假值。</div></div>
         <label class="batch-confirm"><input id="batchProcessConfirm" type="checkbox" required> 我确认系统可以逐件调用 AlphaShop、AI 和 Ozon 只读接口；第三阶段可能产生翻译或 AI 生图费用。</label>
         <div id="batchProcessProgress" class="batch-import-progress hidden"></div>
         <div id="batchProcessResults" class="batch-import-results"></div>
@@ -470,6 +470,16 @@
       <div class="image-toolbar"><strong id="imageSelectionCount">正在读取…</strong><button id="selectMainImagesBtn" type="button" class="ghost">第一张主图生成八图</button></div>
       <div id="imageGallery" class="image-gallery"></div>
       <div class="dialog-actions"><button id="cancelImagesBtn" type="button" class="ghost">取消</button><button id="saveImagesBtn" type="button" class="primary">保存图片清单</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="skuDialog" class="images-dialog-shell">
+    <div class="dialog-card sku-dialog">
+      <div class="dialog-head"><div><span class="eyebrow">SKU SELECTION</span><h3>管理采集 SKU</h3></div><button id="closeSkuBtn" class="close" type="button">×</button></div>
+      <p class="dialog-note">删除表示从当前 ERP 上架任务中排除，不会修改 1688 原始采集证据，也不会自动删除 Ozon 中已经发布的商品。至少保留一个 SKU。</p>
+      <div id="skuManagerSummary" class="image-toolbar"><strong>正在读取…</strong></div>
+      <div id="skuManagerList" class="sku-manager-list"></div>
+      <div class="dialog-actions"><button id="doneSkuBtn" type="button" class="primary">完成</button></div>
     </div>
   </dialog>
 

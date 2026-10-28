@@ -246,6 +246,22 @@ def _image_items(source: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return result
 
 
+def _active_sku_source(
+    source: Mapping[str, Any], excluded_sku_ids: Sequence[Any]
+) -> dict[str, Any]:
+    """Return a stage input containing only operator-approved SKUs."""
+
+    excluded = {str(value) for value in excluded_sku_ids if value is not None}
+    result = deepcopy(dict(source))
+    result["sku_list"] = [
+        deepcopy(item)
+        for item in source.get("sku_list") or []
+        if isinstance(item, Mapping)
+        and str(item.get("sku_id")) not in excluded
+    ]
+    return result
+
+
 def gate_stage_1(value: Mapping[str, Any]) -> list[str]:
     failures: list[str] = []
     if not value.get("source_offer_id"):
@@ -1985,10 +2001,21 @@ class PipelineService:
         dimensions = value.get("dimension_defaults") or {}
         if not isinstance(dimensions, Mapping):
             dimensions = {}
+        raw_excluded_skus = value.get("excluded_sku_ids") or []
+        if not isinstance(raw_excluded_skus, list):
+            raw_excluded_skus = []
+        excluded_sku_ids = list(
+            dict.fromkeys(
+                str(item).strip()
+                for item in raw_excluded_skus
+                if str(item).strip()
+            )
+        )[:1000]
         return {
             "store_id": str(value.get("store_id") or ""),
             "cny_to_rub_rate": str(value.get("cny_to_rub_rate") or ""),
             "vat": str(value.get("vat") or "0"),
+            "excluded_sku_ids": excluded_sku_ids,
             "dimension_defaults": {
                 "depth": dimensions.get("depth"),
                 "width": dimensions.get("width"),
@@ -1998,6 +2025,56 @@ class PipelineService:
                 "weight_unit": str(dimensions.get("weight_unit") or "g"),
             },
         }
+
+    def set_sku_excluded(
+        self,
+        pipeline_id: Any,
+        sku_id: Any,
+        *,
+        excluded: bool,
+        actor: str = "",
+    ) -> dict[str, Any]:
+        pipeline_id = _safe_pipeline_id(pipeline_id)
+        normalized_sku_id = str(sku_id or "").strip()
+        if not normalized_sku_id:
+            raise PipelineError("SKU ID 不能为空")
+        with self._lock:
+            raw = self.read_artifact(pipeline_id, 1)
+            sku_ids = [
+                str(item.get("sku_id"))
+                for item in raw.get("sku_list") or []
+                if isinstance(item, Mapping) and item.get("sku_id") is not None
+            ]
+            if normalized_sku_id not in sku_ids:
+                raise PipelineError("采集结果中不存在该 SKU", status=404)
+            current = self.product_settings(pipeline_id)
+            selected = set(map(str, current.get("excluded_sku_ids") or []))
+            if excluded:
+                selected.add(normalized_sku_id)
+            else:
+                selected.discard(normalized_sku_id)
+            active_sku_ids = [item for item in sku_ids if item not in selected]
+            if not active_sku_ids:
+                raise PipelineError("至少必须保留一个可上架 SKU")
+            outcome = self._apply_product_settings(
+                pipeline_id,
+                {**current, "excluded_sku_ids": sorted(selected)},
+                actor=actor,
+                note=(
+                    f"排除 SKU {normalized_sku_id}"
+                    if excluded
+                    else f"恢复 SKU {normalized_sku_id}"
+                ),
+                source="SKU_SELECTION",
+            )
+            return {
+                "pipeline_id": pipeline_id,
+                "sku_id": normalized_sku_id,
+                "excluded": excluded,
+                "active_sku_ids": active_sku_ids,
+                "excluded_sku_ids": sorted(selected),
+                "settings": outcome["settings"],
+            }
 
     def product_settings(self, pipeline_id: Any) -> dict[str, Any]:
         pipeline_id = _safe_pipeline_id(pipeline_id)
@@ -2292,7 +2369,10 @@ class PipelineService:
 
     def list_images(self, pipeline_id: Any) -> dict[str, Any]:
         pipeline_id = _safe_pipeline_id(pipeline_id)
-        raw = self.read_artifact(pipeline_id, 1)
+        raw = _active_sku_source(
+            self.read_artifact(pipeline_id, 1),
+            self.product_settings(pipeline_id).get("excluded_sku_ids") or [],
+        )
         items = _image_items(raw)
         selected_items = self._selected_image_items(pipeline_id, raw)
         actions = {
@@ -2340,7 +2420,10 @@ class PipelineService:
             running = self._background_jobs.get((pipeline_id, 3))
             if running is not None and running.is_alive():
                 raise PipelineError("阶段 3 正在处理图片，完成后才能修改清单", status=409)
-            raw = self.read_artifact(pipeline_id, 1)
+            raw = _active_sku_source(
+                self.read_artifact(pipeline_id, 1),
+                self.product_settings(pipeline_id).get("excluded_sku_ids") or [],
+            )
             items = _image_items(raw)
             by_url = {str(item.get("url")): item for item in items}
             requested: dict[str, str] = {}
@@ -2583,9 +2666,13 @@ class PipelineService:
                 for item in payload.get("items") or []
                 if isinstance(item, Mapping)
             ]
+            active_raw = _active_sku_source(
+                raw,
+                self.product_settings(pipeline_id).get("excluded_sku_ids") or [],
+            )
             sku_rows = [
                 item
-                for item in raw.get("sku_list") or []
+                for item in active_raw.get("sku_list") or []
                 if isinstance(item, Mapping)
             ]
             sku_count = len(sku_rows) or len(payload_items)
@@ -3630,7 +3717,10 @@ class PipelineService:
         else:
             preferred_pair = None
         with self._lock:
-            raw = self.read_artifact(pipeline_id, 1)
+            raw = _active_sku_source(
+                self.read_artifact(pipeline_id, 1),
+                self.product_settings(pipeline_id).get("excluded_sku_ids") or [],
+            )
             source_category_id = raw.get("category_id")
             category_exchange = None
             if preferred_pair is None:
@@ -3716,7 +3806,10 @@ class PipelineService:
         if text_mode not in {"built_in", "ai_generate"}:
             raise PipelineError("文本模式必须是内置规则或 AI 生成")
         with self._lock:
-            raw = self.read_artifact(pipeline_id, 1)
+            raw = _active_sku_source(
+                self.read_artifact(pipeline_id, 1),
+                self.product_settings(pipeline_id).get("excluded_sku_ids") or [],
+            )
             mapped = self.read_artifact(pipeline_id, 2)
             progress_path = self.directory(pipeline_id) / "03_media_progress.json"
             try:
@@ -4076,7 +4169,10 @@ class PipelineService:
         authorized_store = self._selected_store(pipeline_id, store_config.get("store_id"))
         ozon_currency = str(authorized_store["currency_code"]).strip().upper()
         with self._lock:
-            raw = deepcopy(self.read_artifact(pipeline_id, 1))
+            raw = _active_sku_source(
+                self.read_artifact(pipeline_id, 1),
+                self.product_settings(pipeline_id).get("excluded_sku_ids") or [],
+            )
             input_failures: list[str] = []
 
             def fail_preflight(failures: list[str]) -> dict[str, Any]:
@@ -4375,6 +4471,7 @@ class PipelineService:
                 "attribute_override_provenance": override_provenance,
                 "sku_price_override_provenance": price_override_provenance,
                 "target_pricing_provenance": pricing_provenance,
+                "ozon_listing_price_multiplier": "2",
                 "finance_settings": pricing_settings,
             })
             self._record(pipeline_id, 4, not failures, failures)

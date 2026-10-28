@@ -489,3 +489,12 @@ dialog::backdrop { background: rgba(4, 17, 27, .72); }
 @media (max-width: 480px) {
   .overview-grid, .asset-grid { grid-template-columns: 1fr; }
 }
+.sku-dialog{width:min(860px,92vw)}
+.sku-manager-list{display:grid;gap:12px;max-height:62vh;overflow:auto;padding:4px 2px 18px}
+.sku-manager-row{display:grid;grid-template-columns:72px minmax(0,1fr) auto;gap:14px;align-items:center;padding:14px;border:1px solid rgba(29,119,146,.2);border-radius:16px;background:rgba(255,255,255,.72)}
+.sku-manager-row.excluded{opacity:.62;background:rgba(237,242,245,.76)}
+.sku-manager-row img{width:72px;height:72px;object-fit:cover;border-radius:12px;background:#eef4f6}
+.sku-manager-row .sku-placeholder{display:grid;place-items:center;width:72px;height:72px;border-radius:12px;background:#edf4f6;color:#688295;font-size:12px}
+.sku-manager-row div{min-width:0}.sku-manager-row b,.sku-manager-row small{display:block}.sku-manager-row small{margin-top:5px;color:#667f91;overflow-wrap:anywhere}
+.sku-manager-row button{white-space:nowrap}.sku-manager-row.excluded button{border-color:#159ab1;color:#087d93}
+@media(max-width:640px){.sku-manager-row{grid-template-columns:54px minmax(0,1fr)}.sku-manager-row img,.sku-manager-row .sku-placeholder{width:54px;height:54px}.sku-manager-row button{grid-column:1/-1}}

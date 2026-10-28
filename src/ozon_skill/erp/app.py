@@ -75,6 +75,10 @@ _ASSET_BATCH_DELETE_ROUTE = "/api/assets/batch-delete"
 _ASSET_ROUTE = re.compile(r"^/api/assets/([a-f0-9]{24})$")
 _ASSET_PREVIEW_ROUTE = re.compile(r"^/api/assets/([a-f0-9]{24})/preview$")
 _IMAGES_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/images$")
+_SKU_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/skus/([^/]+)$")
+_SKU_RESTORE_ROUTE = re.compile(
+    r"^/api/pipelines/([^/]+)/skus/([^/]+)/restore$"
+)
 _REQUIRED_ATTRIBUTES_ROUTE = re.compile(
     r"^/api/pipelines/([^/]+)/required-attributes$"
 )
@@ -663,6 +667,17 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._require("pipeline.create")
                 self._json(self.service.run_stage_1(body.get("offer_id")), 201)
                 return
+            if sku_restore_match := _SKU_RESTORE_ROUTE.fullmatch(path):
+                self._require("stage.run")
+                self._json(
+                    self.service.set_sku_excluded(
+                        unquote(sku_restore_match.group(1)),
+                        unquote(sku_restore_match.group(2)),
+                        excluded=False,
+                        actor=self._username(),
+                    )
+                )
+                return
             if image_match := _IMAGES_ROUTE.fullmatch(path):
                 self._require("images.manage")
                 self._json(
@@ -765,6 +780,17 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                     self._username(), unquote(team_match.group(1))
                 )
                 self._json({"status": "deleted"})
+                return
+            if sku_match := _SKU_ROUTE.fullmatch(path):
+                self._require("stage.run")
+                self._json(
+                    self.service.set_sku_excluded(
+                        unquote(sku_match.group(1)),
+                        unquote(sku_match.group(2)),
+                        excluded=True,
+                        actor=self._username(),
+                    )
+                )
                 return
             match = _STORE_ROUTE.fullmatch(path)
             if not match:

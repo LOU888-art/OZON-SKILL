@@ -145,6 +145,8 @@ class AiContentFallbackTests(unittest.TestCase):
             "https://cdn.example.com/1.jpg",
         )
         self.assertEqual(len(result.payload["items"][0]["images"]), 8)
+        self.assertEqual(result.payload["items"][0]["price"], "480.00")
+        self.assertEqual(result.payload["items"][0]["old_price"], "960.00")
 
     def test_payload_uses_one_sku_main_and_seven_shared_ai_images(self) -> None:
         shared_gallery = [
