@@ -796,7 +796,7 @@ def run_upload_workflow(
         picture_diagnostics: dict[str, Any] = {}
         product_ids_by_offer = _product_ids_by_offer(info_response, final_details)
         source_images_by_offer = _source_images_by_offer(assembly.payload)
-        picture_api_is_v2 = entry.get("picture_import_api_version") == "v2"
+        picture_api_is_v2 = entry.get("picture_import_api_version") == "v2-full"
         picture_import_attempted = bool(
             entry.get("picture_import_requested") and picture_api_is_v2
         )
@@ -893,7 +893,7 @@ def run_upload_workflow(
                 upload_log.update(
                     log_index,
                     picture_import_requested=True,
-                    picture_import_api_version="v2",
+                    picture_import_api_version="v2-full",
                     picture_import_errors=picture_import_errors,
                     picture_import_responses=picture_import_responses,
                     picture_import_task_ids=picture_task_ids,
@@ -950,7 +950,7 @@ def run_upload_workflow(
                 upload_log.update(
                     log_index,
                     picture_fallback_import_requested=True,
-                    picture_import_api_version="v2",
+                    picture_import_api_version="v2-full",
                     picture_fallback_import_errors=fallback_import_errors,
                     picture_fallback_import_responses=fallback_import_responses,
                     picture_import_task_ids=picture_task_ids,

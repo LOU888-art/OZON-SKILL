@@ -54,6 +54,32 @@ class OzonUploadClientTests(unittest.TestCase):
 
         post.assert_called_once()
 
+    def test_picture_import_uses_complete_v2_item_contract(self) -> None:
+        with patch.object(
+            OzonUploadClient, "_post", return_value={"result": {"task_id": 42}}
+        ) as post:
+            result = self.client.product_pictures_import(
+                "QSM102801",
+                ["https://cdn.example.com/1.png", "https://cdn.example.com/1.png"],
+            )
+
+        self.assertEqual(result, {"result": {"task_id": 42}})
+        path, body = post.call_args.args
+        self.assertEqual(path, "/v2/product/pictures/import")
+        self.assertEqual(
+            body,
+            {
+                "items": [
+                    {
+                        "offer_id": "QSM102801",
+                        "images": ["https://cdn.example.com/1.png"],
+                        "images360": [],
+                        "color_image": "",
+                    }
+                ]
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

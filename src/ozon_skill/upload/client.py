@@ -102,9 +102,19 @@ class OzonUploadClient:
     def product_pictures_import(
         self, offer_id: str, images: list[str]
     ) -> dict[str, Any]:
+        normalized = list(dict.fromkeys(images))[:15]
         return self._post(
             self.PICTURES_IMPORT_PATH,
-            {"items": [{"offer_id": offer_id, "images": images}]},
+            {
+                "items": [
+                    {
+                        "offer_id": offer_id,
+                        "images": normalized,
+                        "images360": [],
+                        "color_image": "",
+                    }
+                ]
+            },
         )
 
     def _post(self, path: str, body: Mapping[str, Any]) -> dict[str, Any]:
