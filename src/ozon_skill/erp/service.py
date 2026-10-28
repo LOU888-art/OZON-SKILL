@@ -3674,6 +3674,13 @@ class PipelineService:
             )
         if not sku_rows:
             raise PipelineError("SKU数据格式无效，未创建商品任务")
+        missing_prices = sum(
+            1 for item in sku_rows if not item.get("purchase_price_cny")
+        )
+        if missing_prices:
+            raise PipelineError(
+                f"浏览器采集结果中有{missing_prices}个SKU缺少采购价，请刷新1688详情页后重新采集"
+            )
 
         raw_attributes = product.get("attributes_zh") or {}
         attributes: dict[str, Any] = {}
@@ -3707,12 +3714,60 @@ class PipelineService:
         ][:20]
         supplier = product.get("supplier_info") or {}
         supplier = supplier if isinstance(supplier, Mapping) else {}
+        raw_shipping = product.get("shipping_info") or {}
+        raw_shipping = raw_shipping if isinstance(raw_shipping, Mapping) else {}
+        freight_value: str | None = None
+        if raw_shipping.get("freight_cny") not in (None, ""):
+            try:
+                freight = Decimal(str(raw_shipping.get("freight_cny")))
+            except (InvalidOperation, ValueError):
+                freight = Decimal("-1")
+            if freight.is_finite() and freight >= 0:
+                freight_value = format(freight, "f")
+        raw_diagnostics = product.get("capture_diagnostics") or {}
+        raw_diagnostics = (
+            raw_diagnostics if isinstance(raw_diagnostics, Mapping) else {}
+        )
+        price_ranges: list[dict[str, Any]] = []
+        raw_price_ranges = product.get("price_ranges") or []
+        if isinstance(raw_price_ranges, list):
+            for raw_range in raw_price_ranges[:30]:
+                if not isinstance(raw_range, Mapping):
+                    continue
+                try:
+                    range_price = Decimal(str(raw_range.get("price_cny")))
+                except (InvalidOperation, ValueError):
+                    continue
+                if not range_price.is_finite() or range_price <= 0:
+                    continue
+                try:
+                    minimum_quantity = int(raw_range.get("minimum_quantity"))
+                except (TypeError, ValueError):
+                    minimum_quantity = None
+                price_ranges.append(
+                    {
+                        "price_cny": format(range_price, "f"),
+                        "minimum_quantity": max(0, minimum_quantity)
+                        if minimum_quantity is not None
+                        else None,
+                        "text_zh": str(raw_range.get("text_zh") or "").strip()[:300]
+                        or None,
+                    }
+                )
+
+        def diagnostic_integer(name: str) -> int:
+            try:
+                return max(0, int(raw_diagnostics.get(name) or 0))
+            except (TypeError, ValueError):
+                return 0
+
         raw = {
             "source_offer_id": pipeline_id,
             "title_zh": title,
             "images": images,
             "detail_images": detail_images,
             "sku_list": sku_rows,
+            "price_ranges": price_ranges,
             "attributes_zh": attributes,
             "category_path_zh": category_path,
             "category_id": category_id,
@@ -3721,6 +3776,25 @@ class PipelineService:
                 "min_order": supplier.get("min_order"),
                 "ship_from": str(supplier.get("ship_from") or "").strip()[:300] or None,
             },
+            "shipping_info": {
+                "freight_cny": freight_value,
+                "freight_text_zh": str(
+                    raw_shipping.get("freight_text_zh") or ""
+                ).strip()[:300]
+                or None,
+                "ship_from_zh": str(
+                    raw_shipping.get("ship_from_zh") or ""
+                ).strip()[:300]
+                or None,
+                "destination_zh": str(
+                    raw_shipping.get("destination_zh") or ""
+                ).strip()[:300]
+                or None,
+                "delivery_text_zh": str(
+                    raw_shipping.get("delivery_text_zh") or ""
+                ).strip()[:300]
+                or None,
+            },
             "browser_capture": {
                 "product_url": product_url[:2000] or None,
                 "captured_at": str(product.get("captured_at") or _now())[:80],
@@ -3728,6 +3802,17 @@ class PipelineService:
                 "collector_version": str(value.get("collector_version") or "0.1.0")[:40],
                 "actor": str(actor or "")[:80],
                 "warnings": warnings,
+                "diagnostics": {
+                    "main_candidate_count": diagnostic_integer(
+                        "main_candidate_count"
+                    ),
+                    "intercepted_response_count": diagnostic_integer(
+                        "intercepted_response_count"
+                    ),
+                    "visible_sku_option_count": diagnostic_integer(
+                        "visible_sku_option_count"
+                    ),
+                },
             },
         }
         failures = gate_stage_1(raw)

@@ -37,6 +37,24 @@ class BrowserCollectorTests(unittest.TestCase):
                             }
                         ],
                         "attributes_zh": {"材质": "塑料", "品牌": "不采集"},
+                        "price_ranges": [
+                            {
+                                "price_cny": "12.80",
+                                "minimum_quantity": 1,
+                                "text_zh": "1件起",
+                            }
+                        ],
+                        "shipping_info": {
+                            "freight_cny": "3",
+                            "freight_text_zh": "运费 ¥3起",
+                            "ship_from_zh": "浙江金华",
+                            "destination_zh": "河南郑州",
+                        },
+                        "capture_diagnostics": {
+                            "main_candidate_count": 6,
+                            "intercepted_response_count": 3,
+                            "visible_sku_option_count": 4,
+                        },
                         "category_path_zh": ["家居百货", "收纳用品"],
                         "supplier_info": {"name": "测试供应商"},
                     },
@@ -58,6 +76,13 @@ class BrowserCollectorTests(unittest.TestCase):
             self.assertEqual(artifact["browser_capture"]["actor"], "operator")
             self.assertEqual(artifact["category_id"], "browser-capture-unresolved")
             self.assertNotIn("品牌", artifact["attributes_zh"])
+            self.assertEqual(artifact["shipping_info"]["freight_cny"], "3")
+            self.assertEqual(artifact["shipping_info"]["ship_from_zh"], "浙江金华")
+            self.assertEqual(artifact["price_ranges"][0]["minimum_quantity"], 1)
+            self.assertEqual(
+                artifact["browser_capture"]["diagnostics"]["intercepted_response_count"],
+                3,
+            )
 
     def test_capture_rejects_missing_images_or_skus(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -69,6 +94,19 @@ class BrowserCollectorTests(unittest.TestCase):
                         "title_zh": "测试商品",
                         "images": [],
                         "sku_list": [{"sku_id": "one"}],
+                    }
+                )
+
+    def test_capture_rejects_incomplete_sku_prices(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service = PipelineService(Path(temporary))
+            with self.assertRaisesRegex(PipelineError, "1个SKU缺少采购价"):
+                service.ingest_1688_browser_capture(
+                    {
+                        "source_offer_id": "628680616884",
+                        "title_zh": "测试商品",
+                        "images": [{"url": "https://cbu01.alicdn.com/main.jpg"}],
+                        "sku_list": [{"sku_id": "one", "purchase_price_cny": None}],
                     }
                 )
 

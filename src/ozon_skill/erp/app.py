@@ -99,7 +99,15 @@ _PLUGIN_FILES = (
     "popup.js",
     "README.md",
 )
-_COLLECTOR_PLUGIN_FILES = _PLUGIN_FILES
+_COLLECTOR_PLUGIN_FILES = (
+    "manifest.json",
+    "main-probe.js",
+    "content.js",
+    "popup.html",
+    "popup.css",
+    "popup.js",
+    "README.md",
+)
 
 
 def _research_plugin_archive() -> bytes:
