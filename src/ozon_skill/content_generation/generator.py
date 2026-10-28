@@ -14,6 +14,33 @@ from .tags import format_ozon_hashtags
 
 NO_BRAND_TITLE_RU = "без бренда"
 
+# Function words naturally occur many times in a fluent 150–200 character
+# Russian title.  They are not keyword stuffing and must never fail a listing.
+_RUSSIAN_TITLE_STOPWORDS = {
+    "а",
+    "без",
+    "в",
+    "во",
+    "для",
+    "до",
+    "и",
+    "из",
+    "или",
+    "к",
+    "как",
+    "на",
+    "не",
+    "но",
+    "о",
+    "от",
+    "по",
+    "под",
+    "при",
+    "с",
+    "со",
+    "у",
+}
+
 
 def _attribute_by_concept(prelisting: Mapping[str, Any], needle: str) -> Mapping[str, Any]:
     for item in prelisting.get("ozon_attributes") or []:
@@ -127,24 +154,31 @@ def _title_validation(title: str, segments: Mapping[str, str | None]) -> dict[st
     length = len(title)
     first_60 = title[:60]
     core = segments.get("core_product_name") or ""
-    words = re.findall(r"[а-яё]+", title.lower())
+    words = re.findall(r"[а-яё]+", title.lower().replace("ё", "е"))
     repeated_roots: dict[str, int] = {}
     for word in words:
+        if word in _RUSSIAN_TITLE_STOPWORDS or len(word) < 5:
+            continue
         root = word[:7] if len(word) > 7 else word
         repeated_roots[root] = repeated_roots.get(root, 0) + 1
     excessive = {root: count for root, count in repeated_roots.items() if count >= 3}
     issues: list[str] = []
+    warnings: list[str] = []
     if not 150 <= length <= 200:
         issues.append("标题长度必须为 150–200 个字符")
     if core and core not in first_60:
         issues.append("核心产品名不在前 60 个字符内")
     if excessive:
-        issues.append("存在同一词根重复 3 次以上")
+        # This is a copy-quality signal, not an Ozon schema requirement.
+        # Russian derivations such as ароматический/ароматизатор/аромата can
+        # share a prefix while remaining natural and semantically distinct.
+        warnings.append("检测到可能重复的实义词根，已作为质量提示但不阻断上架")
     return {
         "length": length,
         "first_60_characters": first_60,
         "core_keyword_in_first_60": bool(core and core in first_60),
         "repeated_roots_3_or_more": excessive,
+        "warnings": warnings,
         "status": "VALID" if not issues else "NEEDS_CONFIRMATION",
         "issues": issues,
     }
