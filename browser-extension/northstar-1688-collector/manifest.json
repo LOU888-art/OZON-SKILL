@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Northstar 1688 商品采集",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "在已登录的1688商品页采集可见商品、图片与SKU并发送到Northstar ERP。",
   "permissions": ["activeTab", "storage", "scripting"],
   "optional_host_permissions": ["https://*/*"],

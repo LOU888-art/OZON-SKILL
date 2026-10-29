@@ -449,12 +449,21 @@ function stableSkuId(parts) {
 
 function currentPriceAndStock() {
   const body = cleanText(document.body?.innerText);
-  const direct = [...body.matchAll(/[¥￥]\s*(\d+(?:\.\d+)?)\s*库存\s*(\d+)/g)];
+  const direct = [...body.matchAll(/[¥￥]\s*(\d+(?:\.\d+)?)[^¥￥\d]{0,24}库存\s*[:：]?\s*(\d+)/g)];
   if (direct.length) return { price: Number(direct[0][1]), stock: Number(direct[0][2]) };
   const stockMatch = body.match(/库存\s*(\d+)/);
-  const selectedArea = [...document.querySelectorAll("[class*='sku'],[class*='trade'],[class*='order']")].map(cleanText).find(text => /[¥￥]\s*\d/.test(text) && /库存/.test(text));
-  const priceMatch = selectedArea?.match(/[¥￥]\s*(\d+(?:\.\d+)?)/);
-  return { price: priceMatch ? Number(priceMatch[1]) : null, stock: stockMatch ? Number(stockMatch[1]) : null };
+  const selectedAreas = [...document.querySelectorAll("[class*='sku'],[class*='trade'],[class*='order'],[class*='purchase'],[class*='quantity'],div,section")]
+    .filter(isVisibleElement)
+    .map(element => ({ element, text: cleanText(element) }))
+    .filter(item => /[¥￥]\s*\d/.test(item.text) && /库存\s*[:：]?\s*\d+/.test(item.text) && item.text.length < 1200)
+    .sort((left, right) => {
+      const leftRect = left.element.getBoundingClientRect(); const rightRect = right.element.getBoundingClientRect();
+      return leftRect.width * leftRect.height - rightRect.width * rightRect.height || left.text.length - right.text.length;
+    });
+  const selectedText = selectedAreas[0]?.text || "";
+  const priceMatch = selectedText.match(/[¥￥]\s*(\d+(?:\.\d+)?)/);
+  const selectedStock = selectedText.match(/库存\s*[:：]?\s*(\d+)/);
+  return { price: priceMatch ? Number(priceMatch[1]) : null, stock: selectedStock ? Number(selectedStock[1]) : (stockMatch ? Number(stockMatch[1]) : null) };
 }
 
 function smallestVisibleExactText(value) {
@@ -519,6 +528,35 @@ async function enrichSkuImages(skuList, mainImage) {
   return captured;
 }
 
+async function enrichSkuCommerce(skuList, priceRanges) {
+  const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+  let filledPrices = 0;
+  let filledStocks = 0;
+  for (const sku of skuList) {
+    if (sku.purchase_price_cny !== null && sku.purchase_price_cny !== undefined && sku.stock !== null && sku.stock !== undefined) continue;
+    let clicked = false;
+    for (const part of sku.specification_zh || []) {
+      const element = smallestVisibleExactText(part.value);
+      if (!element) continue;
+      element.click(); clicked = true;
+      await delay(320);
+    }
+    if (clicked) await delay(180);
+    const current = currentPriceAndStock();
+    if ((sku.purchase_price_cny === null || sku.purchase_price_cny === undefined) && current.price !== null && current.price > 0) {
+      sku.purchase_price_cny = current.price; filledPrices += 1;
+    }
+    if ((sku.stock === null || sku.stock === undefined) && current.stock !== null) {
+      sku.stock = current.stock; filledStocks += 1;
+    }
+  }
+  if (skuList.length === 1 && (skuList[0].purchase_price_cny === null || skuList[0].purchase_price_cny === undefined)) {
+    const fallbackPrice = priceRanges.find(item => Number(item.price_cny) > 0)?.price_cny;
+    if (fallbackPrice !== undefined) { skuList[0].purchase_price_cny = fallbackPrice; filledPrices += 1; }
+  }
+  return { filledPrices, filledStocks };
+}
+
 async function collectDomSkus(mainImage, groups = domSkuGroups()) {
   if (!groups.length) return [];
   const combinations = cartesian(groups);
@@ -554,15 +592,16 @@ async function scan() {
   if (!expectedSkuCount && skuList.length > 30) throw new Error(`页面没有确认到有效规格组，却生成了 ${skuList.length} 个SKU，已阻止发送，请更新采集规则`);
   if (!skuList.length && visibleOptions <= 1) { const priceText = cleanText(document.querySelector("[class*='price']")); skuList = [{ sku_id: `${offerId()}-default`, specification_zh: [], specification_text_zh: "默认规格", purchase_price_cny: priceRanges[0]?.price_cny ?? numberValue(priceText), stock: null, image_url: images.main[0]?.url || null }]; }
   if (!skuList.length || (skuList.length === 1 && visibleOptions > 1)) throw new Error(`页面显示多个规格，但只读取到 ${skuList.length} 个SKU。请刷新详情页，等待规格和价格加载完成后重新采集`);
+  const commerceEnrichment = await enrichSkuCommerce(skuList, priceRanges);
   const enrichedSkuImageCount = await enrichSkuImages(skuList, images.main[0]?.url || "");
-  const missingPrices = skuList.filter(sku => sku.purchase_price_cny === null).length;
+  const missingPrices = skuList.filter(sku => sku.purchase_price_cny === null || sku.purchase_price_cny === undefined).length;
   if (missingPrices) warnings.push(`${missingPrices}个SKU没有读取到采购价，发送前请刷新页面重试`);
   if (missingPrices === skuList.length) throw new Error("没有读取到任何SKU采购价。请刷新1688详情页，等待价格加载完成后重试");
   const title = collectTitle(roots); if (!title) throw new Error("没有识别到商品标题，请等待页面加载完成后重试"); if (!images.main.length) throw new Error("没有识别到商品主图，请等待页面加载完成后重试");
   const attributes = collectAttributes(roots); let categoryId = ""; let supplierName = "";
   walk(roots, object => { if (!categoryId) { const value = cleanText(firstValue(object, ["thirdCategoryId", "categoryId", "categoryID", "leafCategoryId"])); if (/^\d+$/.test(value)) categoryId = value; } if (!supplierName) supplierName = cleanText(firstValue(object, ["companyName", "supplierName", "shopName"])); });
   const breadcrumbs = [...document.querySelectorAll("[class*='breadcrumb'] a,[class*='crumb'] a")].map(cleanText).filter(Boolean).slice(0, 20);
-  return { source_offer_id: offerId(), product_url: location.href, title_zh: title, images: images.main, detail_images: images.detail, sku_list: skuList, price_ranges: priceRanges, attributes_zh: attributes, category_id: categoryId, category_path_zh: breadcrumbs, supplier_info: { name: supplierName || null, min_order: priceRanges.find(item => item.minimum_quantity !== null)?.minimum_quantity ?? null, ship_from: shipping.ship_from_zh }, shipping_info: shipping, capture_diagnostics: { collector_version: "0.3.0", main_candidate_count: mainData.candidates.length, intercepted_response_count: mainData.response_urls.length, visible_sku_option_count: visibleOptions, expected_sku_count: expectedSkuCount, enriched_sku_image_count: enrichedSkuImageCount, sku_image_count: skuList.filter(sku => Boolean(sku.image_url)).length, unique_sku_image_count: new Set(skuList.map(sku => sku.image_url).filter(Boolean)).size, spec_groups: pageGroups.map(group => ({ name: group.name, count: group.labels.length })), warnings }, captured_at: new Date().toISOString() };
+  return { source_offer_id: offerId(), product_url: location.href, title_zh: title, images: images.main, detail_images: images.detail, sku_list: skuList, price_ranges: priceRanges, attributes_zh: attributes, category_id: categoryId, category_path_zh: breadcrumbs, supplier_info: { name: supplierName || null, min_order: priceRanges.find(item => item.minimum_quantity !== null)?.minimum_quantity ?? null, ship_from: shipping.ship_from_zh }, shipping_info: shipping, capture_diagnostics: { collector_version: "0.3.1", main_candidate_count: mainData.candidates.length, intercepted_response_count: mainData.response_urls.length, visible_sku_option_count: visibleOptions, expected_sku_count: expectedSkuCount, enriched_sku_price_count: commerceEnrichment.filledPrices, enriched_sku_stock_count: commerceEnrichment.filledStocks, enriched_sku_image_count: enrichedSkuImageCount, sku_image_count: skuList.filter(sku => Boolean(sku.image_url)).length, unique_sku_image_count: new Set(skuList.map(sku => sku.image_url).filter(Boolean)).size, spec_groups: pageGroups.map(group => ({ name: group.name, count: group.labels.length })), warnings }, captured_at: new Date().toISOString() };
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
