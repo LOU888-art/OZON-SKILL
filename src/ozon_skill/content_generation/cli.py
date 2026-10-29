@@ -41,9 +41,15 @@ def _image_items(source: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         if not isinstance(sku, Mapping) or not sku.get("image_url"):
             continue
         url = str(sku["image_url"])
-        if url not in seen:
-            seen.add(url)
-            result.append({"url": url, "source_role": "sku_image"})
+        result.append(
+            {
+                "url": url,
+                "source_role": "sku_image",
+                "sku_id": sku.get("sku_id"),
+                "specification_zh": sku.get("specification_zh")
+                or sku.get("specification"),
+            }
+        )
     return result
 
 

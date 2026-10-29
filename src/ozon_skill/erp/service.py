@@ -231,9 +231,9 @@ def _image_items(source: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         if not isinstance(sku, Mapping) or not sku.get("image_url"):
             continue
         url = str(sku["image_url"])
-        if url in seen:
-            continue
-        seen.add(url)
+        # Keep one reference per SKU even when the supplier reuses the same
+        # picture URL.  The SKU specification still drives an independent
+        # generated main image for that variant.
         result.append(
             {
                 "url": url,
