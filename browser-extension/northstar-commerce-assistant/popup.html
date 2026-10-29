@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="popup.css"><title>Northstar 跨境商品助手</title></head>
+<body>
+  <header><span>N</span><div><b>Northstar</b><small>跨境商品助手</small></div><em id="modeBadge">识别页面中</em></header>
+  <main>
+    <label>ERP网址<input id="erpUrl" type="url" placeholder="https://erp.example.com" autocomplete="url"><small id="erpHint">首次填写后自动记住</small></label>
+    <section id="mode1688" class="mode hidden">
+      <button id="scan1688Btn" class="primary" type="button">读取当前1688商品 <span>→</span></button>
+      <div id="preview1688" class="hidden">
+        <div class="product"><img id="productImage" alt=""><div><b id="productTitle"></b><small id="productMeta"></small></div></div>
+        <div id="captureSummary" class="summary"></div>
+        <div class="toolbar"><label><input id="selectAll" type="checkbox" checked> 全选SKU</label><strong id="skuCount"></strong></div>
+        <div id="skuList" class="sku-list"></div>
+        <button id="send1688Btn" class="primary" type="button">发送到ERP第一阶段 <span>→</span></button>
+      </div>
+    </section>
+    <section id="modeSeller" class="mode hidden">
+      <div id="ruleInfo" class="info"><b>选品规则</b><p>连接 ERP 后读取已保存规则。</p></div>
+      <label class="check"><input id="autoScroll" type="checkbox" checked> 自动滚动加载当前结果</label>
+      <label>最多读取<input id="scanLimit" type="number" min="1" max="500" value="100"></label>
+      <button id="syncSellerBtn" class="primary" type="button">扫描并同步选品结果 <span>→</span></button>
+    </section>
+    <section id="modeOzon" class="mode hidden"><div class="info"><b>Ozon 数据浮层已启用</b><p>当前商品列表或详情页会自动显示可验证数据。刷新页面可重新加载面板。</p></div></section>
+    <section id="modeUnknown" class="mode hidden"><div class="info"><b>当前页面暂不支持</b><p>请打开 1688 商品详情、Ozon 商品页或 Ozon Seller 商品分析页。</p></div></section>
+    <p id="status">正在识别当前页面…</p>
+  </main>
+  <footer>1.0.0 · 不保存1688或Ozon密码、Cookie</footer>
+  <script src="popup.js"></script>
+</body>
+</html>

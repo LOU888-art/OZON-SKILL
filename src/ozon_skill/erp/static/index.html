@@ -49,7 +49,7 @@
           <input id="offerId" name="offer_id" autocomplete="off" placeholder="输入 offer_id / num_iid" required>
           <button type="submit" class="primary">开始采集 <span>→</span></button>
           <button id="batchImportBtn" type="button" class="batch-import-trigger">批量导入 ID / 链接</button>
-          <a class="batch-import-trigger collector-download" href="/api/collector/1688/plugin" download="northstar-1688-collector.zip">下载1688采集插件</a>
+          <a class="batch-import-trigger collector-download" href="/api/collector/1688/plugin" download="northstar-commerce-assistant.zip">下载统一浏览器插件</a>
         </div>
         <small>支持遨虾接口采集，也可使用浏览器插件读取你登录后当前页面中可见的商品数据。</small>
       </form>
@@ -368,9 +368,9 @@
     <div class="dialog-card stores-dialog">
       <div class="dialog-head"><div><span class="eyebrow">BROWSER CONNECTOR</span><h3>Northstar Ozon 商品分析插件</h3></div><button id="closeResearchPluginBtn" class="close" type="button">×</button></div>
       <p class="dialog-note">打开 Ozon 商品列表或商品详情页即可显示公开可验证的数据浮层；在 Ozon Seller 商品分析页还可同步候选商品到 ERP。插件不读取或保存 Ozon 密码、Cookie。</p>
-      <ol class="plugin-steps"><li>点击下方“下载插件 ZIP”，下载后解压到电脑中的固定文件夹。</li><li>打开 <code>chrome://extensions</code> 或 <code>edge://extensions</code>，开启“开发者模式”。</li><li>点击“加载已解压的扩展程序”，选择解压后的 <code>northstar-ozon-research</code> 文件夹。</li><li>打开 <code>www.ozon.ru</code> 的商品列表或详情页，即可看到 Northstar 数据面板。</li><li>需要同步选品时，保持 ERP 已登录并打开 Ozon Seller 的“分析 → Ozon 上的商品”，再点击插件执行同步。</li></ol>
+      <ol class="plugin-steps"><li>点击下方“下载统一插件 ZIP”，下载后解压到电脑中的固定文件夹。</li><li>打开 <code>chrome://extensions</code> 或 <code>edge://extensions</code>，开启“开发者模式”。</li><li>点击“加载已解压的扩展程序”，选择解压后的 <code>northstar-commerce-assistant</code> 文件夹。</li><li>打开 1688、Ozon 商品页或 Ozon Seller，插件会根据当前页面自动切换功能。</li><li>1688 页面可采集到 ERP；Ozon 公开页自动显示数据；Ozon Seller 页面可同步选品结果。</li></ol>
       <div class="warning">月销量、广告占比、转化率、退货率和佣金等非公开指标只有取得 Ozon Seller 的真实数据后才会显示；插件不会用估算值冒充真实数据。</div>
-      <div class="dialog-actions"><a class="primary plugin-download" href="/api/research/plugin" download="northstar-ozon-research.zip">下载插件 ZIP <span>↓</span></a></div>
+      <div class="dialog-actions"><a class="primary plugin-download" href="/api/research/plugin" download="northstar-commerce-assistant.zip">下载统一插件 ZIP <span>↓</span></a></div>
     </div>
   </dialog>
 

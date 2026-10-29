@@ -91,33 +91,58 @@ _ATTRIBUTE_VALUES_ROUTE = re.compile(
     r"^/api/pipelines/([^/]+)/attributes/(\d+)/values$"
 )
 _STATIC_ROOT = Path(__file__).with_name("static")
-_PLUGIN_FILES = (
-    "manifest.json",
-    "content.js",
-    "ozon-overlay.js",
-    "ozon-overlay.css",
-    "popup.html",
-    "popup.css",
-    "popup.js",
-    "README.md",
-)
-_COLLECTOR_PLUGIN_FILES = (
-    "manifest.json",
-    "main-probe.js",
-    "content.js",
-    "popup.html",
-    "popup.css",
-    "popup.js",
-    "README.md",
-)
+_UNIFIED_PLUGIN_SOURCES = {
+    "manifest.json": ("northstar-commerce-assistant", "manifest.json"),
+    "popup.html": ("northstar-commerce-assistant", "popup.html"),
+    "popup.css": ("northstar-commerce-assistant", "popup.css"),
+    "popup.js": ("northstar-commerce-assistant", "popup.js"),
+    "README.md": ("northstar-commerce-assistant", "README.md"),
+    "collector-main-probe.js": ("northstar-1688-collector", "main-probe.js"),
+    "collector-content.js": ("northstar-1688-collector", "content.js"),
+    "ozon-seller-content.js": ("northstar-ozon-research", "content.js"),
+    "ozon-overlay.js": ("northstar-ozon-research", "ozon-overlay.js"),
+    "ozon-overlay.css": ("northstar-ozon-research", "ozon-overlay.css"),
+}
+_PLUGIN_FILES = tuple(_UNIFIED_PLUGIN_SOURCES)
+_COLLECTOR_PLUGIN_FILES = _PLUGIN_FILES
 
 
 def _research_plugin_archive() -> bytes:
-    return _extension_archive("northstar-ozon-research", _PLUGIN_FILES)
+    return _unified_plugin_archive()
 
 
 def _collector_1688_plugin_archive() -> bytes:
-    return _extension_archive("northstar-1688-collector", _COLLECTOR_PLUGIN_FILES)
+    return _unified_plugin_archive()
+
+
+def _unified_plugin_archive() -> bytes:
+    candidates = (
+        Path.cwd() / "browser-extension",
+        Path(__file__).resolve().parents[3] / "browser-extension",
+    )
+    extension_root = next(
+        (
+            path
+            for path in candidates
+            if all(
+                (path / folder / source).is_file()
+                for folder, source in _UNIFIED_PLUGIN_SOURCES.values()
+            )
+        ),
+        None,
+    )
+    if extension_root is None:
+        raise PipelineError(
+            "服务器缺少统一浏览器插件文件，请重新部署当前版本", status=500
+        )
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for archive_name, (folder, source) in _UNIFIED_PLUGIN_SOURCES.items():
+            archive.write(
+                extension_root / folder / source,
+                arcname=f"northstar-commerce-assistant/{archive_name}",
+            )
+    return output.getvalue()
 
 
 def _extension_archive(folder: str, files: Sequence[str]) -> bytes:
@@ -262,7 +287,7 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header(
             "Content-Disposition",
-            'attachment; filename="northstar-ozon-research.zip"',
+            'attachment; filename="northstar-commerce-assistant.zip"',
         )
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -276,7 +301,7 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header(
             "Content-Disposition",
-            'attachment; filename="northstar-1688-collector.zip"',
+            'attachment; filename="northstar-commerce-assistant.zip"',
         )
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
