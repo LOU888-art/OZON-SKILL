@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 from urllib.error import HTTPError, URLError
@@ -403,6 +404,7 @@ def process_image_plan(
     *,
     progress: Callable[[Sequence[Mapping[str, Any]]], None] | None = None,
     existing_results: Sequence[Mapping[str, Any]] = (),
+    max_workers: int = 1,
 ) -> list[dict[str, Any]]:
     """Run per-image translate, shared-eight, and SKU-main actions."""
 
@@ -474,6 +476,7 @@ def process_image_plan(
             checkpoint()
             continue
         module_numbers = range(1, 9) if action == "reference_8" else (1,)
+        pending_modules: list[int] = []
         for module_number in module_numbers:
             cached_row = cached.get(
                 (source_url, action, module_number, str(item.get("sku_id")))
@@ -483,6 +486,9 @@ def process_image_plan(
                 results.append(cached_row)
                 checkpoint()
                 continue
+            pending_modules.append(module_number)
+
+        def generate_module(module_number: int) -> tuple[dict[str, Any], Exception | None]:
             record: dict[str, Any] = {
                 "source_url": source_url,
                 "source_role": item.get("source_role"),
@@ -533,13 +539,29 @@ def process_image_plan(
                         "final_public_url": generated_url,
                     }
                 )
-                results.append(record)
-                checkpoint()
             except (AiRelayError, ValueError) as exc:
                 record["error"] = str(exc)[:500]
-                results.append(record)
-                checkpoint()
-                if isinstance(exc, AiRelayError):
-                    raise
+                return record, exc
+            return record, None
+
+        if not pending_modules:
+            continue
+        worker_count = max(1, min(int(max_workers), 6, len(pending_modules)))
+        first_ai_error: AiRelayError | None = None
+        if worker_count == 1:
+            generated = [generate_module(module) for module in pending_modules]
+        else:
+            with ThreadPoolExecutor(
+                max_workers=worker_count,
+                thread_name_prefix="ai-image",
+            ) as executor:
+                generated = list(executor.map(generate_module, pending_modules))
+        for record, error in generated:
+            results.append(record)
+            checkpoint()
+            if isinstance(error, AiRelayError) and first_ai_error is None:
+                first_ai_error = error
+        if first_ai_error is not None:
+            raise first_ai_error
     return results
 

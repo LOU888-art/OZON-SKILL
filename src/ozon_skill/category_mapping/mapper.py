@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Sequence
@@ -512,6 +513,32 @@ def _is_dictionary(attribute: Mapping[str, Any]) -> bool:
     return dictionary_id not in (None, 0)
 
 
+def _attribute_source_values(
+    source: Mapping[str, Any], name_ru: str
+) -> tuple[list[Any], list[dict[str, Any]]]:
+    concept = _attribute_concept(name_ru)
+    values: list[Any] = []
+    source_refs: list[dict[str, Any]] = []
+    if concept is not None:
+        values, source_refs = _source_attribute_values(source, concept)
+    if concept is not None and concept.name == "brand":
+        return [NO_BRAND_VALUE_RU], [
+            {
+                "location": "listing_policy.no_brand",
+                "value": NO_BRAND_VALUE_RU,
+            }
+        ]
+    if concept is not None and concept.name == "country" and not values:
+        return ["Китай"], [
+            {
+                "location": "listing_policy.default_origin_country",
+                "value": "Китай",
+                "reason": "中国跨境直发商品默认原产国",
+            }
+        ]
+    return values, source_refs
+
+
 def _map_attributes(
     provider: MetadataProvider,
     source: Mapping[str, Any],
@@ -526,6 +553,35 @@ def _map_attributes(
 
     attributes = _result_list(response)
     attributes.sort(key=lambda item: _as_int(item.get("id") or item.get("attribute_id")) or 0)
+    dictionary_requests: list[tuple[int, list[Any]]] = []
+    for attribute in attributes:
+        attribute_id = _as_int(attribute.get("id") or attribute.get("attribute_id"))
+        name_ru = str(attribute.get("name") or attribute.get("attribute_name") or "")
+        if attribute_id is None or not name_ru or not _is_dictionary(attribute):
+            continue
+        values, _ = _attribute_source_values(source, name_ru)
+        if values:
+            dictionary_requests.append((attribute_id, values))
+    dictionary_responses: dict[int, Mapping[str, Any]] = {}
+    if dictionary_requests:
+        worker_count = min(4, len(dictionary_requests))
+
+        def fetch_dictionary(attribute_id: int) -> tuple[int, Mapping[str, Any]]:
+            return (
+                attribute_id,
+                provider.attribute_values(category_id, type_id, attribute_id),
+            )
+
+        with ThreadPoolExecutor(
+            max_workers=worker_count,
+            thread_name_prefix="attribute-dictionary",
+        ) as executor:
+            dictionary_responses.update(
+                executor.map(
+                    fetch_dictionary,
+                    [attribute_id for attribute_id, _ in dictionary_requests],
+                )
+            )
     for attribute in attributes:
         attribute_id = _as_int(attribute.get("id") or attribute.get("attribute_id"))
         name_ru = str(attribute.get("name") or attribute.get("attribute_name") or "")
@@ -535,28 +591,7 @@ def _map_attributes(
         dictionary = _is_dictionary(attribute)
         if required:
             required_total += 1
-        concept = _attribute_concept(name_ru)
-        values: list[Any] = []
-        source_refs: list[dict[str, Any]] = []
-        if concept is not None:
-            values, source_refs = _source_attribute_values(source, concept)
-        if concept is not None and concept.name == "brand":
-            values = [NO_BRAND_VALUE_RU]
-            source_refs = [
-                {
-                    "location": "listing_policy.no_brand",
-                    "value": NO_BRAND_VALUE_RU,
-                }
-            ]
-        if concept is not None and concept.name == "country" and not values:
-            values = ["Китай"]
-            source_refs = [
-                {
-                    "location": "listing_policy.default_origin_country",
-                    "value": "Китай",
-                    "reason": "中国跨境直发商品默认原产国",
-                }
-            ]
+        values, source_refs = _attribute_source_values(source, name_ru)
 
         item: dict[str, Any] = {
             "attribute_id": attribute_id,
@@ -599,7 +634,7 @@ def _map_attributes(
             mapped.append(item)
             continue
 
-        dictionary_response = provider.attribute_values(category_id, type_id, attribute_id)
+        dictionary_response = dictionary_responses[attribute_id]
         dictionary_items = _dictionary_items(dictionary_response)
         ids: list[int] = []
         dictionary_matches: list[dict[str, Any]] = []

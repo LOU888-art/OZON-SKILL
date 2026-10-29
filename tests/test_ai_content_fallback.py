@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+import threading
+import time
 from decimal import Decimal
 
 from ozon_skill.content_generation.generator import build_final_listing
@@ -29,7 +31,46 @@ class _EightImageRelay:
         return f"https://cdn.example.com/generated-{self.calls}.jpg"
 
 
+class _ConcurrentRelay:
+    image_model = "test-image-model"
+
+    def __init__(self) -> None:
+        self.active = 0
+        self.max_active = 0
+        self.lock = threading.Lock()
+
+    def generate_product_image(self, *_args, **_kwargs) -> str:
+        with self.lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        try:
+            time.sleep(0.02)
+            return f"https://cdn.example.com/generated-{threading.get_ident()}.jpg"
+        finally:
+            with self.lock:
+                self.active -= 1
+
+
 class AiContentFallbackTests(unittest.TestCase):
+    def test_reference_images_run_concurrently_but_keep_module_order(self) -> None:
+        relay = _ConcurrentRelay()
+        result = process_image_plan(
+            [
+                {
+                    "url": "https://supplier.example.com/source.jpg",
+                    "source_role": "images",
+                    "action": "reference_8",
+                }
+            ],
+            relay,
+            None,
+            {"title_zh": "家居香薰"},
+            max_workers=4,
+        )
+
+        self.assertGreaterEqual(relay.max_active, 2)
+        self.assertEqual([item["module_number"] for item in result], list(range(1, 9)))
+
     def test_reference_plan_generates_eight_independent_ai_images(self) -> None:
         relay = _EightImageRelay()
         result = process_image_plan(

@@ -69,6 +69,7 @@ bash deploy/aliyun/update.sh
 - AlphaShop 商品详情、类目映射和图片翻译：`ALPHASHOP_ACCESS_KEY`、`ALPHASHOP_SECRET_KEY`。
 - OZON 店铺凭证与币种：优先通过网页“店铺授权”管理，支持多店铺；原有 `OZON_CLIENT_ID`、`OZON_API_KEY`、`OZON_CURRENCY` 仅保留为兼容回退。
 - 安全开关：缺省视为 `DRY_RUN=true`。只有进程环境明确设置 `DRY_RUN=false`，且操作者在网页再次勾选执行，才允许调用 `/v3/product/import`。
+- 性能调优：Ozon 类目元数据默认在进程内缓存 900 秒；AI 图片和 OSS 图片固化默认各使用 4 个并发任务。可通过 `OZON_METADATA_CACHE_TTL_SECONDS`、`ERP_AI_IMAGE_WORKERS`、`ERP_IMAGE_IO_WORKERS` 调整。AI 并发强制限制为最多 6，图片 I/O 最多 8，避免误配置导致接口限流。
 
 每个商品页面都可以运行七项全链路一致性审查。ERP 不提供 mock 执行入口，生产工作区中的数据只能来自官方 API；测试 fixture 只供自动测试使用。
 

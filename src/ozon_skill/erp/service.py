@@ -10,6 +10,7 @@ import re
 import shutil
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -603,6 +604,7 @@ class PipelineService:
         self._asset_preview_root = self.work_root / ".asset-previews"
         self._supplier_schedule_thread: threading.Thread | None = None
         self._supplier_schedule_wake = threading.Event()
+        self._reserved_offer_ids_cache: set[str] | None = None
         self.stores = StoreRegistry(self.work_root / ".ozon-stores.json")
         self.auth = AuthRegistry(self.work_root / ".auth.json")
         self.ai_provider = AiProviderRegistry(self.work_root / ".ai-provider.json")
@@ -709,6 +711,30 @@ class PipelineService:
                         item["status"] = "INTERRUPTED"
                         item["error"] = "服务器重启中断，未自动重试"
                 _atomic_json(job_path, job)
+
+    def _reserved_offer_ids(self) -> set[str]:
+        """Index historical offer IDs once instead of rescanning every product."""
+
+        if self._reserved_offer_ids_cache is not None:
+            return self._reserved_offer_ids_cache
+        reserved: set[str] = set()
+        for directory in self.work_root.iterdir():
+            if not directory.is_dir() or not _PIPELINE_ID.fullmatch(directory.name):
+                continue
+            payload_path = directory / STAGE_FILES[4]
+            if not payload_path.exists():
+                continue
+            try:
+                payload = _read_object(payload_path)
+            except PipelineError:
+                continue
+            reserved.update(
+                str(item.get("offer_id") or "").strip()
+                for item in payload.get("items") or []
+                if isinstance(item, Mapping) and item.get("offer_id")
+            )
+        self._reserved_offer_ids_cache = reserved
+        return reserved
 
     def ai_provider_status(self) -> dict[str, Any]:
         return self.ai_provider.public_status()
@@ -1034,7 +1060,34 @@ class PipelineService:
         rows = [dict(item) for item in inspection if isinstance(item, Mapping)]
         if client is None:
             return rows
-        cache: dict[str, dict[str, Any]] = {}
+        sources = list(
+            dict.fromkeys(
+                source
+                for row in rows
+                if (source := str(row.get("final_public_url") or "").strip())
+                and not source.startswith(f"{client.public_base_url}/")
+            )
+        )
+        try:
+            configured_workers = int(os.environ.get("ERP_IMAGE_IO_WORKERS", "4"))
+        except ValueError:
+            configured_workers = 4
+        worker_count = max(1, min(configured_workers, 8, len(sources) or 1))
+        mirrored: dict[str, dict[str, Any] | Exception] = {}
+        if sources:
+            with ThreadPoolExecutor(
+                max_workers=worker_count,
+                thread_name_prefix="image-mirror",
+            ) as executor:
+                futures = {
+                    source: executor.submit(client.mirror, source, pipeline_id)
+                    for source in sources
+                }
+                for source, future in futures.items():
+                    try:
+                        mirrored[source] = future.result()
+                    except (ObjectStorageError, ValueError) as exc:
+                        mirrored[source] = exc
         for row in rows:
             source = str(row.get("final_public_url") or "").strip()
             if not source:
@@ -1044,10 +1097,9 @@ class PipelineService:
                 row["storage_status"] = "ALREADY_MIRRORED"
                 continue
             try:
-                stored = cache.get(source)
-                if stored is None:
-                    stored = client.mirror(source, pipeline_id)
-                    cache[source] = stored
+                stored = mirrored[source]
+                if isinstance(stored, Exception):
+                    raise stored
                 row["final_public_url"] = stored["public_url"]
                 row["storage_status"] = "MIRRORED"
                 row["storage_object_key"] = stored["object_key"]
@@ -3946,13 +3998,14 @@ class PipelineService:
         store = self._selected_store(pipeline_id, store_id, allow_rebind=True)
         client = OzonDescriptionCategoryClient(store["client_id"], store["api_key"])
         try:
-            ru_candidates = flatten_category_types(client.category_tree(language="RU"))
-            try:
-                zh_candidates = flatten_category_types(
-                    client.category_tree(language="ZH_HANS")
-                )
-            except OzonApiError:
-                zh_candidates = []
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="category-tree") as executor:
+                ru_future = executor.submit(client.category_tree, language="RU")
+                zh_future = executor.submit(client.category_tree, language="ZH_HANS")
+                ru_candidates = flatten_category_types(ru_future.result())
+                try:
+                    zh_candidates = flatten_category_types(zh_future.result())
+                except OzonApiError:
+                    zh_candidates = []
         except OzonApiError as exc:
             raise PipelineError(f"读取 Ozon 官方类目失败：{exc}", status=502) from exc
 
@@ -4074,27 +4127,41 @@ class PipelineService:
             )
             source_category_id = raw.get("category_id")
             category_exchange = None
-            if preferred_pair is None:
-                try:
-                    category_exchange = AlphaShopClient.from_environment().category_mapping(
-                        str(source_category_id or "")
-                    )
-                    preferred_pair = extract_external_category_pair(category_exchange.payload)
-                except AlphaShopInsufficientPointsError as exc:
-                    raise PipelineError(str(exc), status=402) from exc
-                except (AlphaShopApiError, ValueError) as exc:
-                    raise PipelineError(f"AlphaShop 类目映射失败：{exc}", status=502) from exc
             provider = LiveMetadataProvider(
                 OzonDescriptionCategoryClient(
                     authorized_store["client_id"], authorized_store["api_key"]
                 )
             )
-            mapped = map_listing(
-                _source_for_mapper(raw),
-                provider,
-                confidence_threshold=threshold,
-                preferred_category_type=preferred_pair,
-            )
+            if preferred_pair is None:
+                try:
+                    with ThreadPoolExecutor(
+                        max_workers=2, thread_name_prefix="category-map"
+                    ) as executor:
+                        alpha_future = executor.submit(
+                            AlphaShopClient.from_environment().category_mapping,
+                            str(source_category_id or ""),
+                        )
+                        tree_future = executor.submit(provider.category_tree)
+                        category_exchange = alpha_future.result()
+                        # Warm the metadata cache while AlphaShop maps the
+                        # supplier category. map_listing reuses this response.
+                        tree_future.result()
+                    preferred_pair = extract_external_category_pair(category_exchange.payload)
+                except AlphaShopInsufficientPointsError as exc:
+                    raise PipelineError(str(exc), status=402) from exc
+                except (AlphaShopApiError, ValueError) as exc:
+                    raise PipelineError(f"AlphaShop 类目映射失败：{exc}", status=502) from exc
+                except OzonApiError as exc:
+                    raise PipelineError(f"读取 Ozon 官方类目失败：{exc}", status=502) from exc
+            try:
+                mapped = map_listing(
+                    _source_for_mapper(raw),
+                    provider,
+                    confidence_threshold=threshold,
+                    preferred_category_type=preferred_pair,
+                )
+            except OzonApiError as exc:
+                raise PipelineError(f"读取 Ozon 官方类目失败：{exc}", status=502) from exc
             if (
                 int(mapped.get("ozon_category_id") or 0),
                 int(mapped.get("ozon_type_id") or 0),
@@ -4163,7 +4230,11 @@ class PipelineService:
             )
             mapped = self.read_artifact(pipeline_id, 2)
             progress_path = self.directory(pipeline_id) / "03_media_progress.json"
+            generated_copy = None
+            copy_executor: ThreadPoolExecutor | None = None
+            copy_future = None
             try:
+                relay_client = self.ai_provider.client()
                 if media_mode in {"image_plan", "ai_generate", "alphashop_translate"}:
                     selected_items = self._selected_image_items(pipeline_id, raw)
                     if not selected_items:
@@ -4238,14 +4309,65 @@ class PipelineService:
                             },
                         )
 
+                    try:
+                        ai_image_workers = int(
+                            os.environ.get("ERP_AI_IMAGE_WORKERS", "4")
+                        )
+                    except ValueError:
+                        ai_image_workers = 4
+                    if text_mode == "ai_generate":
+                        copy_executor = ThreadPoolExecutor(
+                            max_workers=1,
+                            thread_name_prefix="ai-copy",
+                        )
+                        copy_future = copy_executor.submit(
+                            relay_client.generate_listing_copy,
+                            _source_for_mapper(raw),
+                            mapped,
+                        )
                     inspection = process_image_plan(
-                        planned_items,
-                        self.ai_provider.client(),
+                        planned_items[:1],
+                        relay_client,
                         None,
                         raw,
                         progress=save_progress,
                         existing_results=existing_results,
+                        max_workers=max(1, min(ai_image_workers, 6)),
                     )
+                    sku_items = planned_items[1:]
+                    if sku_items:
+                        sku_worker_count = max(
+                            1,
+                            min(ai_image_workers, 6, len(sku_items)),
+                        )
+
+                        def generate_sku_main(
+                            sku_item: Mapping[str, Any],
+                        ) -> list[dict[str, Any]]:
+                            return process_image_plan(
+                                [sku_item],
+                                relay_client,
+                                None,
+                                raw,
+                                existing_results=existing_results,
+                                max_workers=1,
+                            )
+
+                        if sku_worker_count == 1:
+                            sku_results = [
+                                generate_sku_main(item) for item in sku_items
+                            ]
+                        else:
+                            with ThreadPoolExecutor(
+                                max_workers=sku_worker_count,
+                                thread_name_prefix="ai-sku-main",
+                            ) as executor:
+                                sku_results = list(
+                                    executor.map(generate_sku_main, sku_items)
+                                )
+                        for rows in sku_results:
+                            inspection.extend(rows)
+                            save_progress(inspection)
                 # Translation-only plans produce Rich Content assets, but Ozon
                 # still needs a normal product image.  Generate one through the
                 # connected AI API so an optional AlphaShop workflow can never
@@ -4260,7 +4382,7 @@ class PipelineService:
                     source_images = _image_items(raw)
                     if source_images:
                         ai_main = generate_all_images(
-                            source_images[:1], self.ai_provider.client(), raw
+                            source_images[:1], relay_client, raw
                         )[0]
                         ai_main.update(
                             {
@@ -4270,6 +4392,11 @@ class PipelineService:
                             }
                         )
                         inspection.append(ai_main)
+                if copy_future is not None:
+                    try:
+                        generated_copy = copy_future.result()
+                    except (AiRelayError, AiProviderConfigurationError) as exc:
+                        raise AiRelayError(f"AI 俄语商品文案生成失败：{exc}") from exc
             except (AiRelayError, AiProviderConfigurationError) as exc:
                 progress_note = ""
                 if progress_path.exists():
@@ -4287,6 +4414,9 @@ class PipelineService:
                 failures = [f"{exc}{progress_note}"]
                 self._record(pipeline_id, 3, False, failures)
                 raise PipelineError(failures[0], status=502) from exc
+            finally:
+                if copy_executor is not None:
+                    copy_executor.shutdown(wait=True, cancel_futures=True)
             inspection = self._mirror_generated_images(pipeline_id, inspection)
             mapped = deepcopy(mapped)
             auto_translation_fields: list[dict[str, Any]] = []
@@ -4330,17 +4460,7 @@ class PipelineService:
                                 "value": value,
                             }
                         )
-            generated_copy = None
             copy_fallback_reason = None
-            if text_mode == "ai_generate":
-                try:
-                    generated_copy = self.ai_provider.client().generate_listing_copy(
-                        _source_for_mapper(raw), mapped
-                    )
-                except (AiRelayError, AiProviderConfigurationError) as exc:
-                    failures = [f"AI 俄语商品文案生成失败：{exc}"]
-                    self._record(pipeline_id, 3, False, failures)
-                    raise PipelineError(failures[0], status=502) from exc
             final = build_final_listing(
                 mapped,
                 _source_for_mapper(raw),
@@ -4773,27 +4893,15 @@ class PipelineService:
                 )
                 for index, sku in enumerate(allocation_rows)
             ]
-            reserved_offer_ids: list[str] = []
-            for existing_pipeline in self.list_pipelines():
-                existing_id = str(existing_pipeline.get("pipeline_id") or "")
-                if not existing_id or not self.path(existing_id, 4).exists():
-                    continue
-                try:
-                    existing_payload = self.read_artifact(existing_id, 4)
-                except PipelineError:
-                    continue
-                reserved_offer_ids.extend(
-                    str(item.get("offer_id") or "").strip()
-                    for item in existing_payload.get("items") or []
-                    if isinstance(item, Mapping) and item.get("offer_id")
-                )
+            reserved_offer_ids = self._reserved_offer_ids()
             try:
                 assigned_offer_ids = self.offer_ids.assign(
                     allocation_keys,
-                    reserved_ids=reserved_offer_ids,
+                    reserved_ids=tuple(reserved_offer_ids),
                 )
             except OfferIdRegistryError as exc:
                 raise PipelineError(str(exc), status=500) from exc
+            reserved_offer_ids.update(assigned_offer_ids)
             assembly = assemble_import_payload(
                 final,
                 _source_for_mapper(raw),

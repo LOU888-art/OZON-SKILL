@@ -21,6 +21,13 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _sleep_between_polls(max_interval: float, poll_number: int) -> None:
+    """Poll quickly at first, then settle at the configured safe interval."""
+
+    if max_interval > 0:
+        time.sleep(min(max_interval, max(1.0, float(poll_number))))
+
+
 def _payload_hash(payload: Mapping[str, Any]) -> str:
     canonical = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -869,8 +876,7 @@ def run_upload_workflow(
             )
             if final_state != "PENDING":
                 break
-            if poll_interval_seconds:
-                time.sleep(poll_interval_seconds)
+            _sleep_between_polls(poll_interval_seconds, poll_number)
         else:
             final_state = "POLL_TIMEOUT"
             entry["history"].append({"at": _now(), "status": final_state})
@@ -1046,8 +1052,7 @@ def run_upload_workflow(
                     )
                     if repair_state != "PENDING":
                         break
-                    if poll_interval_seconds:
-                        time.sleep(poll_interval_seconds)
+                    _sleep_between_polls(poll_interval_seconds, repair_poll)
                 final_state = repair_state
                 final_details = _merge_import_items(
                     initial_details, repaired_details
@@ -1319,8 +1324,7 @@ def run_upload_workflow(
             )
             if image_poll >= image_poll_limit:
                 break
-            if poll_interval_seconds:
-                time.sleep(poll_interval_seconds)
+            _sleep_between_polls(poll_interval_seconds, image_poll)
             try:
                 info_response = client.product_info_list(assembly.offer_ids)
                 product_ids_by_offer.update(
@@ -1498,8 +1502,8 @@ def run_upload_workflow(
         )
         if attribute_verification["all_required_attributes_present"]:
             break
-        if verification_poll < max(1, verification_max_polls) and poll_interval_seconds:
-            time.sleep(poll_interval_seconds)
+        if verification_poll < max(1, verification_max_polls):
+            _sleep_between_polls(poll_interval_seconds, verification_poll)
     final_status = (
         "VERIFIED"
         if attribute_verification["all_required_attributes_present"]

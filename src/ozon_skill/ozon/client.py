@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
+import threading
+import time
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
@@ -11,6 +16,19 @@ from urllib.request import Request, urlopen
 
 class OzonApiError(RuntimeError):
     """Raised when OZON metadata cannot be fetched."""
+
+
+_METADATA_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_METADATA_CACHE_LOCK = threading.Lock()
+_METADATA_CACHE_MAX_ITEMS = 256
+
+
+def _metadata_cache_ttl() -> float:
+    try:
+        value = float(os.environ.get("OZON_METADATA_CACHE_TTL_SECONDS", "900"))
+    except ValueError:
+        value = 900.0
+    return max(0.0, min(value, 86400.0))
 
 
 @dataclass(frozen=True)
@@ -102,6 +120,29 @@ class OzonDescriptionCategoryClient:
         return {"result": all_values, "has_next": False}
 
     def _post(self, path: str, body: Mapping[str, Any]) -> dict[str, Any]:
+        ttl = _metadata_cache_ttl()
+        cache_key = hashlib.sha256(
+            json.dumps(
+                {
+                    "base_url": self.base_url.rstrip("/"),
+                    "client_id": self.client_id,
+                    "api_key_fingerprint": hashlib.sha256(
+                        self.api_key.encode("utf-8")
+                    ).hexdigest(),
+                    "path": path,
+                    "body": body,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        now = time.monotonic()
+        if ttl:
+            with _METADATA_CACHE_LOCK:
+                cached = _METADATA_CACHE.get(cache_key)
+                if cached is not None and cached[0] > now:
+                    return deepcopy(cached[1])
         request = Request(
             f"{self.base_url.rstrip('/')}{path}",
             data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
@@ -130,5 +171,17 @@ class OzonDescriptionCategoryClient:
         if payload.get("code") and not payload.get("result"):
             message = payload.get("message") or payload.get("details") or "unknown error"
             raise OzonApiError(f"OZON API error {payload['code']}: {message}")
+        if ttl:
+            with _METADATA_CACHE_LOCK:
+                expired = [
+                    key for key, (expires_at, _) in _METADATA_CACHE.items()
+                    if expires_at <= now
+                ]
+                for key in expired:
+                    _METADATA_CACHE.pop(key, None)
+                if len(_METADATA_CACHE) >= _METADATA_CACHE_MAX_ITEMS:
+                    oldest = next(iter(_METADATA_CACHE))
+                    _METADATA_CACHE.pop(oldest, None)
+                _METADATA_CACHE[cache_key] = (now + ttl, deepcopy(payload))
         return payload
 

@@ -51,14 +51,18 @@ class LiveMetadataProvider(_RecordingProvider):
     def __init__(self, client: OzonDescriptionCategoryClient) -> None:
         super().__init__()
         self.client = client
+        self._category_tree_cache: dict[str, Any] | None = None
 
     def category_tree(self) -> dict[str, Any]:
+        if self._category_tree_cache is not None:
+            return self._category_tree_cache
         request = {"language": "RU"}
-        return self._record(
+        self._category_tree_cache = self._record(
             OzonDescriptionCategoryClient.TREE_PATH,
             request,
             self.client.category_tree(language="RU"),
         )
+        return self._category_tree_cache
 
     def category_attributes(self, category_id: int, type_id: int) -> dict[str, Any]:
         request = {
