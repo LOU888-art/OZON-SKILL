@@ -83,8 +83,8 @@ function walk(roots, visitor) {
   }
 }
 
-const PRICE_KEYS = ["price", "skuPrice", "offerPrice", "discountPrice", "salePrice", "promotionPrice", "consignPrice", "unitPrice", "priceValue", "priceInYuan"];
-const STOCK_KEYS = ["amountOnSale", "stock", "quantity", "canBookCount", "inventory", "sellableQuantity"];
+const PRICE_KEYS = ["price", "skuPrice", "offerPrice", "discountPrice", "currentPrice", "priceDisplay", "salePrice", "promotionPrice", "consignPrice", "unitPrice", "priceValue", "priceInYuan"];
+const STOCK_KEYS = ["amountOnSale", "stock", "quantity", "canBookCount", "canBookedAmount", "inventory", "sellableQuantity"];
 
 function explicitPrice(object) {
   if (!object || typeof object !== "object") return null;
@@ -146,14 +146,14 @@ function collectAxisValues(roots) {
       if (!Array.isArray(axes)) continue;
       for (const axis of axes) {
         if (!axis || typeof axis !== "object") continue;
-        const name = cleanText(firstValue(axis, ["prop", "propName", "name", "attributeName"]));
+        const name = cleanText(firstValue(axis, ["prop", "propName", "name", "attributeName", "title"]));
         const values = firstValue(axis, ["value", "values", "children", "propValues", "attributeValues"]);
         if (!Array.isArray(values)) continue;
         for (const item of values) {
           if (!item || typeof item !== "object") continue;
           const id = cleanText(firstValue(item, ["valueId", "vid", "id", "propValueId", "specId"]));
           const value = cleanText(firstValue(item, ["name", "value", "valueName", "text"]));
-          const image = absoluteUrl(firstValue(item, ["imageUrl", "imageURL", "image", "picUrl"]));
+          const image = absoluteUrl(firstValue(item, ["imageUrl", "imageURL", "image", "picUrl", "fullPathImageURI", "size310x310ImageURI", "size220x220ImageURI"]));
           if (id && value) result.set(id, { name, value, image });
           if (value) result.set(value, { name, value, image });
         }
@@ -166,10 +166,10 @@ function collectAxisValues(roots) {
 function skuFromObject(object, fallbackId, axisValues, rawSpec = null) {
   if (!object || typeof object !== "object") return null;
   const id = cleanText(firstValue(object, ["skuId", "skuID", "sku_id", "specId", "offerSkuId", "id"]) || fallbackId);
-  const specRaw = firstValue(object, ["attributes", "skuAttributes", "specAttributes", "specification", "props", "propPath", "spec", "specId"]) || rawSpec;
+  const specRaw = firstValue(object, ["attributes", "skuAttributes", "specAttributes", "specAttrs", "specAttr", "specification", "props", "propPath", "spec", "specId"]) || rawSpec;
   const specification = specificationParts(specRaw, axisValues);
   const price = explicitPrice(object); const stock = explicitStock(object);
-  let image = absoluteUrl(firstValue(object, ["skuImageUrl", "imageUrl", "imageURL", "image", "picUrl"]));
+  let image = absoluteUrl(firstValue(object, ["skuImageUrl", "imageUrl", "imageURL", "image", "picUrl", "fullPathImageURI"]));
   if (!image) image = specification.map(item => axisValues.get(item.value)?.image).find(Boolean) || "";
   const hasSignal = Boolean(firstValue(object, ["skuId", "skuID", "sku_id", "specId", "offerSkuId"])) || specification.length > 0;
   if (!hasSignal) return null;
@@ -181,6 +181,14 @@ function collectStructuredSkus(roots, axisValues) {
   const mapKeyPattern = /^(?:skuMap|skuInfoMap|skuInfosMap|skuPriceMap|sku2info|sku2Info|skuData)$/i;
   walk(roots, object => {
     for (const [key, value] of Object.entries(object)) {
+      if (mapKeyPattern.test(key) && Array.isArray(value)) {
+        const group = [];
+        value.forEach((item, index) => {
+          const sku = skuFromObject(item, `structured-sku-${index + 1}`, axisValues);
+          if (sku) group.push(sku);
+        });
+        if (group.length) groups.push(group);
+      }
       if (mapKeyPattern.test(key) && value && typeof value === "object" && !Array.isArray(value)) {
         const entries = Object.entries(value);
         const group = [];
@@ -290,7 +298,7 @@ function collectPriceRanges(roots) {
     result.push({ price_cny: price, minimum_quantity: minimum === null ? null : Math.floor(minimum), text_zh: cleanText(text) || null });
   };
   walk(roots, object => {
-    for (const key of ["priceRange", "priceRanges", "priceRangeList", "rangePrices", "priceList", "priceScale"]) {
+    for (const key of ["priceRange", "priceRanges", "priceRangeList", "rangePrices", "priceList", "priceScale", "offerPriceRanges", "currentPrices", "disPriceRanges"]) {
       const ranges = object[key];
       if (!Array.isArray(ranges)) continue;
       for (const item of ranges) if (item && typeof item === "object") add(firstValue(item, PRICE_KEYS), firstValue(item, ["beginAmount", "startQuantity", "minQuantity", "minimumQuantity", "quantity"]), JSON.stringify(item).slice(0, 300));
@@ -510,7 +518,7 @@ async function scan() {
   const attributes = collectAttributes(roots); let categoryId = ""; let supplierName = "";
   walk(roots, object => { if (!categoryId) { const value = cleanText(firstValue(object, ["thirdCategoryId", "categoryId", "categoryID", "leafCategoryId"])); if (/^\d+$/.test(value)) categoryId = value; } if (!supplierName) supplierName = cleanText(firstValue(object, ["companyName", "supplierName", "shopName"])); });
   const breadcrumbs = [...document.querySelectorAll("[class*='breadcrumb'] a,[class*='crumb'] a")].map(cleanText).filter(Boolean).slice(0, 20);
-  return { source_offer_id: offerId(), product_url: location.href, title_zh: title, images: images.main, detail_images: images.detail, sku_list: skuList, price_ranges: priceRanges, attributes_zh: attributes, category_id: categoryId, category_path_zh: breadcrumbs, supplier_info: { name: supplierName || null, min_order: priceRanges.find(item => item.minimum_quantity !== null)?.minimum_quantity ?? null, ship_from: shipping.ship_from_zh }, shipping_info: shipping, capture_diagnostics: { collector_version: "0.2.3", main_candidate_count: mainData.candidates.length, intercepted_response_count: mainData.response_urls.length, visible_sku_option_count: visibleOptions, expected_sku_count: expectedSkuCount, spec_groups: pageGroups.map(group => ({ name: group.name, count: group.labels.length })), warnings }, captured_at: new Date().toISOString() };
+  return { source_offer_id: offerId(), product_url: location.href, title_zh: title, images: images.main, detail_images: images.detail, sku_list: skuList, price_ranges: priceRanges, attributes_zh: attributes, category_id: categoryId, category_path_zh: breadcrumbs, supplier_info: { name: supplierName || null, min_order: priceRanges.find(item => item.minimum_quantity !== null)?.minimum_quantity ?? null, ship_from: shipping.ship_from_zh }, shipping_info: shipping, capture_diagnostics: { collector_version: "0.3.0", main_candidate_count: mainData.candidates.length, intercepted_response_count: mainData.response_urls.length, visible_sku_option_count: visibleOptions, expected_sku_count: expectedSkuCount, spec_groups: pageGroups.map(group => ({ name: group.name, count: group.labels.length })), warnings }, captured_at: new Date().toISOString() };
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

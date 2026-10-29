@@ -113,7 +113,7 @@
   window.addEventListener("message", event => {
     if (event.source !== window || event.data?.source !== "northstar-1688-collector" || event.data?.type !== "SCAN_MAIN") return;
     const knownNames = [
-      "__INIT_DATA__", "__INITIAL_STATE__", "__PRELOADED_STATE__", "__GLOBAL_DATA__",
+      "context", "__INIT_DATA__", "__INITIAL_STATE__", "__PRELOADED_STATE__", "__GLOBAL_DATA__",
       "__NEXT_DATA__", "__NUXT__", "__ICE_APP_DATA__", "__APOLLO_STATE__", "__STORE__"
     ];
     const known = knownNames.map(name => {
