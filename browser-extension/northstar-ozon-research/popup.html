@@ -1,9 +1,10 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="popup.css"><title>Northstar Ozon 选品</title></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="popup.css"><title>Northstar Ozon 商品分析</title></head>
 <body>
-  <header><span>N</span><div><b>Northstar</b><small>Ozon 自动选品插件</small></div></header>
+  <header><span>N</span><div><b>Northstar</b><small>Ozon 商品分析与自动选品</small></div></header>
   <main>
+    <section><b>页面数据浮层已启用</b><p>打开 Ozon 商品列表或详情页即可查看 SKU、价格、评分、尺寸等公开数据。未公开指标不会伪造。</p></section>
     <label>ERP 网址<input id="erpUrl" type="url" placeholder="https://erp.example.com" autocomplete="off"></label>
     <section id="ruleInfo"><b>选品规则</b><p>连接 ERP 后读取已保存规则。</p></section>
     <label class="check"><input id="autoScroll" type="checkbox" checked> 自动滚动加载当前结果</label>
@@ -11,7 +12,7 @@
     <button id="syncBtn" type="button">扫描并同步当前结果 <span>→</span></button>
     <p id="status">请先打开 Ozon Seller 的“分析 → Ozon 上的商品”页面。</p>
   </main>
-  <footer>不保存 Ozon 密码或 Cookie</footer>
+  <footer>0.2.0 · 不保存 Ozon 密码或 Cookie</footer>
   <script src="popup.js"></script>
 </body>
 </html>

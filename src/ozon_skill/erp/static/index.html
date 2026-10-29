@@ -366,10 +366,10 @@
 
   <dialog id="researchPluginDialog">
     <div class="dialog-card stores-dialog">
-      <div class="dialog-head"><div><span class="eyebrow">BROWSER CONNECTOR</span><h3>Northstar Ozon 选品插件</h3></div><button id="closeResearchPluginBtn" class="close" type="button">×</button></div>
-      <p class="dialog-note">插件不读取或保存 Ozon 密码、Cookie。它只在您已登录的 Ozon 商品分析页面读取表格，并通过已登录的 Northstar ERP 标签页同步候选商品。</p>
-      <ol class="plugin-steps"><li>点击下方“下载插件 ZIP”，下载后解压到电脑中的固定文件夹。</li><li>打开 <code>chrome://extensions</code> 或 <code>edge://extensions</code>，开启“开发者模式”。</li><li>点击“加载已解压的扩展程序”，选择解压后的 <code>northstar-ozon-research</code> 文件夹。</li><li>保持本 ERP 页面打开并已登录，再打开 Ozon Seller 的“分析 → Ozon 上的商品”。</li><li>点击浏览器工具栏中的 Northstar 插件，ERP 网址填写当前网站地址，然后选择“扫描并同步当前结果”。</li></ol>
-      <div class="warning">插件只同步当前页面已经加载的商品。可先在 Ozon 页面设置筛选和排序，再让插件自动滚动扫描；不会绕过 Ozon 登录或权限。</div>
+      <div class="dialog-head"><div><span class="eyebrow">BROWSER CONNECTOR</span><h3>Northstar Ozon 商品分析插件</h3></div><button id="closeResearchPluginBtn" class="close" type="button">×</button></div>
+      <p class="dialog-note">打开 Ozon 商品列表或商品详情页即可显示公开可验证的数据浮层；在 Ozon Seller 商品分析页还可同步候选商品到 ERP。插件不读取或保存 Ozon 密码、Cookie。</p>
+      <ol class="plugin-steps"><li>点击下方“下载插件 ZIP”，下载后解压到电脑中的固定文件夹。</li><li>打开 <code>chrome://extensions</code> 或 <code>edge://extensions</code>，开启“开发者模式”。</li><li>点击“加载已解压的扩展程序”，选择解压后的 <code>northstar-ozon-research</code> 文件夹。</li><li>打开 <code>www.ozon.ru</code> 的商品列表或详情页，即可看到 Northstar 数据面板。</li><li>需要同步选品时，保持 ERP 已登录并打开 Ozon Seller 的“分析 → Ozon 上的商品”，再点击插件执行同步。</li></ol>
+      <div class="warning">月销量、广告占比、转化率、退货率和佣金等非公开指标只有取得 Ozon Seller 的真实数据后才会显示；插件不会用估算值冒充真实数据。</div>
       <div class="dialog-actions"><a class="primary plugin-download" href="/api/research/plugin" download="northstar-ozon-research.zip">下载插件 ZIP <span>↓</span></a></div>
     </div>
   </dialog>

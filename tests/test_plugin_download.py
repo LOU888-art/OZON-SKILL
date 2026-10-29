@@ -61,6 +61,14 @@ class ResearchPluginDownloadTests(unittest.TestCase):
                 "northstar-ozon-research/manifest.json"
             ).decode("utf-8")
         self.assertIn('"manifest_version": 3', manifest)
+        self.assertIn('"version": "0.2.0"', manifest)
+        self.assertIn('"https://www.ozon.ru/*"', manifest)
+        self.assertIn(
+            "northstar-ozon-research/ozon-overlay.js", archive.namelist()
+        )
+        self.assertIn(
+            "northstar-ozon-research/ozon-overlay.css", archive.namelist()
+        )
 
 
 if __name__ == "__main__":

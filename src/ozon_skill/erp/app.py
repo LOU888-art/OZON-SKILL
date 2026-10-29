@@ -94,6 +94,8 @@ _STATIC_ROOT = Path(__file__).with_name("static")
 _PLUGIN_FILES = (
     "manifest.json",
     "content.js",
+    "ozon-overlay.js",
+    "ozon-overlay.css",
     "popup.html",
     "popup.css",
     "popup.js",
