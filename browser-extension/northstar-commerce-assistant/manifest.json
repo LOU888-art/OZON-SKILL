@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Northstar 跨境商品助手",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "一个插件完成1688商品采集、Ozon商品数据展示和Ozon Seller选品同步。",
-  "permissions": ["activeTab", "storage", "scripting", "cookies"],
+  "permissions": ["activeTab", "storage", "scripting", "cookies", "tabs"],
   "optional_host_permissions": ["https://*/*"],
   "host_permissions": [
     "https://*.1688.com/*",
     "https://seller.ozon.ru/*",
+    "https://seller.ozonru.cn/*",
     "https://www.ozon.ru/*",
     "https://ozon.ru/*"
   ],
@@ -31,7 +32,7 @@
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://seller.ozon.ru/*"],
+      "matches": ["https://seller.ozon.ru/*", "https://seller.ozonru.cn/*"],
       "js": ["ozon-seller-content.js", "seller-metrics.js"],
       "run_at": "document_idle"
     },

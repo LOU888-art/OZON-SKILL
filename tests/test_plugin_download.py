@@ -41,7 +41,7 @@ class ResearchPluginDownloadTests(unittest.TestCase):
                 "northstar-commerce-assistant/collector-main-probe.js"
             ).decode("utf-8")
         self.assertIn('"manifest_version": 3', manifest)
-        self.assertIn('"version": "1.2.0"', manifest)
+        self.assertIn('"version": "1.3.0"', manifest)
         self.assertIn('"cookies"', manifest)
         self.assertIn('"https://*.1688.com/*"', manifest)
         self.assertIn('"https://www.ozon.ru/*"', manifest)
@@ -67,7 +67,7 @@ class ResearchPluginDownloadTests(unittest.TestCase):
                 "northstar-commerce-assistant/manifest.json"
             ).decode("utf-8")
         self.assertIn('"manifest_version": 3', manifest)
-        self.assertIn('"version": "1.2.0"', manifest)
+        self.assertIn('"version": "1.3.0"', manifest)
         self.assertIn('"https://www.ozon.ru/*"', manifest)
         self.assertIn(
             "northstar-commerce-assistant/ozon-overlay.js", archive.namelist()

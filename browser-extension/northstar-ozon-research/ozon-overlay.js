@@ -267,7 +267,7 @@
       weight: aspect(pairs, [/^вес/, /масса/]) || sellerWeight(sellerData) || labeledValue(lines, ["Вес товара", "Вес"]),
       country: aspect(pairs, [/страна.*изготов/, /страна.*производ/]) || labeledValue(lines, ["Страна-изготовитель"]),
       sellerMetrics: sellerData,
-      sellerStatus: seller?.ok ? "已连接 Ozon Seller" : (seller?.error || "未授权"),
+      sellerStatus: seller?.ok ? `${seller.source || "Ozon Seller"} · 已连接` : (seller?.error || "未授权"),
       followCount: publicData.sellers.length,
       followMin: sellerPrices.length ? Math.min(...sellerPrices) : null,
       followMax: sellerPrices.length ? Math.max(...sellerPrices) : null,
@@ -306,16 +306,16 @@
     addRow(body, "广告费占比", formatNumber(metric(data.sellerMetrics, "drr"), "%"));
     addRow(body, "促销天数 / 折扣", `${formatNumber(metric(data.sellerMetrics, "daysInPromo", "days_in_promo"), " 天")} / ${formatNumber(metric(data.sellerMetrics, "discount"), "%")}`);
     addRow(body, "付费推广天数", formatNumber(metric(data.sellerMetrics, "daysWithTrafarets", "days_with_trafarets"), " 天"));
-    addRow(body, "商品卡浏览量", formatNumber(metric(data.sellerMetrics, "qtyViewPdp", "qty_view_pdp")));
+    addRow(body, "商品卡浏览量", formatNumber(metric(data.sellerMetrics, "qtyViewPdp", "qty_view_pdp", "sessionCount", "session_count")));
     addRow(body, "搜索目录浏览量", formatNumber(metric(data.sellerMetrics, "sessionCountSearch", "session_count_search")));
-    addRow(body, "展示转化率", formatNumber(metric(data.sellerMetrics, "convViewToOrder"), "%"));
+    addRow(body, "展示 / 加购转化率", `${formatNumber(metric(data.sellerMetrics, "convViewToOrder"), "%")} / ${formatNumber(metric(data.sellerMetrics, "convToCart", "conv_to_cart"), "%")}`);
     addRow(body, "退货取消率", formatNumber(metric(data.sellerMetrics, "nullableRedemptionRate", "redemption_rate"), "%"));
     addRow(body, "发货模式", metric(data.sellerMetrics, "salesSchema", "sales_schema") || "未公开");
     addRow(body, "类目佣金", formatNumber(metric(data.sellerMetrics, "commission_rate", "commissionRate"), "%"));
     addRow(body, "上架时间", metric(data.sellerMetrics, "nullableCreateDate", "created_at", "visible_since") || "未公开");
     addRow(body, "跟卖卖家数", data.followCount ? `${data.followCount} 家` : "未公开");
     addRow(body, "跟卖最低 / 最高", data.followMin ? `${formatRub(data.followMin)} / ${formatRub(data.followMax)}` : "未公开");
-    addRow(body, "Seller 数据源", data.sellerStatus, data.sellerStatus.startsWith("已连接") ? "blue" : "muted");
+    addRow(body, "Seller 数据源", data.sellerStatus, data.sellerStatus.includes("已连接") ? "blue" : "muted");
     const note = document.createElement("footer");
     note.textContent = "公开字段来自当前 Ozon 页面；经营指标仅在浏览器已登录 Ozon Seller 时读取，不使用虚构估算值。";
     panel.append(heading, body, note);
@@ -362,7 +362,7 @@
       const monthly = metric(metrics, "soldCount", "sold_count");
       addRow(body, "日销量 / 月动态", `${monthly != null ? formatNumber(Number(monthly) / 30) : "未公开"} / ${formatNumber(metric(metrics, "salesDynamics", "sales_dynamics"), "%")}`);
       addRow(body, "广告占比 / 转化率", `${formatNumber(metric(metrics, "drr"), "%")} / ${formatNumber(metric(metrics, "convViewToOrder"), "%")}`);
-      addRow(body, "商品卡 / 搜索浏览", `${formatNumber(metric(metrics, "qtyViewPdp", "qty_view_pdp"))} / ${formatNumber(metric(metrics, "sessionCountSearch", "session_count_search"))}`);
+      addRow(body, "商品卡 / 搜索浏览", `${formatNumber(metric(metrics, "qtyViewPdp", "qty_view_pdp", "sessionCount", "session_count"))} / ${formatNumber(metric(metrics, "sessionCountSearch", "session_count_search"))}`);
       addRow(body, "发货 / 退货率", `${metric(metrics, "salesSchema", "sales_schema") || "未公开"} / ${formatNumber(metric(metrics, "nullableRedemptionRate", "redemption_rate"), "%")}`);
       addRow(body, "佣金 / 上架时间", `${formatNumber(metric(metrics, "commission_rate", "commissionRate"), "%")} / ${metric(metrics, "nullableCreateDate", "created_at", "visible_since") || "未公开"}`);
     });
