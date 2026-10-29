@@ -14,7 +14,7 @@ class BrowserCollectorTests(unittest.TestCase):
             service = PipelineService(Path(temporary))
             result = service.ingest_1688_browser_capture(
                 {
-                    "collector_version": "0.1.0",
+                    "collector_version": "0.2.2",
                     "product": {
                         "source_offer_id": "628680616884",
                         "product_url": "https://detail.1688.com/offer/628680616884.html",
@@ -54,6 +54,8 @@ class BrowserCollectorTests(unittest.TestCase):
                             "main_candidate_count": 6,
                             "intercepted_response_count": 3,
                             "visible_sku_option_count": 4,
+                            "expected_sku_count": 1,
+                            "captured_sku_count": 1,
                         },
                         "category_path_zh": ["家居百货", "收纳用品"],
                         "supplier_info": {"name": "测试供应商"},
@@ -90,6 +92,7 @@ class BrowserCollectorTests(unittest.TestCase):
             with self.assertRaisesRegex(PipelineError, "主图"):
                 service.ingest_1688_browser_capture(
                     {
+                        "collector_version": "0.2.2",
                         "source_offer_id": "628680616884",
                         "title_zh": "测试商品",
                         "images": [],
@@ -103,11 +106,37 @@ class BrowserCollectorTests(unittest.TestCase):
             with self.assertRaisesRegex(PipelineError, "1个SKU缺少采购价"):
                 service.ingest_1688_browser_capture(
                     {
+                        "collector_version": "0.2.2",
                         "source_offer_id": "628680616884",
                         "title_zh": "测试商品",
                         "images": [{"url": "https://cbu01.alicdn.com/main.jpg"}],
                         "sku_list": [{"sku_id": "one", "purchase_price_cny": None}],
                     }
+                )
+
+    def test_capture_rejects_outdated_plugin_and_sku_count_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service = PipelineService(Path(temporary))
+            product = {
+                "source_offer_id": "628680616884",
+                "title_zh": "测试商品",
+                "images": [{"url": "https://cbu01.alicdn.com/main.jpg"}],
+                "sku_list": [
+                    {"sku_id": "one", "purchase_price_cny": "10"},
+                    {"sku_id": "two", "purchase_price_cny": "10"},
+                ],
+                "capture_diagnostics": {
+                    "expected_sku_count": 1,
+                    "captured_sku_count": 2,
+                },
+            }
+            with self.assertRaisesRegex(PipelineError, "版本过旧"):
+                service.ingest_1688_browser_capture(
+                    {"collector_version": "0.2.1", "product": product}
+                )
+            with self.assertRaisesRegex(PipelineError, "应有1个SKU"):
+                service.ingest_1688_browser_capture(
+                    {"collector_version": "0.2.2", "product": product}
                 )
 
 

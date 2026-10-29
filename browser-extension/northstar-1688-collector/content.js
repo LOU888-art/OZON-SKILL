@@ -317,7 +317,80 @@ function visibleSkuElements() {
   return raw.filter(element => !raw.some(other => other !== element && element.contains(other)));
 }
 
-function domSkuGroups() {
+const SKU_AXIS_NAMES = new Set(["颜色", "颜色分类", "香型", "净含量", "规格", "尺寸", "尺码", "型号", "款式", "类型", "口味", "容量", "重量", "长度", "直径", "材质", "包装", "数量", "套装", "适用对象"]);
+
+function isVisibleElement(element) {
+  if (!element?.getBoundingClientRect) return false;
+  const rect = element.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+
+function validOptionLabel(value, axisName) {
+  const text = cleanText(value);
+  if (!text || text.length > 50 || text === axisName || SKU_AXIS_NAMES.has(text)) return false;
+  if (/^(?:0|\+|-|−|立即下单|加采购车|跨境铺货|立即询价)$/.test(text)) return false;
+  if (/[¥￥]|库存|起批|已售|采购|询价|运费|送达/.test(text)) return false;
+  return true;
+}
+
+function directOptionLabels(container, axisName) {
+  let current = container;
+  for (let depth = 0; current && depth < 4; depth += 1) {
+    const children = [...current.children].filter(isVisibleElement);
+    if (children.length === 1 && children[0].children.length > 0) { current = children[0]; continue; }
+    const labels = [...new Set(children.map(cleanText).filter(value => validOptionLabel(value, axisName)))];
+    if (labels.length >= 1 && labels.length <= 20) return labels;
+    if (children.length !== 1) break;
+    current = children[0];
+  }
+  return [];
+}
+
+function axisContainerCandidates(header) {
+  const result = [];
+  const add = element => { if (element && !result.includes(element) && isVisibleElement(element)) result.push(element); };
+  add(header.nextElementSibling);
+  add(header.parentElement?.nextElementSibling);
+  const siblings = [...(header.parentElement?.children || [])];
+  const headerIndex = siblings.indexOf(header);
+  for (const sibling of siblings.slice(headerIndex + 1, headerIndex + 4)) add(sibling);
+  if (header.parentElement) {
+    const parentSiblings = [...(header.parentElement.parentElement?.children || [])];
+    const parentIndex = parentSiblings.indexOf(header.parentElement);
+    for (const sibling of parentSiblings.slice(parentIndex + 1, parentIndex + 3)) add(sibling);
+  }
+  return result;
+}
+
+function semanticSkuGroups() {
+  const groups = [];
+  const nodes = [...document.querySelectorAll("div,span,label,p,dt")].filter(element => {
+    const text = cleanText(element);
+    let inTradePanel = false;
+    for (let current = element, depth = 0; current && depth < 7; depth += 1, current = current.parentElement) {
+      const panelText = cleanText(current);
+      if (/库存\s*\d+/.test(panelText) && /[¥￥]\s*\d/.test(panelText)) { inTradePanel = true; break; }
+    }
+    return SKU_AXIS_NAMES.has(text) && text.length <= 12 && isVisibleElement(element) && inTradePanel;
+  });
+  for (const header of nodes) {
+    const name = cleanText(header);
+    let best = [];
+    for (const container of axisContainerCandidates(header)) {
+      const labels = directOptionLabels(container, name);
+      if (labels.length) { best = labels; break; }
+    }
+    if (!best.length) continue;
+    const existing = groups.find(group => group.name === name);
+    if (!existing || best.length > existing.labels.length) {
+      if (existing) existing.labels = best;
+      else groups.push({ name, labels: best });
+    }
+  }
+  return groups.filter(group => group.labels.length <= 20).slice(0, 4);
+}
+
+function genericSkuGroups() {
   const elements = visibleSkuElements();
   const groups = new Map();
   for (const element of elements) {
@@ -343,7 +416,12 @@ function domSkuGroups() {
     }
     unique.push({ name: name && name.length <= 30 ? name : `规格${unique.length + 1}`, labels });
   }
-  return unique.slice(0, 4);
+  return unique.filter(group => group.labels.every(label => validOptionLabel(label, group.name))).slice(0, 3);
+}
+
+function domSkuGroups() {
+  const semantic = semanticSkuGroups();
+  return semantic.length ? semantic : genericSkuGroups();
 }
 
 function cartesian(groups, limit = 80) {
@@ -371,8 +449,27 @@ function currentPriceAndStock() {
   return { price: priceMatch ? Number(priceMatch[1]) : null, stock: stockMatch ? Number(stockMatch[1]) : null };
 }
 
-async function collectDomSkus(mainImage) {
-  const groups = domSkuGroups();
+function smallestVisibleExactText(value) {
+  return [...document.querySelectorAll("button,[role='button'],label,li,div,span")]
+    .filter(element => isVisibleElement(element) && cleanText(element) === value)
+    .sort((left, right) => {
+      const leftRect = left.getBoundingClientRect(); const rightRect = right.getBoundingClientRect();
+      return leftRect.width * leftRect.height - rightRect.width * rightRect.height;
+    })[0] || null;
+}
+
+function optionImage(element, value) {
+  let current = element;
+  for (let depth = 0; current && depth < 4; depth += 1, current = current.parentElement) {
+    if (cleanText(current) !== value) continue;
+    const image = current.querySelector("img");
+    const url = absoluteUrl(image?.currentSrc || image?.src);
+    if (url) return url;
+  }
+  return "";
+}
+
+async function collectDomSkus(mainImage, groups = domSkuGroups()) {
   if (!groups.length) return [];
   const combinations = cartesian(groups);
   const result = [];
@@ -381,10 +478,11 @@ async function collectDomSkus(mainImage) {
     let valid = true;
     let image = "";
     for (const part of combination) {
-      const element = visibleSkuElements().find(candidate => cleanText(candidate.getAttribute("title") || candidate.getAttribute("aria-label") || candidate) === part.value);
+      if ((groups.find(group => group.name === part.name)?.labels.length || 0) === 1) continue;
+      const element = smallestVisibleExactText(part.value);
       if (!element) { valid = false; break; }
       element.click();
-      image = image || absoluteUrl(element.querySelector("img")?.currentSrc || element.querySelector("img")?.src);
+      image = image || optionImage(element, part.value);
       await delay(180);
     }
     if (!valid) continue;
@@ -398,8 +496,11 @@ async function collectDomSkus(mainImage) {
 async function scan() {
   const mainData = await requestMainCandidates(); const scriptRoots = parsedJsonRoots(); const roots = [...mainData.candidates, ...scriptRoots];
   if (!roots.length) throw new Error("没有捕获到1688商品接口数据。请刷新当前详情页，等待价格和规格显示后重新采集");
-  const axisValues = collectAxisValues(roots); let skuList = collectStructuredSkus(roots, axisValues); const images = collectImages(roots); const shipping = collectShipping(roots); const priceRanges = collectPriceRanges(roots); const warnings = []; const visibleOptions = visibleSkuOptionCount();
-  if (!skuList.length && visibleOptions > 1) { skuList = await collectDomSkus(images.main[0]?.url); if (skuList.length) warnings.push("完整SKU由页面规格逐项校验生成"); }
+  const axisValues = collectAxisValues(roots); let skuList = collectStructuredSkus(roots, axisValues); const images = collectImages(roots); const shipping = collectShipping(roots); const priceRanges = collectPriceRanges(roots); const warnings = []; const visibleOptions = visibleSkuOptionCount(); const pageGroups = semanticSkuGroups(); const expectedSkuCount = pageGroups.length ? pageGroups.reduce((total, group) => total * group.labels.length, 1) : null;
+  if (expectedSkuCount && skuList.length !== expectedSkuCount) { skuList = await collectDomSkus(images.main[0]?.url, pageGroups); if (skuList.length) warnings.push("完整SKU已按页面规格标题和选项逐项校验"); }
+  if (!skuList.length && visibleOptions > 1) { const fallbackGroups = domSkuGroups(); skuList = await collectDomSkus(images.main[0]?.url, fallbackGroups); if (skuList.length) warnings.push("完整SKU由页面规格逐项校验生成"); }
+  if (expectedSkuCount && skuList.length !== expectedSkuCount) throw new Error(`页面规格应有 ${expectedSkuCount} 个SKU，但实际只校验到 ${skuList.length} 个，已阻止发送`);
+  if (!expectedSkuCount && skuList.length > 30) throw new Error(`页面没有确认到有效规格组，却生成了 ${skuList.length} 个SKU，已阻止发送，请更新采集规则`);
   if (!skuList.length && visibleOptions <= 1) { const priceText = cleanText(document.querySelector("[class*='price']")); skuList = [{ sku_id: `${offerId()}-default`, specification_zh: [], specification_text_zh: "默认规格", purchase_price_cny: priceRanges[0]?.price_cny ?? numberValue(priceText), stock: null, image_url: images.main[0]?.url || null }]; }
   if (!skuList.length || (skuList.length === 1 && visibleOptions > 1)) throw new Error(`页面显示多个规格，但只读取到 ${skuList.length} 个SKU。请刷新详情页，等待规格和价格加载完成后重新采集`);
   const missingPrices = skuList.filter(sku => sku.purchase_price_cny === null).length;
@@ -409,7 +510,7 @@ async function scan() {
   const attributes = collectAttributes(roots); let categoryId = ""; let supplierName = "";
   walk(roots, object => { if (!categoryId) { const value = cleanText(firstValue(object, ["thirdCategoryId", "categoryId", "categoryID", "leafCategoryId"])); if (/^\d+$/.test(value)) categoryId = value; } if (!supplierName) supplierName = cleanText(firstValue(object, ["companyName", "supplierName", "shopName"])); });
   const breadcrumbs = [...document.querySelectorAll("[class*='breadcrumb'] a,[class*='crumb'] a")].map(cleanText).filter(Boolean).slice(0, 20);
-  return { source_offer_id: offerId(), product_url: location.href, title_zh: title, images: images.main, detail_images: images.detail, sku_list: skuList, price_ranges: priceRanges, attributes_zh: attributes, category_id: categoryId, category_path_zh: breadcrumbs, supplier_info: { name: supplierName || null, min_order: priceRanges.find(item => item.minimum_quantity !== null)?.minimum_quantity ?? null, ship_from: shipping.ship_from_zh }, shipping_info: shipping, capture_diagnostics: { collector_version: "0.2.1", main_candidate_count: mainData.candidates.length, intercepted_response_count: mainData.response_urls.length, visible_sku_option_count: visibleOptions, warnings }, captured_at: new Date().toISOString() };
+  return { source_offer_id: offerId(), product_url: location.href, title_zh: title, images: images.main, detail_images: images.detail, sku_list: skuList, price_ranges: priceRanges, attributes_zh: attributes, category_id: categoryId, category_path_zh: breadcrumbs, supplier_info: { name: supplierName || null, min_order: priceRanges.find(item => item.minimum_quantity !== null)?.minimum_quantity ?? null, ship_from: shipping.ship_from_zh }, shipping_info: shipping, capture_diagnostics: { collector_version: "0.2.2", main_candidate_count: mainData.candidates.length, intercepted_response_count: mainData.response_urls.length, visible_sku_option_count: visibleOptions, expected_sku_count: expectedSkuCount, spec_groups: pageGroups.map(group => ({ name: group.name, count: group.labels.length })), warnings }, captured_at: new Date().toISOString() };
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

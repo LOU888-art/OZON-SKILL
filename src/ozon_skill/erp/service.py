@@ -3581,6 +3581,12 @@ class PipelineService:
     ) -> dict[str, Any]:
         """Create stage 1 from data visible in the operator's logged-in browser."""
 
+        collector_version = str(value.get("collector_version") or "").strip()
+        if collector_version in {"", "0.1.0", "0.2.0", "0.2.1"}:
+            raise PipelineError(
+                "1688采集插件版本过旧，请重新下载并安装0.2.2或更高版本",
+                status=409,
+            )
         product = value.get("product") if isinstance(value.get("product"), Mapping) else value
         product_url = str(product.get("product_url") or "").strip()
         raw_offer_id = product.get("source_offer_id") or product_url
@@ -3728,6 +3734,24 @@ class PipelineService:
         raw_diagnostics = (
             raw_diagnostics if isinstance(raw_diagnostics, Mapping) else {}
         )
+        try:
+            expected_sku_count = int(
+                raw_diagnostics.get("expected_sku_count") or 0
+            )
+        except (TypeError, ValueError):
+            expected_sku_count = 0
+        try:
+            captured_sku_count = int(
+                raw_diagnostics.get("captured_sku_count") or len(sku_rows)
+            )
+        except (TypeError, ValueError):
+            captured_sku_count = len(sku_rows)
+        if expected_sku_count > 0 and captured_sku_count != expected_sku_count:
+            raise PipelineError(
+                f"页面规格应有{expected_sku_count}个SKU，但插件采集了{captured_sku_count}个，已阻止保存"
+            )
+        if len(sku_rows) > captured_sku_count:
+            raise PipelineError("插件提交的SKU数量超过采集数量，已阻止保存")
         price_ranges: list[dict[str, Any]] = []
         raw_price_ranges = product.get("price_ranges") or []
         if isinstance(raw_price_ranges, list):
@@ -3799,7 +3823,7 @@ class PipelineService:
                 "product_url": product_url[:2000] or None,
                 "captured_at": str(product.get("captured_at") or _now())[:80],
                 "collector": "northstar-1688-collector",
-                "collector_version": str(value.get("collector_version") or "0.1.0")[:40],
+                "collector_version": collector_version[:40],
                 "actor": str(actor or "")[:80],
                 "warnings": warnings,
                 "diagnostics": {
@@ -3812,6 +3836,9 @@ class PipelineService:
                     "visible_sku_option_count": diagnostic_integer(
                         "visible_sku_option_count"
                     ),
+                    "expected_sku_count": expected_sku_count,
+                    "captured_sku_count": captured_sku_count,
+                    "selected_sku_count": len(sku_rows),
                 },
             },
         }
