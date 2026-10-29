@@ -2,6 +2,7 @@ const $ = selector => document.querySelector(selector);
 const setStatus = (message, type = "") => { $("#status").textContent = message; $("#status").className = type; };
 const escapeHtml = value => String(value ?? "").replace(/[&<>'"]/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character]));
 let captured = null;
+let saveErpUrlTimer = null;
 
 function normalizedUrl(value) {
   const url = new URL(value);
@@ -10,6 +11,34 @@ function normalizedUrl(value) {
 }
 
 function originPattern(origin) { return `${origin}/*`; }
+
+function showErpUrlSaved(saved) {
+  const hint = $("#erpUrlHint");
+  hint.textContent = saved ? "已记住，下次打开插件自动填充" : "首次填写后自动记住";
+  hint.classList.toggle("saved", saved);
+}
+
+async function saveErpUrl() {
+  const input = $("#erpUrl");
+  const value = input.value.trim();
+  if (!value) {
+    await chrome.storage.local.remove("erpUrl");
+    showErpUrlSaved(false);
+    return "";
+  }
+  const origin = normalizedUrl(value);
+  await chrome.storage.local.set({ erpUrl: origin });
+  input.value = origin;
+  showErpUrlSaved(true);
+  return origin;
+}
+
+function scheduleErpUrlSave() {
+  clearTimeout(saveErpUrlTimer);
+  saveErpUrlTimer = setTimeout(() => {
+    saveErpUrl().catch(() => showErpUrlSaved(false));
+  }, 500);
+}
 
 async function erpCall(origin, path, options = {}) {
   const tabs = await chrome.tabs.query({ url: originPattern(origin) });
@@ -73,13 +102,14 @@ async function scan() {
   const button = $("#scanBtn");
   button.disabled = true;
   try {
+    if ($("#erpUrl").value.trim()) await saveErpUrl();
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.url || !/https:\/\/[^/]*1688\.com\//i.test(tab.url)) throw new Error("当前标签页不是1688商品页面");
     setStatus("正在读取页面接口、完整SKU、价格、库存与运费…");
     const response = await scanPage(tab.id);
     if (!response?.ok) throw new Error(response?.error || "页面采集失败");
     captured = response.product;
-    if (captured?.capture_diagnostics?.collector_version !== "0.2.2") throw new Error("插件已更新，请先刷新当前1688商品页，再重新读取");
+    if (captured?.capture_diagnostics?.collector_version !== "0.2.3") throw new Error("插件已更新，请先刷新当前1688商品页，再重新读取");
     if (!captured?.source_offer_id) throw new Error("没有识别到商品ID，请打开 detail.1688.com 的商品详情页");
     render();
     setStatus("采集完成。请核对SKU数量、价格和运费，取消不想上架的SKU后再发送。", "success");
@@ -94,15 +124,17 @@ async function send() {
   try {
     const missingPrices = captured.sku_list.filter(sku => sku.purchase_price_cny === null || sku.purchase_price_cny === undefined);
     if (missingPrices.length) throw new Error(`仍有${missingPrices.length}个SKU没有采购价，请刷新1688页面后重新采集`);
-    const origin = normalizedUrl($("#erpUrl").value.trim());
+    const rawErpUrl = $("#erpUrl").value.trim();
+    if (!rawErpUrl) throw new Error("请先填写ERP网址");
+    const origin = normalizedUrl(rawErpUrl);
     const granted = await chrome.permissions.request({ origins: [originPattern(origin)] });
     if (!granted) throw new Error("未授权插件访问ERP网址");
-    await chrome.storage.local.set({ erpUrl: origin });
+    await saveErpUrl();
     const selected = [...document.querySelectorAll("[data-sku-index]")].filter(input => input.checked).map(input => captured.sku_list[Number(input.dataset.skuIndex)]);
     if (!selected.length) throw new Error("至少保留一个SKU");
     const product = { ...captured, sku_list: selected, capture_diagnostics: { ...(captured.capture_diagnostics || {}), captured_sku_count: captured.sku_list.length, selected_sku_count: selected.length } };
     setStatus("正在发送完整商品数据到ERP第一阶段…");
-    const result = await erpCall(origin, "/api/collector/1688", { method: "POST", body: JSON.stringify({ collector_version: "0.2.2", product }) });
+    const result = await erpCall(origin, "/api/collector/1688", { method: "POST", body: JSON.stringify({ collector_version: "0.2.3", product }) });
     setStatus(`采集成功：商品 ${result.pipeline_id}，${result.sku_count} 个SKU、${result.image_count} 张主图，运费信息已保存。`, "success");
   } catch (error) {
     setStatus(error.message || String(error), "error");
@@ -112,6 +144,12 @@ async function send() {
 document.addEventListener("DOMContentLoaded", async () => {
   const saved = await chrome.storage.local.get("erpUrl");
   $("#erpUrl").value = saved.erpUrl || "";
+  showErpUrlSaved(Boolean(saved.erpUrl));
+  $("#erpUrl").oninput = scheduleErpUrlSave;
+  $("#erpUrl").onchange = () => {
+    clearTimeout(saveErpUrlTimer);
+    saveErpUrl().catch(error => setStatus(error.message || String(error), "error"));
+  };
   $("#scanBtn").onclick = scan;
   $("#sendBtn").onclick = send;
   $("#selectAll").onchange = event => { document.querySelectorAll("[data-sku-index]").forEach(input => { input.checked = event.target.checked; }); updateCount(); };

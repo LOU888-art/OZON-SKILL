@@ -30,9 +30,15 @@ class ResearchPluginDownloadTests(unittest.TestCase):
             self.assertIn(
                 "northstar-1688-collector/main-probe.js", archive.namelist()
             )
+            popup = archive.read(
+                "northstar-1688-collector/popup.js"
+            ).decode("utf-8")
         self.assertIn('"manifest_version": 3', manifest)
-        self.assertIn('"version": "0.2.2"', manifest)
+        self.assertIn('"version": "0.2.3"', manifest)
         self.assertIn('"https://*.1688.com/*"', manifest)
+        self.assertIn('chrome.storage.local.set({ erpUrl: origin })', popup)
+        self.assertIn('chrome.storage.local.get("erpUrl")', popup)
+        self.assertIn("scheduleErpUrlSave", popup)
 
     def test_archive_contains_only_installable_extension_files(self) -> None:
         body = _research_plugin_archive()
