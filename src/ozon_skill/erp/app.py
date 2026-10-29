@@ -97,9 +97,11 @@ _UNIFIED_PLUGIN_SOURCES = {
     "popup.css": ("northstar-commerce-assistant", "popup.css"),
     "popup.js": ("northstar-commerce-assistant", "popup.js"),
     "README.md": ("northstar-commerce-assistant", "README.md"),
+    "background.js": ("northstar-commerce-assistant", "background.js"),
     "collector-main-probe.js": ("northstar-1688-collector", "main-probe.js"),
     "collector-content.js": ("northstar-1688-collector", "content.js"),
     "ozon-seller-content.js": ("northstar-ozon-research", "content.js"),
+    "seller-metrics.js": ("northstar-ozon-research", "seller-metrics.js"),
     "ozon-overlay.js": ("northstar-ozon-research", "ozon-overlay.js"),
     "ozon-overlay.css": ("northstar-ozon-research", "ozon-overlay.css"),
 }
