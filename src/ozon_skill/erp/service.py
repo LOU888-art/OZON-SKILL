@@ -605,6 +605,12 @@ class PipelineService:
         self._supplier_schedule_thread: threading.Thread | None = None
         self._supplier_schedule_wake = threading.Event()
         self._reserved_offer_ids_cache: set[str] | None = None
+        # A category pair returned by the live picker is already verified
+        # against this store's current Ozon tree. Reuse that proof when the
+        # user confirms it instead of scanning the full tree a second time.
+        self._verified_category_options: dict[
+            tuple[str, str, int, int], dict[str, Any]
+        ] = {}
         self.stores = StoreRegistry(self.work_root / ".ozon-stores.json")
         self.auth = AuthRegistry(self.work_root / ".auth.json")
         self.ai_provider = AiProviderRegistry(self.work_root / ".ai-provider.json")
@@ -3997,43 +4003,28 @@ class PipelineService:
             raise PipelineError("类目关键词不能超过 80 个字符")
         store = self._selected_store(pipeline_id, store_id, allow_rebind=True)
         client = OzonDescriptionCategoryClient(store["client_id"], store["api_key"])
+        # One localized tree is sufficient for search. Fetching RU and ZH on
+        # every click doubled the cold-start API work. Chinese input searches
+        # the official Chinese tree; Russian/Latin input searches RU.
+        language = "ZH_HANS" if re.search(r"[\u4e00-\u9fff]", search) else "RU"
         try:
-            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="category-tree") as executor:
-                ru_future = executor.submit(client.category_tree, language="RU")
-                zh_future = executor.submit(client.category_tree, language="ZH_HANS")
-                ru_candidates = flatten_category_types(ru_future.result())
-                try:
-                    zh_candidates = flatten_category_types(zh_future.result())
-                except OzonApiError:
-                    zh_candidates = []
+            localized_candidates = flatten_category_types(
+                client.category_tree(language=language)
+            )
         except OzonApiError as exc:
             raise PipelineError(f"读取 Ozon 官方类目失败：{exc}", status=502) from exc
 
         merged: dict[tuple[int, int], dict[str, Any]] = {}
-        for item in ru_candidates:
+        for item in localized_candidates:
             pair = (int(item["ozon_category_id"]), int(item["ozon_type_id"]))
+            suffix = "zh" if language == "ZH_HANS" else "ru"
             merged[pair] = {
                 "ozon_category_id": pair[0],
                 "ozon_type_id": pair[1],
-                "category_name_ru": str(item.get("category_name_ru") or ""),
-                "category_path_ru": list(item.get("category_path_ru") or []),
-                "type_name_ru": str(item.get("type_name_ru") or ""),
+                f"category_name_{suffix}": str(item.get("category_name_ru") or ""),
+                f"category_path_{suffix}": list(item.get("category_path_ru") or []),
+                f"type_name_{suffix}": str(item.get("type_name_ru") or ""),
             }
-        for item in zh_candidates:
-            pair = (int(item["ozon_category_id"]), int(item["ozon_type_id"]))
-            target = merged.setdefault(
-                pair,
-                {
-                    "ozon_category_id": pair[0],
-                    "ozon_type_id": pair[1],
-                    "category_name_ru": "",
-                    "category_path_ru": [],
-                    "type_name_ru": "",
-                },
-            )
-            target["category_name_zh"] = str(item.get("category_name_ru") or "")
-            target["category_path_zh"] = list(item.get("category_path_ru") or [])
-            target["type_name_zh"] = str(item.get("type_name_ru") or "")
 
         normalized_query = _category_search_text(search)
         terms = [normalized_query]
@@ -4081,11 +4072,23 @@ class PipelineService:
                 int(item["ozon_type_id"]),
             )
         )
+        store_id_text = str(store["store_id"])
+        with self._lock:
+            for item in ranked[:80]:
+                pair = (int(item["ozon_category_id"]), int(item["ozon_type_id"]))
+                self._verified_category_options[
+                    (pipeline_id, store_id_text, pair[0], pair[1])
+                ] = deepcopy(item)
+            while len(self._verified_category_options) > 4000:
+                self._verified_category_options.pop(
+                    next(iter(self._verified_category_options))
+                )
         return {
             "query": search,
             "options": ranked[:80],
             "total_matches": len(ranked),
             "source": "Ozon /v1/description-category/tree",
+            "language": language,
         }
 
     def run_stage_2(
@@ -4132,6 +4135,7 @@ class PipelineService:
                     authorized_store["client_id"], authorized_store["api_key"]
                 )
             )
+            verified_category = None
             if preferred_pair is None:
                 try:
                     with ThreadPoolExecutor(
@@ -4153,12 +4157,22 @@ class PipelineService:
                     raise PipelineError(f"AlphaShop 类目映射失败：{exc}", status=502) from exc
                 except OzonApiError as exc:
                     raise PipelineError(f"读取 Ozon 官方类目失败：{exc}", status=502) from exc
+            else:
+                verified_category = self._verified_category_options.get(
+                    (
+                        pipeline_id,
+                        str(authorized_store["store_id"]),
+                        preferred_pair[0],
+                        preferred_pair[1],
+                    )
+                )
             try:
                 mapped = map_listing(
                     _source_for_mapper(raw),
                     provider,
                     confidence_threshold=threshold,
                     preferred_category_type=preferred_pair,
+                    verified_category=verified_category,
                 )
             except OzonApiError as exc:
                 raise PipelineError(f"读取 Ozon 官方类目失败：{exc}", status=502) from exc

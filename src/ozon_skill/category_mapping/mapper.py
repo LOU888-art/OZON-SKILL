@@ -689,13 +689,33 @@ def map_listing(
     *,
     confidence_threshold: float = CONFIDENCE_THRESHOLD,
     preferred_category_type: tuple[int, int] | None = None,
+    verified_category: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a pre-listing record using only IDs returned by the provider."""
 
-    tree_response = provider.category_tree()
-    candidates, preferred_matched = _rank_categories(
-        tree_response, source, preferred_category_type
-    )
+    if verified_category is not None:
+        category_id = _as_int(verified_category.get("ozon_category_id"))
+        type_id = _as_int(verified_category.get("ozon_type_id"))
+        if category_id in (None, 0) or type_id in (None, 0):
+            raise ValueError("verified_category must contain positive category/type IDs")
+        if preferred_category_type != (category_id, type_id):
+            raise ValueError("verified_category does not match preferred_category_type")
+        selected = {
+            **dict(verified_category),
+            "ozon_category_id": category_id,
+            "ozon_type_id": type_id,
+            "confidence": 0.99,
+            "matching_reasons": [
+                "用户刚从当前店铺的 Ozon 官方类目搜索结果中人工确认"
+            ],
+        }
+        candidates = [selected]
+        preferred_matched = True
+    else:
+        tree_response = provider.category_tree()
+        candidates, preferred_matched = _rank_categories(
+            tree_response, source, preferred_category_type
+        )
     if not candidates:
         raise ValueError(
             "OZON 类目树没有可创建的末级 category/type；"
