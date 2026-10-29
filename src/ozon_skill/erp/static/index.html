@@ -455,6 +455,7 @@
           <div class="field"><label for="aiTextModel">文本模型</label><input id="aiTextModel" required></div>
           <div class="field"><label for="aiImageModel">生图模型</label><input id="aiImageModel" required></div>
         </div>
+        <div class="field"><label for="aiImageTranslationModel">图片翻译模型</label><input id="aiImageTranslationModel" required><small>用于把采集图中的中文替换为俄语并尽量保留原版式；可填写服务商提供的兼容或免费模型，是否免费由服务商决定。</small></div>
         <div class="field-grid">
           <div class="field"><label for="aiTextKey">文本 API Key</label><input id="aiTextKey" type="password" autocomplete="new-password" placeholder="已配置时留空表示保持不变"></div>
           <div class="field"><label for="aiImageKey">生图 API Key</label><input id="aiImageKey" type="password" autocomplete="new-password" placeholder="已配置时留空表示保持不变"></div>
@@ -467,7 +468,7 @@
   <dialog id="imagesDialog" class="images-dialog-shell">
     <div class="dialog-card images-dialog">
       <div class="dialog-head"><div><span class="eyebrow">IMAGE SELECTION</span><h3>商品图片管理</h3></div><button id="closeImagesBtn" class="close" type="button">×</button></div>
-      <p class="dialog-note">每张图片可排除、翻译后进入 Rich Content、作为共用八图参考，或作为 SKU 专属主图。八图参考最多一张；第 2–8 张由所有 SKU 共用。原始采集产物始终保留用于审计。</p>
+      <p class="dialog-note">每张图片可排除、通过独立图片翻译模型转为俄语 Rich Content、作为共用八图参考，或作为 SKU 专属主图。八图参考最多一张；第 2–8 张由所有 SKU 共用。原始采集产物始终保留用于审计。</p>
       <div class="image-toolbar"><strong id="imageSelectionCount">正在读取…</strong><button id="selectMainImagesBtn" type="button" class="ghost">第一张主图生成八图</button></div>
       <div id="imageGallery" class="image-gallery"></div>
       <div class="dialog-actions"><button id="cancelImagesBtn" type="button" class="ghost">取消</button><button id="saveImagesBtn" type="button" class="primary">保存图片清单</button></div>

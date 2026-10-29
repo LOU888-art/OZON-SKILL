@@ -17,6 +17,9 @@ fi
 
 mkdir -p "$app_dir"
 cp -a "$project_root"/. "$app_dir"/
+if ! "$venv_dir/bin/python" -c 'import PIL' >/dev/null 2>&1; then
+  "$venv_dir/bin/python" -m pip install "Pillow>=10,<13"
+fi
 "$venv_dir/bin/python" -m pip install \
   --no-build-isolation \
   --no-deps \

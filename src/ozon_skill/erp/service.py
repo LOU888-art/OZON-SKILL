@@ -41,6 +41,10 @@ from ozon_skill.content_generation.media import (
     process_image_plan,
     translate_all_images,
 )
+from ozon_skill.content_generation.watermark import (
+    apply_watermark_bytes,
+    normalize_watermark_settings,
+)
 from ozon_skill.content_generation.rich_content import (
     BANNED_IMAGE_HOSTS,
     upgrade_legacy_rich_content,
@@ -1135,6 +1139,110 @@ class PipelineService:
                 row["final_public_url"] = None
                 row["storage_status"] = "FAILED"
                 row["error"] = f"图片固化到 OSS 失败：{str(exc)[:400]}"
+        return rows
+
+    def _apply_generated_image_watermarks(
+        self, pipeline_id: str, inspection: Any, settings: Mapping[str, Any]
+    ) -> list[dict[str, Any]]:
+        normalized = normalize_watermark_settings(settings)
+        rows = [dict(item) for item in inspection if isinstance(item, Mapping)]
+        if not normalized["enabled"]:
+            return rows
+        client = self.object_storage.client()
+        if client is None:
+            raise PipelineError("启用水印前必须先配置并验证 OSS 图片存储")
+        logo_bytes = None
+        if normalized["type"] == "image":
+            try:
+                logo_bytes, _ = download_public_image(str(normalized["image_url"]))
+            except (ObjectStorageError, ValueError) as exc:
+                raise PipelineError(f"读取图片水印失败：{exc}") from exc
+        sources = list(
+            dict.fromkeys(
+                str(row.get("final_public_url") or "").strip()
+                for row in rows
+                if row.get("translation_status") == "AI_GENERATED"
+                and row.get("final_public_url")
+            )
+        )
+
+        def render(source: str) -> dict[str, Any]:
+            data, _ = download_public_image(source)
+            output = apply_watermark_bytes(data, normalized, logo_bytes=logo_bytes)
+            digest = hashlib.sha256(output).hexdigest()
+            safe_pipeline = re.sub(r"[^A-Za-z0-9._-]", "_", pipeline_id)[:80]
+            key = "/".join(
+                part
+                for part in (
+                    client.prefix,
+                    safe_pipeline,
+                    "watermarked",
+                    f"{digest}.png",
+                )
+                if part
+            )
+            return {
+                "public_url": client.put(key, output, "image/png"),
+                "object_key": key,
+                "sha256": digest,
+                "size_bytes": len(output),
+                "content_type": "image/png",
+            }
+
+        rendered: dict[str, dict[str, Any] | Exception] = {}
+        worker_count = max(1, min(4, len(sources) or 1))
+        if sources:
+            with ThreadPoolExecutor(
+                max_workers=worker_count, thread_name_prefix="image-watermark"
+            ) as executor:
+                futures = {source: executor.submit(render, source) for source in sources}
+                for source, future in futures.items():
+                    try:
+                        rendered[source] = future.result()
+                    except (ObjectStorageError, OSError, ValueError) as exc:
+                        rendered[source] = exc
+        for row in rows:
+            source = str(row.get("final_public_url") or "").strip()
+            if source not in rendered:
+                continue
+            result = rendered[source]
+            if isinstance(result, Exception):
+                row["final_public_url"] = None
+                row["watermark_status"] = "FAILED"
+                row["error"] = f"添加水印失败：{str(result)[:400]}"
+                continue
+            row["upstream_public_url"] = source
+            row["final_public_url"] = result["public_url"]
+            row["watermark_status"] = "APPLIED"
+            row["watermark"] = {
+                key: value
+                for key, value in normalized.items()
+                if key not in {"image_url"} and value is not None
+            }
+            row["storage_status"] = "MIRRORED"
+            row["storage_object_key"] = result["object_key"]
+            row["storage_sha256"] = result["sha256"]
+            row["storage_size_bytes"] = result["size_bytes"]
+            row["storage_bucket"] = client.bucket
+            row["storage_endpoint"] = client.endpoint
+            try:
+                self.assets.upsert(
+                    {
+                        "object_key": result["object_key"],
+                        "public_url": result["public_url"],
+                        "source_url": source,
+                        "sha256": result["sha256"],
+                        "content_type": result["content_type"],
+                        "size_bytes": result["size_bytes"],
+                        "asset_type": "ai_generated",
+                        "storage_bucket": client.bucket,
+                        "storage_endpoint": client.endpoint,
+                    }
+                )
+            except AssetRegistryError as exc:
+                row["final_public_url"] = None
+                row["watermark_status"] = "FAILED"
+                row["error"] = f"登记水印图片失败：{str(exc)[:400]}"
         return rows
 
     def asset_library(self) -> dict[str, Any]:
@@ -4226,6 +4334,7 @@ class PipelineService:
         media_manifest: Any = None,
         media_mode: Any = "image_plan",
         text_mode: Any = "ai_generate",
+        watermark_settings: Any = None,
     ) -> dict[str, Any]:
         pipeline_id = _safe_pipeline_id(pipeline_id)
         self._require_previous(pipeline_id, 3)
@@ -4237,6 +4346,12 @@ class PipelineService:
             raise PipelineError("图片模式必须是逐图方案、AlphaShop 翻译或 AI 生图")
         if text_mode not in {"built_in", "ai_generate"}:
             raise PipelineError("文本模式必须是内置规则或 AI 生成")
+        try:
+            watermark = normalize_watermark_settings(watermark_settings)
+        except ValueError as exc:
+            raise PipelineError(str(exc)) from exc
+        if watermark["enabled"] and self.object_storage.client() is None:
+            raise PipelineError("启用水印前必须先配置并验证 OSS 图片存储")
         with self._lock:
             raw = _active_sku_source(
                 self.read_artifact(pipeline_id, 1),
@@ -4274,6 +4389,11 @@ class PipelineService:
                         ),
                         selected_items[0],
                     )
+                    translation_items = [
+                        item
+                        for item in selected_items
+                        if str(item.get("action")) == "translate"
+                    ]
                     planned_items = [
                         {
                             **reference,
@@ -4295,6 +4415,7 @@ class PipelineService:
                             {
                                 "policy_version": AI_GALLERY_POLICY_VERSION,
                                 "items": planned_items,
+                                "translation_items": translation_items,
                             },
                             ensure_ascii=False,
                             sort_keys=True,
@@ -4382,6 +4503,41 @@ class PipelineService:
                         for rows in sku_results:
                             inspection.extend(rows)
                             save_progress(inspection)
+                    if translation_items:
+                        translation_worker_count = max(
+                            1, min(ai_image_workers, 4, len(translation_items))
+                        )
+
+                        def translate_source_image(
+                            translation_item: Mapping[str, Any],
+                        ) -> list[dict[str, Any]]:
+                            return process_image_plan(
+                                [translation_item],
+                                relay_client,
+                                None,
+                                raw,
+                                existing_results=existing_results,
+                                max_workers=1,
+                            )
+
+                        if translation_worker_count == 1:
+                            translation_results = [
+                                translate_source_image(item)
+                                for item in translation_items
+                            ]
+                        else:
+                            with ThreadPoolExecutor(
+                                max_workers=translation_worker_count,
+                                thread_name_prefix="ai-image-translate",
+                            ) as executor:
+                                translation_results = list(
+                                    executor.map(
+                                        translate_source_image, translation_items
+                                    )
+                                )
+                        for rows in translation_results:
+                            inspection.extend(rows)
+                            save_progress(inspection)
                 # Translation-only plans produce Rich Content assets, but Ozon
                 # still needs a normal product image.  Generate one through the
                 # connected AI API so an optional AlphaShop workflow can never
@@ -4431,6 +4587,9 @@ class PipelineService:
             finally:
                 if copy_executor is not None:
                     copy_executor.shutdown(wait=True, cancel_futures=True)
+            inspection = self._apply_generated_image_watermarks(
+                pipeline_id, inspection, watermark
+            )
             inspection = self._mirror_generated_images(pipeline_id, inspection)
             mapped = deepcopy(mapped)
             auto_translation_fields: list[dict[str, Any]] = []
@@ -4488,6 +4647,7 @@ class PipelineService:
                     item.get("generation_provider") == "AI_RELAY"
                     and item.get("translation_status") == "AI_GENERATED"
                     and item.get("final_public_url")
+                    and item.get("image_usage") != "rich_content"
                 ):
                     continue
                 url = str(item["final_public_url"])
@@ -4584,6 +4744,7 @@ class PipelineService:
         media_manifest: Any = None,
         media_mode: Any = "image_plan",
         text_mode: Any = "ai_generate",
+        watermark_settings: Any = None,
     ) -> dict[str, Any]:
         """Start the slow image/content stage without holding an HTTP request open."""
 
@@ -4601,6 +4762,12 @@ class PipelineService:
             raise PipelineError("图片模式必须是逐图方案、AlphaShop 翻译或 AI 生图")
         if normalized_text_mode not in {"built_in", "ai_generate"}:
             raise PipelineError("文本模式必须是内置规则或 AI 生成")
+        try:
+            normalized_watermark = normalize_watermark_settings(watermark_settings)
+        except ValueError as exc:
+            raise PipelineError(str(exc)) from exc
+        if normalized_watermark["enabled"] and self.object_storage.client() is None:
+            raise PipelineError("启用水印前必须先配置并验证 OSS 图片存储")
         # A missing manual image plan is valid: the first collected image is
         # automatically used to generate the standard AI eight-image set.
 
@@ -4618,6 +4785,7 @@ class PipelineService:
                         media_manifest=None,
                         media_mode=normalized_media_mode,
                         text_mode=normalized_text_mode,
+                        watermark_settings=normalized_watermark,
                     )
                 except PipelineError as exc:
                     self._record(pipeline_id, 3, False, [str(exc)[:500]])

@@ -790,6 +790,7 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                     media_manifest=body.get("media_manifest"),
                     media_mode=body.get("media_mode", "image_plan"),
                     text_mode=body.get("text_mode", "ai_generate"),
+                    watermark_settings=body.get("watermark_settings"),
                 )
             elif stage == 4:
                 result = self.service.run_stage_4(

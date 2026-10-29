@@ -71,6 +71,13 @@ class AiProviderRegistry:
             "image_model": normalize_image_model(
                 str(value.get("image_model", DEFAULT_IMAGE_MODEL))
             ),
+            "image_translation_model": normalize_image_model(
+                str(
+                    value.get("image_translation_model")
+                    or value.get("image_model")
+                    or DEFAULT_IMAGE_MODEL
+                )
+            ),
             "text_api_key_configured": bool(value.get("text_api_key")),
             "image_api_key_configured": bool(value.get("image_api_key")),
         }
@@ -97,20 +104,26 @@ class AiProviderRegistry:
                 or existing.get("image_model")
                 or DEFAULT_IMAGE_MODEL
             ))
+            image_translation_model = normalize_image_model(str(
+                value.get("image_translation_model")
+                or existing.get("image_translation_model")
+                or image_model
+            ))
             text_key = str(value.get("text_api_key") or "").strip() or existing.get(
                 "text_api_key"
             )
             image_key = str(value.get("image_api_key") or "").strip() or existing.get(
                 "image_api_key"
             )
-            if not text_model or not image_model:
-                raise AiProviderConfigurationError("文本模型和生图模型不能为空")
+            if not text_model or not image_model or not image_translation_model:
+                raise AiProviderConfigurationError("文本、生图和图片翻译模型不能为空")
             if not text_key or not image_key:
                 raise AiProviderConfigurationError("文本与生图 API Key 均不能为空")
             record = {
                 "base_url": base_url,
                 "text_model": text_model,
                 "image_model": image_model,
+                "image_translation_model": image_translation_model,
                 "text_api_key": text_key,
                 "image_api_key": image_key,
             }
@@ -125,14 +138,20 @@ class AiProviderRegistry:
         try:
             text_model = normalize_text_model(str(stored["text_model"]))
             image_model = normalize_image_model(str(stored["image_model"]))
+            image_translation_model = normalize_image_model(
+                str(stored.get("image_translation_model") or image_model)
+            )
             if (
                 text_model != stored.get("text_model")
                 or image_model != stored.get("image_model")
+                or image_translation_model
+                != stored.get("image_translation_model")
             ):
                 migrated = {
                     **stored,
                     "text_model": text_model,
                     "image_model": image_model,
+                    "image_translation_model": image_translation_model,
                 }
                 with self._lock:
                     self._write(migrated)
@@ -142,6 +161,7 @@ class AiProviderRegistry:
                 image_api_key=str(stored["image_api_key"]),
                 text_model=text_model,
                 image_model=image_model,
+                image_translation_model=image_translation_model,
             )
         except (KeyError, AiRelayError) as exc:
             raise AiProviderConfigurationError("AI 服务私有配置不完整") from exc

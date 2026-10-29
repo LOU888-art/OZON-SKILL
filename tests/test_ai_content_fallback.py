@@ -13,9 +13,17 @@ from ozon_skill.upload.config import DimensionDefaults, StoreConfig
 
 class _FakeRelay:
     image_model = "test-image-model"
+    image_translation_model = "test-translation-model"
+
+    def __init__(self) -> None:
+        self.translation_calls = 0
 
     def generate_product_image(self, *_args, **_kwargs) -> str:
         return "https://cdn.example.com/generated-product.jpg"
+
+    def translate_product_image(self, *_args, **_kwargs) -> str:
+        self.translation_calls += 1
+        return "https://cdn.example.com/translated-product.jpg"
 
 
 class _EightImageRelay:
@@ -95,8 +103,17 @@ class AiContentFallbackTests(unittest.TestCase):
         )
         self.assertIn("КАДР 1", relay.prompts[0])
         self.assertIn("КАДР 8", relay.prompts[-1])
+        self.assertIn("ПАРАМЕТРЫ", relay.prompts[1])
+        self.assertIn("ПРИЗЫВ К ДЕЙСТВИЮ", relay.prompts[2])
+        self.assertIn("СРАВНЕНИЕ ДИЗАЙНА", relay.prompts[3])
+        self.assertIn("ИСПОЛЬЗОВАНИЕ ЧЕЛОВЕКОМ", relay.prompts[4])
+        self.assertIn("КЛЮЧЕВЫЕ ПРЕИМУЩЕСТВА", relay.prompts[5])
+        self.assertIn("СЦЕНАРИИ ИСПОЛЬЗОВАНИЯ", relay.prompts[6])
+        self.assertIn("ДЕТАЛИ И КАЧЕСТВО", relay.prompts[7])
+        self.assertTrue(all("строго 3:4" in prompt for prompt in relay.prompts))
 
     def test_translate_action_uses_ai_when_alphashop_is_unavailable(self) -> None:
+        relay = _FakeRelay()
         result = process_image_plan(
             [
                 {
@@ -105,13 +122,15 @@ class AiContentFallbackTests(unittest.TestCase):
                     "action": "translate",
                 }
             ],
-            _FakeRelay(),
+            relay,
             None,
             {"title_zh": "家居香薰"},
         )
 
         self.assertEqual(result[0]["translation_status"], "AI_GENERATED")
         self.assertEqual(result[0]["image_usage"], "rich_content")
+        self.assertEqual(result[0]["generation_model"], "test-translation-model")
+        self.assertEqual(relay.translation_calls, 1)
         self.assertEqual(
             result[0]["translation_fallback_reason"], "ALPHASHOP_UNAVAILABLE"
         )

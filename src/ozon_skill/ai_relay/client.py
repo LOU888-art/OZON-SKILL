@@ -128,6 +128,7 @@ class AiRelayClient:
     image_api_key: str | None
     text_model: str = DEFAULT_TEXT_MODEL
     image_model: str = DEFAULT_IMAGE_MODEL
+    image_translation_model: str = DEFAULT_IMAGE_MODEL
     timeout_seconds: float = 180.0
 
     @classmethod
@@ -147,6 +148,14 @@ class AiRelayClient:
             image_model=(
                 normalize_image_model(
                     os.environ.get("AI_RELAY_IMAGE_MODEL", DEFAULT_IMAGE_MODEL)
+                )
+                or DEFAULT_IMAGE_MODEL
+            ),
+            image_translation_model=(
+                normalize_image_model(
+                    os.environ.get(
+                        "AI_RELAY_IMAGE_TRANSLATION_MODEL", DEFAULT_IMAGE_MODEL
+                    )
                 )
                 or DEFAULT_IMAGE_MODEL
             ),
@@ -472,11 +481,54 @@ class AiRelayClient:
         )
         return _image_url(response)
 
+    def translate_product_image(
+        self,
+        source_image_url: str,
+        source_role: str | None,
+        source: Mapping[str, Any],
+    ) -> str:
+        """Replace Chinese copy with Russian while preserving the source layout."""
+
+        facts = {
+            "title_zh": source.get("title_zh"),
+            "attributes_zh": source.get("attributes_zh"),
+            "source_role": source_role,
+            "reference_image_url": source_image_url,
+        }
+        prompt = (
+            "Переведи текст на исходном товарном изображении с китайского на краткий, "
+            "естественный русский язык. Максимально сохрани исходный товар, композицию, "
+            "фон, расположение блоков, пропорции, цвета и графический стиль. Удали весь "
+            "китайский текст и не оставляй иероглифы. Не меняй модель товара, не добавляй "
+            "новые характеристики, цену, скидку, логотип, бренд, сертификат или водяной "
+            "знак. Если текст не удается надежно понять, удали его вместо выдуманного "
+            "перевода. Вертикальный формат 3:4, один отдельный файл. ФАКТЫ: "
+            + json.dumps(facts, ensure_ascii=False, separators=(",", ":"))
+        )
+        model = normalize_image_model(self.image_translation_model) or self.image_model
+        response = self._post(
+            "/images/generations",
+            self.image_api_key,
+            {
+                "model": model,
+                "prompt": prompt,
+                "n": 1,
+                "size": "1024x1536",
+                "quality": "high",
+                "response_format": "url",
+                "reference_image_url": source_image_url,
+            },
+            operation="图片翻译",
+            model=model,
+        )
+        return _image_url(response)
+
     def public_status(self) -> dict[str, Any]:
         return {
             "base_url": self.base_url,
             "text_model": normalize_text_model(self.text_model),
             "image_model": self.image_model,
+            "image_translation_model": self.image_translation_model,
             "text_api_key_configured": bool(self.text_api_key),
             "image_api_key_configured": bool(self.image_api_key),
         }
