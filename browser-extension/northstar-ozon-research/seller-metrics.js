@@ -44,6 +44,35 @@
     return informative.length === 1 ? informative[0] : null;
   }
 
+  function mergePackaging(item, payload, sku) {
+    if (!item || !payload) return item;
+    const rows = objects(payload).filter(value => !Array.isArray(value));
+    const source = rows.find(value => String(value.sku || value.product_id || value.id || "") === sku && (value.depth || value.width || value.height || value.attributes)) || rows.find(value => value.depth && value.width && value.height) || rows.find(value => Array.isArray(value.attributes));
+    if (!source) return item;
+    const result = { ...item };
+    for (const key of ["depth", "width", "height", "weight", "sellerName", "seller_name"]) if (source[key] !== undefined) result[key] = source[key];
+    const dimensions = [Number(source.depth), Number(source.width), Number(source.height)];
+    if (dimensions.every(value => Number.isFinite(value) && value > 0)) result.packagingDimensions = `${dimensions.join(" × ")} mm`;
+    if (Number(source.weight) > 0) result.packagingWeight = `${Number(source.weight)} g`;
+    const attributes = Array.isArray(source.attributes) ? source.attributes : [];
+    const byKey = key => Number(attributes.find(attribute => String(attribute?.key) === key)?.value || 0);
+    const attrDimensions = [byKey("9454"), byKey("9455"), byKey("9456")];
+    if (!result.packagingDimensions && attrDimensions.every(value => value > 0)) result.packagingDimensions = `${attrDimensions.join(" × ")} mm`;
+    if (!result.packagingWeight && byKey("4497") > 0) result.packagingWeight = `${byKey("4497")} g`;
+    return result;
+  }
+
+  async function enrichPackaging(item, sku, id) {
+    try {
+      const response = await fetch("https://seller.ozon.ru/api/v1/search", {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json", "X-O3-App-Name": "seller-ui", "X-O3-Company-Id": id, "X-O3-Language": "zh-Hans" },
+        body: JSON.stringify({ company_id: id, need_total: true, filter: { children_nodes: { children_nodes: [{ input_leaf: { sku: { values: [sku] } } }], operator: "AND" } }, pagination: { limit: "50" }, is_copy_allowed: false }),
+      });
+      return response.ok ? mergePackaging(item, await response.json(), sku) : item;
+    } catch (_) { return item; }
+  }
+
   async function load(sku, force = false, providedCompanyId = "") {
     if (force) cache.delete(sku);
     if (cache.has(sku)) return cache.get(sku);
@@ -66,7 +95,7 @@
       return { ok: false, error: `Ozon Seller 接口 HTTP ${response.status}` };
     }
     const item = bestItem(await response.json(), sku);
-    return item ? { ok: true, data: item } : { ok: false, error: "Seller 分析接口没有返回该 SKU" };
+    return item ? { ok: true, data: await enrichPackaging(item, sku, id) } : { ok: false, error: "Seller 分析接口没有返回该 SKU" };
   }
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

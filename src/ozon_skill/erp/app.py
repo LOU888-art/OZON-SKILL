@@ -100,6 +100,7 @@ _UNIFIED_PLUGIN_SOURCES = {
     "background.js": ("northstar-commerce-assistant", "background.js"),
     "collector-main-probe.js": ("northstar-1688-collector", "main-probe.js"),
     "collector-content.js": ("northstar-1688-collector", "content.js"),
+    "collector-floating.css": ("northstar-1688-collector", "floating.css"),
     "ozon-seller-content.js": ("northstar-ozon-research", "content.js"),
     "seller-metrics.js": ("northstar-ozon-research", "seller-metrics.js"),
     "ozon-overlay.js": ("northstar-ozon-research", "ozon-overlay.js"),

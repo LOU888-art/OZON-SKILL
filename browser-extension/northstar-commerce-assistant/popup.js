@@ -1,8 +1,8 @@
 const $ = selector => document.querySelector(selector);
+const ERP_ORIGIN = "https://8.217.125.205";
 const setStatus = (message, type = "") => { $("#status").textContent = message; $("#status").className = type; };
 const escapeHtml = value => String(value ?? "").replace(/[&<>'"]/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character]));
 let captured = null;
-let saveTimer = null;
 
 function normalizedUrl(value) {
   const url = new URL(value);
@@ -90,7 +90,6 @@ async function scan1688Page(tabId) {
 async function scan1688() {
   const button = $("#scan1688Btn"); button.disabled = true;
   try {
-    if ($("#erpUrl").value.trim()) await saveErpUrl();
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.url || !/https:\/\/[^/]*1688\.com\//i.test(tab.url)) throw new Error("当前标签页不是1688商品页面");
     setStatus("正在读取完整SKU、价格、库存与运费…");
@@ -110,11 +109,7 @@ async function send1688() {
     if (!captured) throw new Error("请先读取当前1688商品");
     const missing = captured.sku_list.filter(sku => sku.purchase_price_cny === null || sku.purchase_price_cny === undefined);
     if (missing.length) throw new Error(`仍有${missing.length}个SKU没有采购价，请刷新页面后重试`);
-    const raw = $("#erpUrl").value.trim(); if (!raw) throw new Error("请先填写ERP网址");
-    const origin = normalizedUrl(raw);
-    const granted = await chrome.permissions.request({ origins: [originPattern(origin)] });
-    if (!granted) throw new Error("未授权插件访问ERP网址");
-    await saveErpUrl();
+    const origin = ERP_ORIGIN;
     const selected = [...document.querySelectorAll("[data-sku-index]")].filter(input => input.checked).map(input => captured.sku_list[Number(input.dataset.skuIndex)]);
     if (!selected.length) throw new Error("至少保留一个SKU");
     const product = { ...captured, sku_list: selected, capture_diagnostics: { ...(captured.capture_diagnostics || {}), captured_sku_count: captured.sku_list.length, selected_sku_count: selected.length } };
@@ -135,11 +130,7 @@ async function readRules(origin) {
 async function syncSeller() {
   const button = $("#syncSellerBtn"); button.disabled = true;
   try {
-    const raw = $("#erpUrl").value.trim(); if (!raw) throw new Error("请先填写ERP网址");
-    const origin = normalizedUrl(raw);
-    const granted = await chrome.permissions.request({ origins: [originPattern(origin)] });
-    if (!granted) throw new Error("未授权插件访问ERP网址");
-    await saveErpUrl();
+    const origin = ERP_ORIGIN;
     const rules = await readRules(origin);
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.url?.startsWith("https://seller.ozon.ru/")) throw new Error("当前标签页不是Ozon Seller后台");
@@ -154,11 +145,6 @@ async function syncSeller() {
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
-  const saved = await chrome.storage.local.get("erpUrl");
-  $("#erpUrl").value = saved.erpUrl || "";
-  if (saved.erpUrl) $("#erpHint").textContent = "已记住，下次打开自动填充";
-  $("#erpUrl").oninput = () => { clearTimeout(saveTimer); saveTimer = setTimeout(() => saveErpUrl().catch(() => {}), 500); };
-  $("#erpUrl").onchange = () => saveErpUrl().catch(error => setStatus(error.message || String(error), "error"));
   $("#scan1688Btn").onclick = scan1688;
   $("#send1688Btn").onclick = send1688;
   $("#syncSellerBtn").onclick = syncSeller;

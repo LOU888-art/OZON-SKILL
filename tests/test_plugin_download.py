@@ -41,12 +41,11 @@ class ResearchPluginDownloadTests(unittest.TestCase):
                 "northstar-commerce-assistant/collector-main-probe.js"
             ).decode("utf-8")
         self.assertIn('"manifest_version": 3', manifest)
-        self.assertIn('"version": "1.3.0"', manifest)
+        self.assertIn('"version": "1.4.0"', manifest)
         self.assertIn('"cookies"', manifest)
         self.assertIn('"https://*.1688.com/*"', manifest)
         self.assertIn('"https://www.ozon.ru/*"', manifest)
-        self.assertIn('chrome.storage.local.set({ erpUrl: origin })', popup)
-        self.assertIn('chrome.storage.local.get("erpUrl")', popup)
+        self.assertIn('ERP_ORIGIN = "https://8.217.125.205"', popup)
         self.assertIn("syncSeller", popup)
         self.assertIn('"context", "__INIT_DATA__"', probe)
         self.assertIn("mapKeyPattern.test(key) && Array.isArray(value)", content)
@@ -67,7 +66,7 @@ class ResearchPluginDownloadTests(unittest.TestCase):
                 "northstar-commerce-assistant/manifest.json"
             ).decode("utf-8")
         self.assertIn('"manifest_version": 3', manifest)
-        self.assertIn('"version": "1.3.0"', manifest)
+        self.assertIn('"version": "1.4.0"', manifest)
         self.assertIn('"https://www.ozon.ru/*"', manifest)
         self.assertIn(
             "northstar-commerce-assistant/ozon-overlay.js", archive.namelist()
@@ -85,6 +84,10 @@ class ResearchPluginDownloadTests(unittest.TestCase):
         )
         self.assertIn(
             "northstar-commerce-assistant/background.js",
+            archive.namelist(),
+        )
+        self.assertIn(
+            "northstar-commerce-assistant/collector-floating.css",
             archive.namelist(),
         )
 

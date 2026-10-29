@@ -44,6 +44,15 @@
     return Number.isFinite(amount) && amount > 0 ? amount : null;
   }
 
+  function sellerPrice(value) {
+    const nested = value?.cardPrice?.price ?? value?.price ?? value?.text ?? value;
+    if (typeof nested === "number" && Number.isFinite(nested)) return nested;
+    const formatted = rubles(nested);
+    if (formatted) return formatted;
+    const parsed = Number(String(nested || "").replace(/[^\d,.]/g, "").replace(",", "."));
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }
+
   function formatRub(value) {
     return Number.isFinite(value) ? `${new Intl.NumberFormat("ru-RU").format(value)} ₽` : "未公开";
   }
@@ -187,7 +196,7 @@
           for (const { value } of decodeWidgetStates(await response.json())) walk(value, object => {
             if (!Array.isArray(object.sellers)) return;
             for (const seller of object.sellers) {
-              const price = rubles(seller.price || seller.priceText || seller.cardPrice || "");
+              const price = sellerPrice(seller.price || seller.priceText || seller.cardPrice || "");
               const name = clean(seller.name || seller.sellerName || seller.title);
               if (price || name) data.sellers.push({ price, name });
             }
@@ -214,6 +223,14 @@
     });
     sellerCache.set(id, promise);
     return promise;
+  }
+
+  async function erpCommission(category, price) {
+    return new Promise(resolve => {
+      try {
+        chrome.runtime.sendMessage({ type: "NORTHSTAR_ERP_COMMISSION", category, price }, response => resolve(response?.ok ? response : null));
+      } catch (_) { resolve(null); }
+    });
   }
 
   function metric(source, ...keys) {
@@ -252,25 +269,28 @@
     const brand = clean(metric(sellerData, "brand", "brand_name")) || clean(brandValue) || aspect(pairs, [/^бренд$/, /brand/]) || labeledValue(lines, ["Бренд"]);
     const sellerCategory = clean(metric(sellerData, "category3", "category_name", "category", "category2", "category1"));
     const sellerPrices = publicData.sellers.map(item => item.price).filter(Number.isFinite);
+    const category = sellerCategory || breadcrumbCategory(schema, publicData, brand);
+    const commission = await erpCommission(category, price);
     return {
       id,
       title: clean(schema.name) || clean(document.querySelector("h1")?.textContent) || clean(document.title),
-      category: sellerCategory || breadcrumbCategory(schema, publicData, brand),
+      category,
       brand,
       price, original, discount: percentage(price, original),
       rating: clean(rating.ratingValue) || firstMatch(flat, [/(?:Рейтинг|评分)\s*[:：]?\s*(\d(?:[.,]\d)?)/i]),
       reviews: clean(rating.reviewCount || rating.ratingCount) || firstMatch(flat, [/(\d[\d\s]*)\s*(?:отзыв|оценк)/i]),
       sold: firstMatch(flat, [/(\d[\d\s+.,]*(?:тыс\.?)?)\s*(?:купили|продано|заказали)/i]),
-      sellerName: labeledValue(lines, ["Продавец"]),
-      delivery: labeledValue(lines, ["Доставка", "Получение"]),
+      sellerName: clean(metric(sellerData, "sellerName", "seller_name")) || labeledValue(lines, ["Продавец"]),
+      delivery: clean(metric(sellerData, "avgDeliveryDays", "avg_delivery_days")) ? `${metric(sellerData, "avgDeliveryDays", "avg_delivery_days")} 天` : labeledValue(lines, ["Доставка", "Получение"]),
       dimensions: aspect(pairs, [/габарит/, /размер.*упаков/, /длина.*ширина.*высота/]) || sellerDimensions(sellerData) || labeledValue(lines, ["Габариты", "Размеры"]),
       weight: aspect(pairs, [/^вес/, /масса/]) || sellerWeight(sellerData) || labeledValue(lines, ["Вес товара", "Вес"]),
-      country: aspect(pairs, [/страна.*изготов/, /страна.*производ/]) || labeledValue(lines, ["Страна-изготовитель"]),
+      country: aspect(pairs, [/страна.*изготов/, /страна.*производ/]) || clean(metric(sellerData, "country", "countryName", "country_name", "manufacturerCountry")) || labeledValue(lines, ["Страна-изготовитель"]),
       sellerMetrics: sellerData,
       sellerStatus: seller?.ok ? `${seller.source || "Ozon Seller"} · 已连接` : (seller?.error || "未授权"),
       followCount: publicData.sellers.length,
       followMin: sellerPrices.length ? Math.min(...sellerPrices) : null,
       followMax: sellerPrices.length ? Math.max(...sellerPrices) : null,
+      commission,
     };
   }
 
@@ -311,11 +331,11 @@
     addRow(body, "展示 / 加购转化率", `${formatNumber(metric(data.sellerMetrics, "convViewToOrder"), "%")} / ${formatNumber(metric(data.sellerMetrics, "convToCart", "conv_to_cart"), "%")}`);
     addRow(body, "退货取消率", formatNumber(metric(data.sellerMetrics, "nullableRedemptionRate", "redemption_rate"), "%"));
     addRow(body, "发货模式", metric(data.sellerMetrics, "salesSchema", "sales_schema") || "未公开");
-    addRow(body, "类目佣金", formatNumber(metric(data.sellerMetrics, "commission_rate", "commissionRate"), "%"));
+    const sellerCommission = metric(data.sellerMetrics, "commission_rate", "commissionRate");
+    addRow(body, "类目佣金", sellerCommission != null ? formatNumber(sellerCommission, "%") : (data.commission?.ok ? `${formatNumber(data.commission.rate, "%")} · ${data.commission.category}` : "未公开"));
     addRow(body, "上架时间", metric(data.sellerMetrics, "nullableCreateDate", "created_at", "visible_since") || "未公开");
     addRow(body, "跟卖卖家数", data.followCount ? `${data.followCount} 家` : "未公开");
     addRow(body, "跟卖最低 / 最高", data.followMin ? `${formatRub(data.followMin)} / ${formatRub(data.followMax)}` : "未公开");
-    addRow(body, "Seller 数据源", data.sellerStatus, data.sellerStatus.includes("已连接") ? "blue" : "muted");
     const note = document.createElement("footer");
     note.textContent = "公开字段来自当前 Ozon 页面；经营指标仅在浏览器已登录 Ozon Seller 时读取，不使用虚构估算值。";
     panel.append(heading, body, note);

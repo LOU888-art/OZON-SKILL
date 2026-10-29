@@ -526,3 +526,92 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   scan().then(product => sendResponse({ ok: true, product })).catch(error => sendResponse({ ok: false, error: error.message || String(error) }));
   return true;
 });
+
+function installFloatingCollector() {
+  if (!offerId() || document.querySelector(".ns1688-launch")) return;
+  let capturedProduct = null;
+  const launch = document.createElement("button");
+  launch.type = "button";
+  launch.className = "ns1688-launch";
+  launch.title = "采集当前1688商品";
+  launch.textContent = "采";
+  const panel = document.createElement("aside");
+  panel.className = "ns1688-panel ns1688-hidden";
+  const head = document.createElement("div");
+  head.className = "ns1688-head";
+  const heading = document.createElement("b"); heading.textContent = "Northstar · 1688商品采集";
+  const close = document.createElement("button"); close.type = "button"; close.textContent = "×";
+  head.append(heading, close);
+  const body = document.createElement("div"); body.className = "ns1688-body";
+  const intro = document.createElement("div"); intro.className = "ns1688-summary"; intro.textContent = "直接读取当前商品、完整SKU、采购价、库存、图片和运费，并发送至固定ERP。";
+  const scanButton = document.createElement("button"); scanButton.type = "button"; scanButton.className = "ns1688-action"; scanButton.textContent = "读取当前商品 →";
+  const productBox = document.createElement("div"); productBox.className = "ns1688-info ns1688-hidden";
+  const toolbar = document.createElement("div"); toolbar.className = "ns1688-toolbar ns1688-hidden";
+  const selectLabel = document.createElement("label");
+  const selectAll = document.createElement("input"); selectAll.type = "checkbox"; selectAll.checked = true;
+  const selectText = document.createElement("span"); selectText.textContent = "全选SKU";
+  const count = document.createElement("strong");
+  selectLabel.append(selectAll, selectText); toolbar.append(selectLabel, count);
+  const skuList = document.createElement("div"); skuList.className = "ns1688-skus";
+  const sendButton = document.createElement("button"); sendButton.type = "button"; sendButton.className = "ns1688-action ns1688-hidden"; sendButton.textContent = "发送到ERP第一阶段 →";
+  const status = document.createElement("div"); status.className = "ns1688-status"; status.textContent = "ERP已固定为 https://8.217.125.205，无需填写网址。";
+  body.append(intro, scanButton, productBox, toolbar, skuList, sendButton, status);
+  panel.append(head, body); document.body.append(launch, panel);
+
+  function setCollectorStatus(message, error = false) {
+    status.textContent = message; status.dataset.error = error ? "1" : "0";
+  }
+
+  function selectedInputs() { return [...skuList.querySelectorAll("input[type=checkbox]")]; }
+
+  function updateSelection() {
+    const inputs = selectedInputs(); const selected = inputs.filter(input => input.checked).length;
+    count.textContent = `保留 ${selected}/${inputs.length}`;
+    selectAll.checked = Boolean(inputs.length) && selected === inputs.length;
+    selectAll.indeterminate = selected > 0 && selected < inputs.length;
+    sendButton.disabled = selected === 0;
+  }
+
+  function renderCaptured(product) {
+    productBox.replaceChildren(); productBox.classList.remove("ns1688-hidden");
+    const image = document.createElement("img"); image.src = product.images?.[0]?.url || "";
+    const details = document.createElement("div"); const title = document.createElement("b"); title.textContent = product.title_zh || "未识别标题";
+    const meta = document.createElement("small"); meta.textContent = `商品ID ${product.source_offer_id} · ${product.sku_list?.length || 0}个SKU · 运费 ${product.shipping_info?.freight_cny ?? "未读取"}`;
+    details.append(title, meta); productBox.append(image, details);
+    toolbar.classList.remove("ns1688-hidden"); sendButton.classList.remove("ns1688-hidden"); skuList.replaceChildren();
+    (product.sku_list || []).forEach((sku, index) => {
+      const row = document.createElement("label"); row.className = "ns1688-sku";
+      const input = document.createElement("input"); input.type = "checkbox"; input.checked = true; input.dataset.index = String(index); input.onchange = updateSelection;
+      const skuImage = document.createElement("img"); skuImage.src = sku.image_url || product.images?.[0]?.url || "";
+      const text = document.createElement("span"); const name = document.createElement("b"); name.textContent = sku.specification_text_zh || "默认规格";
+      const info = document.createElement("small"); info.textContent = `¥${sku.purchase_price_cny ?? "未读取"} · 库存 ${sku.stock ?? "未知"}`;
+      text.append(name, info); row.append(input, skuImage, text); skuList.append(row);
+    });
+    updateSelection();
+  }
+
+  launch.onclick = () => panel.classList.toggle("ns1688-hidden");
+  close.onclick = () => panel.classList.add("ns1688-hidden");
+  selectAll.onchange = () => { selectedInputs().forEach(input => { input.checked = selectAll.checked; }); updateSelection(); };
+  scanButton.onclick = async () => {
+    scanButton.disabled = true; setCollectorStatus("正在读取SKU、采购价、库存与运费…");
+    try { capturedProduct = await scan(); renderCaptured(capturedProduct); setCollectorStatus("采集完成，请取消不想上架的SKU后发送。" ); }
+    catch (error) { setCollectorStatus(error.message || String(error), true); }
+    finally { scanButton.disabled = false; }
+  };
+  sendButton.onclick = async () => {
+    if (!capturedProduct) return;
+    const selected = selectedInputs().filter(input => input.checked).map(input => capturedProduct.sku_list[Number(input.dataset.index)]);
+    if (!selected.length) { setCollectorStatus("至少保留一个SKU", true); return; }
+    sendButton.disabled = true; setCollectorStatus("正在发送到ERP第一阶段…");
+    const product = { ...capturedProduct, sku_list: selected, capture_diagnostics: { ...(capturedProduct.capture_diagnostics || {}), captured_sku_count: capturedProduct.sku_list.length, selected_sku_count: selected.length } };
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "NORTHSTAR_1688_SEND", product });
+      if (!response?.ok) throw new Error(response?.error || "发送失败");
+      setCollectorStatus(`发送成功：商品 ${response.data.pipeline_id}，保留 ${response.data.sku_count} 个SKU。`);
+    } catch (error) { setCollectorStatus(error.message || String(error), true); }
+    finally { sendButton.disabled = false; }
+  };
+}
+
+installFloatingCollector();
