@@ -3811,9 +3811,15 @@ class PipelineService:
         """Create stage 1 from data visible in the operator's logged-in browser."""
 
         collector_version = str(value.get("collector_version") or "").strip()
-        if collector_version in {"", "0.1.0", "0.2.0", "0.2.1"}:
+        try:
+            version_parts = tuple(
+                int(part) for part in collector_version.split(".")[:3]
+            )
+        except ValueError:
+            version_parts = ()
+        if len(version_parts) != 3 or version_parts < (0, 3, 2):
             raise PipelineError(
-                "1688采集插件版本过旧，请重新下载并安装0.2.2或更高版本",
+                "1688采集插件版本过旧，请重新下载并安装0.3.2或更高版本；旧版会错误复用SKU图片",
                 status=409,
             )
         product = value.get("product") if isinstance(value.get("product"), Mapping) else value

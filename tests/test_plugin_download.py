@@ -41,7 +41,7 @@ class ResearchPluginDownloadTests(unittest.TestCase):
                 "northstar-commerce-assistant/collector-main-probe.js"
             ).decode("utf-8")
         self.assertIn('"manifest_version": 3', manifest)
-        self.assertIn('"version": "1.5.1"', manifest)
+        self.assertIn('"version": "1.5.2"', manifest)
         self.assertIn('"cookies"', manifest)
         self.assertIn('"https://*.1688.com/*"', manifest)
         self.assertIn('"https://www.ozon.ru/*"', manifest)
@@ -50,7 +50,9 @@ class ResearchPluginDownloadTests(unittest.TestCase):
         self.assertIn('"context", "__INIT_DATA__"', probe)
         self.assertIn("mapKeyPattern.test(key) && Array.isArray(value)", content)
         self.assertIn("enrichSkuCommerce(skuList, priceRanges)", content)
-        self.assertIn('collector_version: "0.3.1"', content)
+        self.assertIn('collector_version: "0.3.2"', content)
+        self.assertIn("visibleSkuOptionImages", content)
+        self.assertIn("overridden_sku_image_count", content)
         self.assertNotIn("stock_quantity: 999", content)
 
     def test_research_download_returns_the_same_unified_plugin(self) -> None:
@@ -68,7 +70,7 @@ class ResearchPluginDownloadTests(unittest.TestCase):
                 "northstar-commerce-assistant/manifest.json"
             ).decode("utf-8")
         self.assertIn('"manifest_version": 3', manifest)
-        self.assertIn('"version": "1.5.1"', manifest)
+        self.assertIn('"version": "1.5.2"', manifest)
         self.assertIn('"https://www.ozon.ru/*"', manifest)
         self.assertIn(
             "northstar-commerce-assistant/ozon-overlay.js", archive.namelist()

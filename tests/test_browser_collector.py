@@ -14,7 +14,7 @@ class BrowserCollectorTests(unittest.TestCase):
             service = PipelineService(Path(temporary))
             result = service.ingest_1688_browser_capture(
                 {
-                    "collector_version": "0.2.2",
+                    "collector_version": "0.3.2",
                     "product": {
                         "source_offer_id": "628680616884",
                         "product_url": "https://detail.1688.com/offer/628680616884.html",
@@ -92,7 +92,7 @@ class BrowserCollectorTests(unittest.TestCase):
             with self.assertRaisesRegex(PipelineError, "主图"):
                 service.ingest_1688_browser_capture(
                     {
-                        "collector_version": "0.2.2",
+                        "collector_version": "0.3.2",
                         "source_offer_id": "628680616884",
                         "title_zh": "测试商品",
                         "images": [],
@@ -106,7 +106,7 @@ class BrowserCollectorTests(unittest.TestCase):
             with self.assertRaisesRegex(PipelineError, "1个SKU缺少采购价"):
                 service.ingest_1688_browser_capture(
                     {
-                        "collector_version": "0.2.2",
+                        "collector_version": "0.3.2",
                         "source_offer_id": "628680616884",
                         "title_zh": "测试商品",
                         "images": [{"url": "https://cbu01.alicdn.com/main.jpg"}],
@@ -132,11 +132,11 @@ class BrowserCollectorTests(unittest.TestCase):
             }
             with self.assertRaisesRegex(PipelineError, "版本过旧"):
                 service.ingest_1688_browser_capture(
-                    {"collector_version": "0.2.1", "product": product}
+                    {"collector_version": "0.3.1", "product": product}
                 )
             with self.assertRaisesRegex(PipelineError, "应有1个SKU"):
                 service.ingest_1688_browser_capture(
-                    {"collector_version": "0.2.2", "product": product}
+                    {"collector_version": "0.3.2", "product": product}
                 )
 
 
