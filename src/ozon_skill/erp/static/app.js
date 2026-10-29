@@ -293,4 +293,5 @@ $('#closeImagesBtn').onclick=()=>$('#imagesDialog').close();$('#cancelImagesBtn'
 $('#closeSkuBtn').onclick=()=>$('#skuDialog').close();$('#doneSkuBtn').onclick=()=>$('#skuDialog').close();
 $('#auditBtn').onclick=async()=>{try{const value=await api(`/api/pipelines/${encodeURIComponent(state.current.pipeline_id)}/audit`);$('#artifactTitle').textContent='全链路一致性审查';$('#console').textContent=JSON.stringify(value,null,2);toast(`审查结果：${value.overall}`,value.overall==='FAIL')}catch(error){toast(error.message,true)}};
 $('#copyBtn').onclick=async()=>{try{await navigator.clipboard.writeText($('#console').textContent);toast('JSON 已复制')}catch{toast('浏览器不允许复制',true)}};
+window.addEventListener('northstar:collector-complete',async event=>{const id=String(event.detail?.pipeline_id||'');try{await load();await loadCatalog();toast(`1688商品 ${id||''} 已同步到ERP`)}catch(error){toast(`商品已采集，但列表同步失败：${error.message}`,true)}});
 load();loadNotifications(false);loadObjectStorage(false);

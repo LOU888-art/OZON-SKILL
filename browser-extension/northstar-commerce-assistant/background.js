@@ -164,6 +164,7 @@ async function send1688ToErp(product) {
   const target = tabs.find(tab => tab.active) || tabs[0];
   const [{ result }] = await chrome.scripting.executeScript({
     target: { tabId: target.id },
+    world: "MAIN",
     func: async payload => {
       const response = await fetch("/api/collector/1688", {
         method: "POST",
@@ -175,6 +176,7 @@ async function send1688ToErp(product) {
       if (!contentType.includes("application/json")) return { ok: false, error: "ERP 登录已失效，请重新登录" };
       const data = await response.json().catch(() => ({}));
       if (!response.ok) return { ok: false, error: data.error || `ERP HTTP ${response.status}` };
+      window.dispatchEvent(new CustomEvent("northstar:collector-complete", { detail: { pipeline_id: data.pipeline_id || "", sku_count: data.sku_count || 0 } }));
       return { ok: true, data };
     },
     args: [product],
