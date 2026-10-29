@@ -96,12 +96,14 @@
     return null;
   }
 
-  function breadcrumbCategory(schema) {
-    const schemaCategory = clean(schema?.category);
-    if (schemaCategory) return schemaCategory;
+  function breadcrumbCategory(schema, publicData, brand) {
     const selectors = '[data-widget="breadCrumbs"] a[href], nav[aria-label*="breadcrumb" i] a[href]';
     const values = [...document.querySelectorAll(selectors)].map(node => clean(node.textContent)).filter(value => value && value.length < 80 && !/главная|ozon|китай|россия/i.test(value));
-    return values.at(-1) || "未公开";
+    if (values.length) return values.at(-1);
+    if (publicData?.breadcrumbs?.length) return publicData.breadcrumbs.at(-1);
+    const schemaCategory = clean(schema?.category);
+    if (schemaCategory && schemaCategory.toLowerCase() !== clean(brand).toLowerCase()) return schemaCategory;
+    return "未公开";
   }
 
   function decodeWidgetStates(payload) {
@@ -139,6 +141,23 @@
     return pairs;
   }
 
+  function mergePairs(target, source) {
+    for (const [name, value] of source) if (!target.has(name)) target.set(name, value);
+    return target;
+  }
+
+  function breadcrumbValues(states) {
+    const values = [];
+    for (const { key, value } of states) {
+      if (!/bread/i.test(key)) continue;
+      walk(value, object => {
+        const candidate = clean(object.title || object.text || object.name);
+        if (candidate && candidate.length < 80 && !/главная|ozon|китай|россия/i.test(candidate)) values.push(candidate);
+      });
+    }
+    return values.filter((value, index) => values.indexOf(value) === index);
+  }
+
   function aspect(pairs, patterns) {
     for (const [name, value] of pairs) if (patterns.some(pattern => pattern.test(name))) return value;
     return "";
@@ -147,13 +166,20 @@
   async function publicProductData(id) {
     if (publicCache.has(id)) return publicCache.get(id);
     const promise = (async () => {
-      const data = { aspects: new Map(), sellers: [], publicError: "" };
+      const data = { aspects: new Map(), breadcrumbs: [], sellers: [], publicError: "" };
       try {
         const endpoint = `/api/entrypoint-api.bx/page/json/v2?url=${encodeURIComponent(location.pathname + location.search)}`;
         const response = await fetch(endpoint, { credentials: "include", cache: "no-store", headers: { accept: "application/json" } });
         if (!response.ok) throw new Error(`商品接口 HTTP ${response.status}`);
-        data.aspects = aspectPairs(decodeWidgetStates(await response.json()));
+        const states = decodeWidgetStates(await response.json());
+        data.aspects = aspectPairs(states);
+        data.breadcrumbs = breadcrumbValues(states);
       } catch (error) { data.publicError = error.message || String(error); }
+      try {
+        const modal = `/modal/aspectsNew?product_id=${encodeURIComponent(id)}`;
+        const response = await fetch(`/api/entrypoint-api.bx/page/json/v2?url=${encodeURIComponent(modal)}`, { credentials: "include", cache: "no-store", headers: { accept: "application/json" } });
+        if (response.ok) mergePairs(data.aspects, aspectPairs(decodeWidgetStates(await response.json())));
+      } catch (_) {}
       try {
         const modal = `/modal/otherOffersFromSellers?product_id=${encodeURIComponent(id)}`;
         const response = await fetch(`/api/entrypoint-api.bx/page/json/v2?url=${encodeURIComponent(modal)}`, { credentials: "include", cache: "no-store", headers: { accept: "application/json" } });
@@ -195,6 +221,20 @@
     return null;
   }
 
+  function sellerDimensions(source) {
+    const direct = clean(metric(source, "packagingDimensions", "packaging_dimensions", "custom_volume"));
+    if (direct) return direct;
+    const dimensions = source?.dimensions;
+    if (!dimensions || typeof dimensions !== "object") return "";
+    const values = [dimensions.length || dimensions.depth, dimensions.width, dimensions.height].map(value => Number(value));
+    return values.every(value => Number.isFinite(value) && value > 0) ? values.join(" × ") : "";
+  }
+
+  function sellerWeight(source) {
+    const value = metric(source, "packagingWeight", "packaging_weight", "custom_weight", "weight");
+    return value === null ? "" : clean(value);
+  }
+
   async function detailData(id, force = false) {
     const schema = schemaProduct() || {};
     const lines = pageLines();
@@ -209,20 +249,22 @@
     const pairs = publicData.aspects;
     const sellerData = seller?.data || {};
     const brandValue = typeof schema.brand === "object" ? schema.brand?.name : schema.brand;
+    const brand = clean(metric(sellerData, "brand", "brand_name")) || clean(brandValue) || aspect(pairs, [/^бренд$/, /brand/]) || labeledValue(lines, ["Бренд"]);
+    const sellerCategory = clean(metric(sellerData, "category3", "category_name", "category", "category2", "category1"));
     const sellerPrices = publicData.sellers.map(item => item.price).filter(Number.isFinite);
     return {
       id,
       title: clean(schema.name) || clean(document.querySelector("h1")?.textContent) || clean(document.title),
-      category: breadcrumbCategory(schema),
-      brand: clean(brandValue) || aspect(pairs, [/^бренд$/, /brand/]) || labeledValue(lines, ["Бренд"]),
+      category: sellerCategory || breadcrumbCategory(schema, publicData, brand),
+      brand,
       price, original, discount: percentage(price, original),
       rating: clean(rating.ratingValue) || firstMatch(flat, [/(?:Рейтинг|评分)\s*[:：]?\s*(\d(?:[.,]\d)?)/i]),
       reviews: clean(rating.reviewCount || rating.ratingCount) || firstMatch(flat, [/(\d[\d\s]*)\s*(?:отзыв|оценк)/i]),
       sold: firstMatch(flat, [/(\d[\d\s+.,]*(?:тыс\.?)?)\s*(?:купили|продано|заказали)/i]),
       sellerName: labeledValue(lines, ["Продавец"]),
       delivery: labeledValue(lines, ["Доставка", "Получение"]),
-      dimensions: aspect(pairs, [/габарит/, /размер.*упаков/, /длина.*ширина.*высота/]) || labeledValue(lines, ["Габариты", "Размеры"]),
-      weight: aspect(pairs, [/^вес/, /масса/]) || labeledValue(lines, ["Вес товара", "Вес"]),
+      dimensions: aspect(pairs, [/габарит/, /размер.*упаков/, /длина.*ширина.*высота/]) || sellerDimensions(sellerData) || labeledValue(lines, ["Габариты", "Размеры"]),
+      weight: aspect(pairs, [/^вес/, /масса/]) || sellerWeight(sellerData) || labeledValue(lines, ["Вес товара", "Вес"]),
       country: aspect(pairs, [/страна.*изготов/, /страна.*производ/]) || labeledValue(lines, ["Страна-изготовитель"]),
       sellerMetrics: sellerData,
       sellerStatus: seller?.ok ? "已连接 Ozon Seller" : (seller?.error || "未授权"),

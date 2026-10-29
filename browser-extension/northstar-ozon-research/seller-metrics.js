@@ -19,7 +19,8 @@
     return result;
   }
 
-  function companyId() {
+  function companyId(provided = "") {
+    if (String(provided || "").trim()) return String(provided).trim();
     const values = [];
     try { values.push(localStorage.getItem("ozon_company_id")); } catch (_) {}
     try { values.push(sessionStorage.getItem("ozon_company_id")); } catch (_) {}
@@ -43,16 +44,16 @@
     return informative.length === 1 ? informative[0] : null;
   }
 
-  async function load(sku, force = false) {
+  async function load(sku, force = false, providedCompanyId = "") {
     if (force) cache.delete(sku);
     if (cache.has(sku)) return cache.get(sku);
-    const request = limited(() => loadUncached(sku));
+    const request = limited(() => loadUncached(sku, providedCompanyId));
     cache.set(sku, request);
     return request;
   }
 
-  async function loadUncached(sku) {
-    const id = companyId();
+  async function loadUncached(sku, providedCompanyId) {
+    const id = companyId(providedCompanyId);
     if (!id) return { ok: false, error: "请先登录 Ozon Seller，未识别到公司 ID" };
     const response = await fetch("https://seller.ozon.ru/api/site/seller-analytics/what_to_sell/data/v3", {
       method: "POST",
@@ -70,7 +71,7 @@
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type !== "NORTHSTAR_SELLER_METRICS") return false;
-    load(String(message.sku || ""), Boolean(message.force)).then(sendResponse).catch(error => sendResponse({ ok: false, error: error.message || String(error) }));
+    load(String(message.sku || ""), Boolean(message.force), message.companyId).then(sendResponse).catch(error => sendResponse({ ok: false, error: error.message || String(error) }));
     return true;
   });
 })();
