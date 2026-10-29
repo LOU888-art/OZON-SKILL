@@ -60,6 +60,181 @@ def _store() -> StoreConfig:
 
 
 class UploadIdempotencyTests(unittest.TestCase):
+    def test_only_plant_name_rejection_is_repaired_and_rechecked(self) -> None:
+        class _Client:
+            def __init__(self) -> None:
+                self.import_payloads: list[dict] = []
+
+            def product_import(self, payload: dict) -> dict:
+                self.import_payloads.append(payload)
+                return {"result": {"task_id": 100 + len(self.import_payloads)}}
+
+            def import_info(self, task_id: int) -> dict:
+                if task_id == 101:
+                    return {
+                        "result": {
+                            "items": [
+                                {
+                                    "offer_id": "QSM102901",
+                                    "product_id": 901,
+                                    "status": "imported",
+                                    "errors": [],
+                                },
+                                {
+                                    "offer_id": "QSM102902",
+                                    "product_id": 902,
+                                    "status": "failed",
+                                    "errors": [
+                                        {
+                                            "code": "FB_ERROR_SEEDS_IN_NAME",
+                                            "description": "seeds are not allowed",
+                                            "field": 4180,
+                                        }
+                                    ],
+                                },
+                            ]
+                        }
+                    }
+                return {
+                    "result": {
+                        "items": [
+                            {
+                                "offer_id": "QSM102902",
+                                "product_id": 902,
+                                "status": "imported",
+                                "errors": [],
+                            }
+                        ]
+                    }
+                }
+
+            def product_info_list(self, offer_ids: list[str]) -> dict:
+                return {
+                    "items": [
+                        {"offer_id": offer_id, "id": 900 + index}
+                        for index, offer_id in enumerate(offer_ids, 1)
+                    ]
+                }
+
+            def product_info_attributes(self, offer_ids: list[str]) -> dict:
+                return {
+                    "items": [
+                        {"offer_id": offer_id, "attributes": []}
+                        for offer_id in offer_ids
+                    ]
+                }
+
+        assembly = AssemblyResult(
+            payload={
+                "items": [
+                    {
+                        "offer_id": "QSM102901",
+                        "name": "Ароматическая восковая подвеска для шкафа и комнаты, декоративный ароматизатор",
+                        "attributes": [],
+                        "images": [],
+                    },
+                    {
+                        "offer_id": "QSM102902",
+                        "name": "Ароматическая восковая подвеска с сухоцветами гардении для шкафа и комнаты",
+                        "attributes": [],
+                        "images": [],
+                    },
+                ]
+            },
+            offer_ids=["QSM102901", "QSM102902"],
+            validation_errors=[],
+            warnings=[],
+            dimension_source="test",
+            required_attribute_ids=[],
+        )
+        client = _Client()
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run_upload_workflow(
+                store=_store(),
+                assembly=assembly,
+                upload_log=UploadLog(Path(temporary) / "upload.json"),
+                execute=True,
+                client=client,
+                poll_interval_seconds=0,
+                verification_max_polls=1,
+            )
+
+        self.assertEqual(result["status"], "VERIFIED")
+        self.assertEqual(len(client.import_payloads), 2)
+        self.assertEqual(
+            [item["offer_id"] for item in client.import_payloads[1]["items"]],
+            ["QSM102902"],
+        )
+        repaired_name = client.import_payloads[1]["items"][0]["name"].lower()
+        self.assertNotIn("сухоцвет", repaired_name)
+        self.assertNotIn("гардени", repaired_name)
+        self.assertIn("вариант товара 2902", repaired_name)
+        self.assertEqual(result["name_repair_offer_ids"], ["QSM102902"])
+        self.assertEqual(
+            {item["offer_id"] for item in result["import_items"]},
+            {"QSM102901", "QSM102902"},
+        )
+
+    def test_genuine_seed_title_is_not_rewritten_or_automatically_retried(self) -> None:
+        class _Client:
+            def __init__(self) -> None:
+                self.import_payloads: list[dict] = []
+
+            def product_import(self, payload: dict) -> dict:
+                self.import_payloads.append(payload)
+                return {"result": {"task_id": 301}}
+
+            def import_info(self, _task_id: int) -> dict:
+                return {
+                    "result": {
+                        "items": [
+                            {
+                                "offer_id": "QSM102903",
+                                "status": "failed",
+                                "errors": [
+                                    {
+                                        "code": "FB_ERROR_SEEDS_IN_NAME",
+                                        "field": 4180,
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                }
+
+        assembly = AssemblyResult(
+            payload={
+                "items": [
+                    {
+                        "offer_id": "QSM102903",
+                        "name": "Семена растений для выращивания в саду, упаковка для посадки",
+                        "attributes": [],
+                        "images": [],
+                    }
+                ]
+            },
+            offer_ids=["QSM102903"],
+            validation_errors=[],
+            warnings=[],
+            dimension_source="test",
+            required_attribute_ids=[],
+        )
+        client = _Client()
+        with tempfile.TemporaryDirectory() as temporary:
+            result = run_upload_workflow(
+                store=_store(),
+                assembly=assembly,
+                upload_log=UploadLog(Path(temporary) / "upload.json"),
+                execute=True,
+                client=client,
+                poll_interval_seconds=0,
+            )
+
+        self.assertEqual(result["status"], "FAILED")
+        self.assertEqual(len(client.import_payloads), 1)
+        self.assertIn("Семена растений", client.import_payloads[0]["items"][0]["name"])
+        self.assertNotIn("name_repair_attempted", result)
+
     def test_published_product_passes_when_only_rich_content_cdn_is_delayed(self) -> None:
         class _Client:
             attributes_update_calls = 0

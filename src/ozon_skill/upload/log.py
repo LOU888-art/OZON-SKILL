@@ -35,6 +35,9 @@ class UploadLog:
             "SUBMITTING",
             "SUBMISSION_OUTCOME_UNKNOWN",
             "IMPORT_RESPONSE_MISSING_TASK_ID",
+            "NAME_REPAIR_SUBMITTING",
+            "NAME_REPAIR_OUTCOME_UNKNOWN",
+            "NAME_REPAIR_MISSING_TASK_ID",
         }
         return any(
             isinstance(entry, dict)
@@ -63,12 +66,22 @@ class UploadLog:
             "SUBMISSION_OUTCOME_UNKNOWN",
             "IMPORT_RESPONSE_MISSING_TASK_ID",
         }
+        uncertain_name_repair_statuses = {
+            "NAME_REPAIR_SUBMITTING",
+            "NAME_REPAIR_OUTCOME_UNKNOWN",
+            "NAME_REPAIR_MISSING_TASK_ID",
+        }
         return any(
             isinstance(entry, dict)
             and entry.get("store_id") == store_id
             and offer_id in (entry.get("offer_ids") or [])
-            and entry.get("status") in uncertain_statuses
-            and not isinstance(entry.get("task_id"), int)
+            and (
+                (
+                    entry.get("status") in uncertain_statuses
+                    and not isinstance(entry.get("task_id"), int)
+                )
+                or entry.get("status") in uncertain_name_repair_statuses
+            )
             for entry in self.data["entries"]
         )
 

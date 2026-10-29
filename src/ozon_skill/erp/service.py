@@ -549,9 +549,27 @@ def _upload_error_messages(value: Mapping[str, Any]) -> list[str]:
                 )
                 field = error.get("field") or error.get("attribute_id")
                 suffix = f"；field={field}" if field not in (None, "") else ""
-                messages.append(
-                    f"Ozon 拒绝 {offer_id}：{code}；{str(description)[:500]}{suffix}"
-                )
+                if str(code).upper() == "FB_ERROR_SEEDS_IN_NAME":
+                    messages.append(
+                        f"Ozon 拒绝 {offer_id}：标题被判定为活体植物/种子类；"
+                        "如属于花名或香型误判，系统会仅对该 SKU 使用安全标题重试；"
+                        "真实种子、幼苗或活体植物不会绕过平台限制。"
+                        f"错误码={code}{suffix}"
+                    )
+                elif str(code).upper() == "VALUE_MUST_BE_DECIMAL":
+                    messages.append(
+                        f"Ozon 拒绝 {offer_id}：该属性必须填写纯数字；"
+                        f"错误码={code}{suffix}"
+                    )
+                elif str(code).upper() == "BR_HASHTAGS_SYMBOLS_LIMIT":
+                    messages.append(
+                        f"Ozon 拒绝 {offer_id}：标签或主题词超过 30 个字符；"
+                        f"错误码={code}{suffix}"
+                    )
+                else:
+                    messages.append(
+                        f"Ozon 拒绝 {offer_id}：{code}；{str(description)[:500]}{suffix}"
+                    )
             elif error:
                 messages.append(f"Ozon 拒绝 {offer_id}：{str(error)[:500]}")
             if len(messages) >= 20:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 import uuid
 from copy import deepcopy
@@ -349,6 +350,107 @@ def _poll_state(response: Mapping[str, Any]) -> tuple[str, list[dict[str, Any]]]
     return "SUCCEEDED", details
 
 
+_PLANT_NAME_ERROR = "FB_ERROR_SEEDS_IN_NAME"
+_FALSE_POSITIVE_PLANT_TERMS_RU = re.compile(
+    r"\bсухоцвет\w*\b",
+    re.IGNORECASE,
+)
+_REGULATED_PLANT_TERMS_RU = re.compile(
+    r"\b(?:семен\w*|саженц\w*|рассад\w*|луковиц\w*|клубн\w*|"
+    r"корневищ\w*|жив\w*\s+растени\w*)\b",
+    re.IGNORECASE,
+)
+_FLOWER_TERMS_RU = re.compile(
+    r"\b(?:цвет\w*|гардени\w*|орхиде\w*|фрези\w*|колокольчик\w*|"
+    r"роз\w*|лаванд\w*|жасмин\w*|лили\w*|пион\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def _clean_offer_name(value: Any, *, aggressive: bool = False, offer_id: str = "") -> str:
+    """Remove botanical terms that Ozon can misclassify as prohibited plants."""
+
+    name = str(value or "").strip()
+    name = _FALSE_POSITIVE_PLANT_TERMS_RU.sub("", name)
+    if aggressive:
+        name = _FLOWER_TERMS_RU.sub("", name)
+    name = re.sub(r"\s+", " ", name)
+    name = re.sub(r"\s*[,;:/|]+\s*", ", ", name)
+    name = re.sub(r"(?:,\s*){2,}", ", ", name).strip(" ,;:—-")
+    suffix = str(offer_id or "")[-4:]
+    addition = f"вариант товара {suffix}" if suffix else "вариант товара"
+    if aggressive and addition.casefold() not in name.casefold():
+        name = f"{name}, {addition}".strip(" ,")
+    if len(name) < 60:
+        name = f"{name} — декоративный товар для использования по назначению".strip()
+    if len(name) > 200:
+        name = name[:200].rsplit(" ", 1)[0].rstrip(" ,;:—-")
+    return name
+
+
+def _looks_like_regulated_plant(value: Any) -> bool:
+    """Do not rewrite genuine seeds/live plants to evade Ozon restrictions."""
+
+    name = str(value or "")
+    if re.search(r"\bискусствен\w*\b", name, re.IGNORECASE):
+        return False
+    return bool(_REGULATED_PLANT_TERMS_RU.search(name))
+
+
+def _sanitize_import_names(payload: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    cleaned = deepcopy(dict(payload))
+    changed: list[str] = []
+    for item in cleaned.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        offer_id = str(item.get("offer_id") or "")
+        if not _FALSE_POSITIVE_PLANT_TERMS_RU.search(str(item.get("name") or "")):
+            continue
+        safe_name = _clean_offer_name(item.get("name"), offer_id=offer_id)
+        if safe_name and safe_name != item.get("name"):
+            item["name"] = safe_name
+            changed.append(offer_id)
+    return cleaned, changed
+
+
+def _error_codes(item: Mapping[str, Any]) -> set[str]:
+    result: set[str] = set()
+    errors = item.get("errors") or []
+    if not isinstance(errors, list):
+        errors = [errors]
+    for error in errors:
+        if isinstance(error, Mapping):
+            code = error.get("code") or error.get("error_code")
+            if code:
+                result.add(str(code).upper())
+        elif error and _PLANT_NAME_ERROR in str(error).upper():
+            result.add(_PLANT_NAME_ERROR)
+    return result
+
+
+def _plant_name_rejected_offers(items: Sequence[Mapping[str, Any]]) -> set[str]:
+    return {
+        str(item.get("offer_id") or "")
+        for item in items
+        if _PLANT_NAME_ERROR in _error_codes(item) and item.get("offer_id")
+    }
+
+
+def _merge_import_items(
+    original: Sequence[Mapping[str, Any]], repaired: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    by_offer = {
+        str(item.get("offer_id") or ""): dict(item)
+        for item in original
+        if item.get("offer_id")
+    }
+    for item in repaired:
+        offer_id = str(item.get("offer_id") or "")
+        if offer_id:
+            by_offer[offer_id] = dict(item)
+    return list(by_offer.values())
+
+
 def _archived_product_ids(response: Mapping[str, Any]) -> list[int]:
     result: list[int] = []
     for item in _result_items(response):
@@ -495,6 +597,12 @@ def run_upload_workflow(
         "history": [],
     }
     import_payload, rich_content_plans = _split_rich_content_payload(assembly.payload)
+    import_payload, preflight_name_repairs = _sanitize_import_names(import_payload)
+    if preflight_name_repairs:
+        entry["preflight_name_repairs"] = preflight_name_repairs
+        entry["warnings"] = list(entry.get("warnings") or []) + [
+            "为避免 Ozon 将商品误判为活体植物/种子，已清理标题中的高风险植物词"
+        ]
     if rich_content_plans:
         entry["rich_content_strategy"] = "OZON_HOSTED_IMAGES_AFTER_IMPORT"
 
@@ -539,22 +647,49 @@ def run_upload_workflow(
     previous = upload_log.latest_for_payload(store.store_id, entry["payload_sha256"])
     log_index: int | None = None
     resume_verification = False
+    resume_name_repair = False
     final_details: list[dict[str, Any]] = []
+    if previous and str(previous.get("status") or "") == "FAILED":
+        rejected = _plant_name_rejected_offers(
+            [
+                item
+                for item in previous.get("import_items") or []
+                if isinstance(item, Mapping)
+            ]
+        )
+        if rejected and isinstance(previous.get("task_id"), int):
+            entry["retry_of_run_id"] = previous.get("run_id")
+            entry["retry_reason"] = _PLANT_NAME_ERROR
+            entry["history"].append(
+                {
+                    "at": _now(),
+                    "status": "RETRYING_REJECTED_NAMES",
+                    "offer_ids": sorted(rejected),
+                }
+            )
+            previous = None
+        else:
+            previous["reused_existing_result"] = True
+            return previous
     if previous:
         previous_status = str(previous.get("status") or "")
         previous_rich_content_deferred = bool(
             previous.get("rich_content_deferred")
         )
-        if previous_status == "FAILED" or (
-            previous_status == "VERIFIED" and not previous_rich_content_deferred
-        ):
+        if previous_status == "VERIFIED" and not previous_rich_content_deferred:
             previous["reused_existing_result"] = True
             return previous
-        if previous_status in {
+        repair_outcome_unknown = previous_status in {
+            "NAME_REPAIR_SUBMITTING",
+            "NAME_REPAIR_OUTCOME_UNKNOWN",
+            "NAME_REPAIR_MISSING_TASK_ID",
+        }
+        initial_outcome_unknown = previous_status in {
             "SUBMITTING",
             "SUBMISSION_OUTCOME_UNKNOWN",
             "IMPORT_RESPONSE_MISSING_TASK_ID",
-        } and not isinstance(previous.get("task_id"), int):
+        } and not isinstance(previous.get("task_id"), int)
+        if repair_outcome_unknown or initial_outcome_unknown:
             previous["reused_existing_result"] = True
             previous["manual_reconciliation_required"] = True
             previous.setdefault(
@@ -591,6 +726,7 @@ def run_upload_workflow(
                     and previous_rich_content_deferred
                 )
                 final_details = list(entry.get("import_items") or [])
+                resume_name_repair = bool(entry.get("name_repair_attempted"))
                 entry.setdefault("history", []).append(
                     {
                         "at": _now(),
@@ -707,6 +843,15 @@ def run_upload_workflow(
                 )
                 return upload_log.data["entries"][log_index]
             final_state, final_details = _poll_state(response)
+            if resume_name_repair:
+                final_details = _merge_import_items(
+                    [
+                        item
+                        for item in entry.get("initial_import_items") or []
+                        if isinstance(item, Mapping)
+                    ],
+                    final_details,
+                )
             entry["history"].append(
                 {
                     "at": _now(),
@@ -731,6 +876,182 @@ def run_upload_workflow(
             entry["history"].append({"at": _now(), "status": final_state})
             upload_log.update(log_index, status=final_state, history=entry["history"])
             return upload_log.data["entries"][log_index]
+
+        if final_state == "FAILED":
+            failed_items = [
+                item
+                for item in final_details
+                if str(item.get("status") or "").lower()
+                in {"failed", "error", "declined"}
+                or item.get("errors")
+            ]
+            rejected_offers = _plant_name_rejected_offers(failed_items)
+            repairable = bool(failed_items) and all(
+                _PLANT_NAME_ERROR in _error_codes(item) for item in failed_items
+            )
+            source_items = {
+                str(item.get("offer_id") or ""): item
+                for item in import_payload.get("items") or []
+                if isinstance(item, Mapping) and item.get("offer_id")
+            }
+            repair_items: list[dict[str, Any]] = []
+            if repairable and not entry.get("name_repair_attempted"):
+                for offer_id in sorted(rejected_offers):
+                    source = source_items.get(offer_id)
+                    if source is None or _looks_like_regulated_plant(
+                        source.get("name")
+                    ):
+                        repairable = False
+                        break
+                    repaired = deepcopy(dict(source))
+                    repaired["name"] = _clean_offer_name(
+                        repaired.get("name"), aggressive=True, offer_id=offer_id
+                    )
+                    repair_items.append(repaired)
+
+            if repairable and repair_items:
+                initial_task_id = task_id
+                initial_details = list(final_details)
+                entry["history"].append(
+                    {
+                        "at": _now(),
+                        "status": "NAME_REPAIR_SUBMITTING",
+                        "offer_ids": sorted(rejected_offers),
+                    }
+                )
+                upload_log.update(
+                    log_index,
+                    status="NAME_REPAIR_SUBMITTING",
+                    error=None,
+                    name_repair_offer_ids=sorted(rejected_offers),
+                    name_repair_attempted=True,
+                    initial_task_id=initial_task_id,
+                    initial_import_items=initial_details,
+                    history=entry["history"],
+                )
+                try:
+                    repair_response = client.product_import({"items": repair_items})
+                except Exception as exc:
+                    error = (
+                        "Ozon 标题修复请求的结果不确定，系统不会自动重复提交；"
+                        "请先按 offer_id 在 Ozon 后台核对。"
+                        f"原始错误：{str(exc)[:500]}"
+                    )
+                    entry["history"].append(
+                        {
+                            "at": _now(),
+                            "status": "NAME_REPAIR_OUTCOME_UNKNOWN",
+                            "error": error,
+                        }
+                    )
+                    upload_log.update(
+                        log_index,
+                        status="NAME_REPAIR_OUTCOME_UNKNOWN",
+                        error=error,
+                        history=entry["history"],
+                    )
+                    return upload_log.data["entries"][log_index]
+
+                repair_task_id = (
+                    _task_id(repair_response)
+                    if isinstance(repair_response, Mapping)
+                    else None
+                )
+                if repair_task_id is None:
+                    error = (
+                        "Ozon 已接收标题修复请求但没有返回 task_id；"
+                        "系统不会自动重复提交，请先在 Ozon 后台核对"
+                    )
+                    entry["history"].append(
+                        {
+                            "at": _now(),
+                            "status": "NAME_REPAIR_MISSING_TASK_ID",
+                            "error": error,
+                        }
+                    )
+                    upload_log.update(
+                        log_index,
+                        status="NAME_REPAIR_MISSING_TASK_ID",
+                        error=error,
+                        history=entry["history"],
+                    )
+                    return upload_log.data["entries"][log_index]
+
+                task_id = repair_task_id
+                entry["task_id"] = task_id
+                entry["history"].append(
+                    {
+                        "at": _now(),
+                        "status": "NAME_REPAIR_SUBMITTED",
+                        "task_id": task_id,
+                        "offer_ids": sorted(rejected_offers),
+                    }
+                )
+                upload_log.update(
+                    log_index,
+                    task_id=task_id,
+                    status="NAME_REPAIR_SUBMITTED",
+                    error=None,
+                    repaired_names={
+                        str(item.get("offer_id")): str(item.get("name"))
+                        for item in repair_items
+                    },
+                    history=entry["history"],
+                )
+
+                repaired_details: list[dict[str, Any]] = []
+                repair_state = "PENDING"
+                for repair_poll in range(1, max_polls + 1):
+                    if deadline_exceeded("被拒 SKU 的安全标题修复回查"):
+                        return upload_log.data["entries"][log_index]
+                    try:
+                        repair_info = client.import_info(task_id)
+                    except Exception as exc:
+                        entry["history"].append(
+                            {
+                                "at": _now(),
+                                "status": "NAME_REPAIR_POLL_API_ERROR",
+                                "error": str(exc)[:500],
+                            }
+                        )
+                        upload_log.update(
+                            log_index,
+                            status="NAME_REPAIR_POLL_API_ERROR",
+                            error=str(exc)[:500],
+                            history=entry["history"],
+                        )
+                        return upload_log.data["entries"][log_index]
+                    repair_state, repaired_details = _poll_state(repair_info)
+                    merged_details = _merge_import_items(
+                        initial_details, repaired_details
+                    )
+                    entry["history"].append(
+                        {
+                            "at": _now(),
+                            "status": f"NAME_REPAIR_{repair_state}",
+                            "poll_number": repair_poll,
+                            "items": repaired_details,
+                        }
+                    )
+                    upload_log.update(
+                        log_index,
+                        status=(
+                            "SUCCEEDED"
+                            if repair_state == "SUCCEEDED"
+                            else f"NAME_REPAIR_{repair_state}"
+                        ),
+                        error=None,
+                        import_items=merged_details,
+                        history=entry["history"],
+                    )
+                    if repair_state != "PENDING":
+                        break
+                    if poll_interval_seconds:
+                        time.sleep(poll_interval_seconds)
+                final_state = repair_state
+                final_details = _merge_import_items(
+                    initial_details, repaired_details
+                )
 
         if final_state != "SUCCEEDED":
             return upload_log.data["entries"][log_index]
