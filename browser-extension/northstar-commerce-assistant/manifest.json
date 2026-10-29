@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Northstar 跨境商品助手",
-  "version": "1.5.3",
+  "version": "1.5.4",
   "description": "一个插件完成1688商品采集、Ozon商品数据展示和Ozon Seller选品同步。",
   "permissions": ["activeTab", "storage", "scripting", "cookies", "tabs"],
   "optional_host_permissions": ["https://*/*"],

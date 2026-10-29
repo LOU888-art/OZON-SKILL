@@ -12,6 +12,29 @@ function absoluteUrl(value) {
   } catch (_) { return ""; }
 }
 
+function highResolutionImageUrl(value) {
+  const resolved = absoluteUrl(value);
+  if (!resolved) return "";
+  try {
+    const parsed = new URL(resolved);
+    if (!/(?:alicdn|alibaba|1688)\.com$/i.test(parsed.hostname)) return resolved;
+    // 1688 option buttons normally expose a tiny CDN derivative such as
+    // `photo.jpg_60x60.jpg` or `photo.jpg_100x100q90.jpg_.webp`.  Everything
+    // after the first real image extension is a resize/format instruction;
+    // removing it returns the supplier's original image instead of enlarging
+    // a blurry thumbnail inside ERP.
+    const extension = parsed.pathname.match(/\.(?:jpe?g|png|webp|gif|avif|heic)/i);
+    if (extension?.index !== undefined) {
+      parsed.pathname = parsed.pathname.slice(0, extension.index + extension[0].length);
+      parsed.search = "";
+      parsed.hash = "";
+    }
+    return parsed.href;
+  } catch (_error) {
+    return resolved;
+  }
+}
+
 function numberValue(value) {
   if (typeof value === "number") return Number.isFinite(value) && value >= 0 ? value : null;
   const match = cleanText(value).replace(/[,，]/g, "").match(/(?:¥|￥)?\s*(\d+(?:\.\d+)?)/);
@@ -515,11 +538,11 @@ function optionImage(element, value) {
     if (!matches) continue;
     const image = candidate.matches?.("img") ? candidate : candidate.querySelector?.("img");
     const url = imageElementUrl(image);
-    if (url) return url;
+    if (url) return highResolutionImageUrl(url);
     for (const background of [candidate, ...(candidate.querySelectorAll?.("[style*='background']") || [])]) {
       const match = getComputedStyle(background).backgroundImage.match(/url\(["']?([^"')]+)["']?\)/i);
       const backgroundUrl = absoluteUrl(match?.[1]);
-      if (backgroundUrl) return backgroundUrl;
+      if (backgroundUrl) return highResolutionImageUrl(backgroundUrl);
     }
   }
   return "";
@@ -553,7 +576,7 @@ function currentGalleryImage() {
   const fallback = [...document.images].filter(image => image.getBoundingClientRect().top < window.innerHeight * 1.4);
   const ranked = [...new Set([...preferred, ...fallback])].map(image => {
     const rect = image.getBoundingClientRect();
-    const url = absoluteUrl(image.currentSrc || image.src || image.dataset.src || image.dataset.lazyload);
+    const url = highResolutionImageUrl(image.currentSrc || image.src || image.dataset.src || image.dataset.lazyload);
     const area = Math.max(image.naturalWidth * image.naturalHeight, rect.width * rect.height);
     const preferredBonus = preferred.includes(image) ? 10000000 : 0;
     return { url, score: preferredBonus + area, visible: rect.width >= 120 && rect.height >= 120 };
@@ -580,7 +603,7 @@ async function enrichSkuImages(skuList, mainImage, groups = semanticSkuGroups())
     if (optionUrl) await delay(120);
     const dynamicUrl = currentGalleryImage();
     const previous = sku.image_url || "";
-    const resolved = optionUrl || dynamicUrl || previous || mainImage || "";
+    const resolved = highResolutionImageUrl(optionUrl || dynamicUrl || previous || mainImage || "");
     if (resolved) {
       sku.image_url = resolved;
       if (resolved !== mainImage) captured += 1;
@@ -644,7 +667,7 @@ async function collectDomSkus(mainImage, groups = domSkuGroups()) {
     const current = currentPriceAndStock();
     if (current.price === null || current.price <= 0) continue;
     const dynamicImage = currentGalleryImage();
-    result.push({ sku_id: stableSkuId(combination), specification_zh: combination, specification_text_zh: combination.map(item => `${item.name}:${item.value}`).join("; "), purchase_price_cny: current.price, stock: current.stock, image_url: image || dynamicImage || mainImage || null });
+    result.push({ sku_id: stableSkuId(combination), specification_zh: combination, specification_text_zh: combination.map(item => `${item.name}:${item.value}`).join("; "), purchase_price_cny: current.price, stock: current.stock, image_url: highResolutionImageUrl(image || dynamicImage || mainImage) || null });
   }
   return result;
 }
@@ -683,7 +706,7 @@ async function scan() {
   const attributes = collectAttributes(roots); let categoryId = ""; let supplierName = "";
   walk(roots, object => { if (!categoryId) { const value = cleanText(firstValue(object, ["thirdCategoryId", "categoryId", "categoryID", "leafCategoryId"])); if (/^\d+$/.test(value)) categoryId = value; } if (!supplierName) supplierName = cleanText(firstValue(object, ["companyName", "supplierName", "shopName"])); });
   const breadcrumbs = [...document.querySelectorAll("[class*='breadcrumb'] a,[class*='crumb'] a")].map(cleanText).filter(Boolean).slice(0, 20);
-  return { source_offer_id: offerId(), product_url: location.href, title_zh: title, images: images.main, detail_images: images.detail, sku_list: skuList, price_ranges: priceRanges, attributes_zh: attributes, category_id: categoryId, category_path_zh: breadcrumbs, supplier_info: { name: supplierName || null, min_order: priceRanges.find(item => item.minimum_quantity !== null)?.minimum_quantity ?? null, ship_from: shipping.ship_from_zh }, shipping_info: shipping, capture_diagnostics: { collector_version: "0.3.3", main_candidate_count: mainData.candidates.length, intercepted_response_count: mainData.response_urls.length, visible_sku_option_count: visibleOptions, expected_sku_count: expectedSkuCount, structured_specifications_valid: structuredSpecificationsValid, enriched_sku_price_count: commerceEnrichment.filledPrices, enriched_sku_stock_count: commerceEnrichment.filledStocks, enriched_sku_image_count: imageEnrichment.captured, overridden_sku_image_count: imageEnrichment.overridden, visible_option_image_count: imageEnrichment.visibleOptionImageCount, sku_image_count: skuList.filter(sku => Boolean(sku.image_url)).length, unique_sku_image_count: imageEnrichment.uniqueSkuImageCount, spec_groups: pageGroups.map(group => ({ name: group.name, count: group.labels.length })), warnings }, captured_at: new Date().toISOString() };
+  return { source_offer_id: offerId(), product_url: location.href, title_zh: title, images: images.main, detail_images: images.detail, sku_list: skuList, price_ranges: priceRanges, attributes_zh: attributes, category_id: categoryId, category_path_zh: breadcrumbs, supplier_info: { name: supplierName || null, min_order: priceRanges.find(item => item.minimum_quantity !== null)?.minimum_quantity ?? null, ship_from: shipping.ship_from_zh }, shipping_info: shipping, capture_diagnostics: { collector_version: "0.3.4", main_candidate_count: mainData.candidates.length, intercepted_response_count: mainData.response_urls.length, visible_sku_option_count: visibleOptions, expected_sku_count: expectedSkuCount, structured_specifications_valid: structuredSpecificationsValid, enriched_sku_price_count: commerceEnrichment.filledPrices, enriched_sku_stock_count: commerceEnrichment.filledStocks, enriched_sku_image_count: imageEnrichment.captured, overridden_sku_image_count: imageEnrichment.overridden, visible_option_image_count: imageEnrichment.visibleOptionImageCount, sku_image_count: skuList.filter(sku => Boolean(sku.image_url)).length, unique_sku_image_count: imageEnrichment.uniqueSkuImageCount, spec_groups: pageGroups.map(group => ({ name: group.name, count: group.labels.length })), warnings }, captured_at: new Date().toISOString() };
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
