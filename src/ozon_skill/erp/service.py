@@ -246,6 +246,15 @@ def _image_items(source: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return result
 
 
+def _image_plan_key(item: Mapping[str, Any]) -> tuple[str, str]:
+    """Identify a selectable image without collapsing shared SKU pictures."""
+
+    return (
+        str(item.get("url") or "").strip(),
+        str(item.get("sku_id") or "").strip(),
+    )
+
+
 def _active_sku_source(
     source: Mapping[str, Any], excluded_sku_ids: Sequence[Any]
 ) -> dict[str, Any]:
@@ -2366,14 +2375,32 @@ class PipelineService:
         image_plan = selection.get("image_plan")
         if isinstance(image_plan, list):
             actions = {
-                str(entry.get("url")): str(entry.get("action"))
+                _image_plan_key(entry): str(entry.get("action"))
                 for entry in image_plan
                 if isinstance(entry, Mapping)
             }
+            # Selections written before SKU-aware image identities only stored
+            # the URL.  Keep those files readable while preferring an exact
+            # URL + SKU match for newly saved plans.
+            legacy_actions = {
+                str(entry.get("url")): str(entry.get("action"))
+                for entry in image_plan
+                if isinstance(entry, Mapping) and not entry.get("sku_id")
+            }
             return [
-                {**item, "action": actions.get(str(item.get("url")), "exclude")}
+                {
+                    **item,
+                    "action": actions.get(
+                        _image_plan_key(item),
+                        legacy_actions.get(str(item.get("url")), "exclude"),
+                    ),
+                }
                 for item in items
-                if actions.get(str(item.get("url")), "exclude") != "exclude"
+                if actions.get(
+                    _image_plan_key(item),
+                    legacy_actions.get(str(item.get("url")), "exclude"),
+                )
+                != "exclude"
             ]
         selected_urls = selection.get("selected_urls")
         if not isinstance(selected_urls, list):
@@ -2394,7 +2421,8 @@ class PipelineService:
         items = _image_items(raw)
         selected_items = self._selected_image_items(pipeline_id, raw)
         actions = {
-            str(item.get("url")): str(item.get("action")) for item in selected_items
+            _image_plan_key(item): str(item.get("action"))
+            for item in selected_items
         }
         images = [
             {
@@ -2403,8 +2431,8 @@ class PipelineService:
                 "sku_id": item.get("sku_id"),
                 "width": item.get("width"),
                 "height": item.get("height"),
-                "action": actions.get(str(item.get("url")), "exclude"),
-                "selected": actions.get(str(item.get("url")), "exclude")
+                "action": actions.get(_image_plan_key(item), "exclude"),
+                "selected": actions.get(_image_plan_key(item), "exclude")
                 != "exclude",
             }
             for item in items
@@ -2443,15 +2471,32 @@ class PipelineService:
                 self.product_settings(pipeline_id).get("excluded_sku_ids") or [],
             )
             items = _image_items(raw)
-            by_url = {str(item.get("url")): item for item in items}
-            requested: dict[str, str] = {}
+            by_key = {_image_plan_key(item): item for item in items}
+            keys_by_url: dict[str, list[tuple[str, str]]] = {}
+            for key in by_key:
+                keys_by_url.setdefault(key[0], []).append(key)
+            legacy_offsets: dict[str, int] = {}
+            requested: dict[tuple[str, str], str] = {}
             for entry in image_plan:
                 url = str(entry.get("url") or "").strip()
+                sku_id = str(entry.get("sku_id") or "").strip()
                 action = str(entry.get("action") or "exclude").strip()
-                if url in requested:
+                if sku_id:
+                    key = (url, sku_id)
+                else:
+                    # Old cached frontends only post URLs.  Match repeated URLs
+                    # to their displayed image rows in order so a shared SKU
+                    # picture can still be saved without a forced reload.
+                    candidates = keys_by_url.get(url) or []
+                    offset = legacy_offsets.get(url, 0)
+                    if offset >= len(candidates):
+                        raise PipelineError("同一图片不能配置多次")
+                    key = candidates[offset]
+                    legacy_offsets[url] = offset + 1
+                if key in requested:
                     raise PipelineError("同一图片不能配置多次")
-                requested[url] = action
-            if any(url not in by_url for url in requested):
+                requested[key] = action
+            if any(key not in by_key for key in requested):
                 raise PipelineError("图片清单包含不属于当前商品的 URL")
             if any(action not in IMAGE_ACTIONS for action in requested.values()):
                 raise PipelineError("图片处理方式无效")
@@ -2459,8 +2504,8 @@ class PipelineService:
                 raise PipelineError("只能选择一张图片作为共用八图参考")
             if any(
                 action == "sku_main"
-                and by_url[url].get("source_role") != "sku_image"
-                for url, action in requested.items()
+                and by_key[key].get("source_role") != "sku_image"
+                for key, action in requested.items()
             ):
                 raise PipelineError("只有 SKU 图片可以选择生成 SKU 专属主图")
             active_actions = {
@@ -2473,7 +2518,7 @@ class PipelineService:
             ordered_plan = [
                 {
                     "url": str(item.get("url")),
-                    "action": requested.get(str(item.get("url")), "exclude"),
+                    "action": requested.get(_image_plan_key(item), "exclude"),
                     "source_role": item.get("source_role"),
                     "sku_id": item.get("sku_id"),
                 }
