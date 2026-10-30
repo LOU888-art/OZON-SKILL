@@ -41,7 +41,7 @@ class ResearchPluginDownloadTests(unittest.TestCase):
                 "northstar-commerce-assistant/collector-main-probe.js"
             ).decode("utf-8")
         self.assertIn('"manifest_version": 3', manifest)
-        self.assertIn('"version": "1.5.5"', manifest)
+        self.assertIn('"version": "1.5.6"', manifest)
         self.assertIn('"cookies"', manifest)
         self.assertIn('"https://*.1688.com/*"', manifest)
         self.assertIn('"https://www.ozon.ru/*"', manifest)
@@ -50,11 +50,14 @@ class ResearchPluginDownloadTests(unittest.TestCase):
         self.assertIn('"context", "__INIT_DATA__"', probe)
         self.assertIn("mapKeyPattern.test(key) && Array.isArray(value)", content)
         self.assertIn("enrichSkuCommerce(skuList, priceRanges)", content)
-        self.assertIn('collector_version: "0.3.5"', content)
+        self.assertIn('collector_version: "0.3.6"', content)
         self.assertIn("highResolutionImageUrl", content)
         self.assertIn("axisValueImage", content)
         self.assertIn("const pageGroups = domSkuGroups()", content)
         self.assertIn("没有绑定页面规格名称和规格图片", content)
+        self.assertIn("reloadForFreshExtensionContext", content)
+        self.assertIn("alignedStructured", content)
+        self.assertIn("structured?.purchase_price_cny", content)
         self.assertIn("skuSpecificationsMatchGroups", content)
         self.assertIn("pageGroups.length === 1", content)
         self.assertIn("visibleSkuOptionImages", content)
@@ -76,7 +79,7 @@ class ResearchPluginDownloadTests(unittest.TestCase):
                 "northstar-commerce-assistant/manifest.json"
             ).decode("utf-8")
         self.assertIn('"manifest_version": 3', manifest)
-        self.assertIn('"version": "1.5.5"', manifest)
+        self.assertIn('"version": "1.5.6"', manifest)
         self.assertIn('"https://www.ozon.ru/*"', manifest)
         self.assertIn(
             "northstar-commerce-assistant/ozon-overlay.js", archive.namelist()

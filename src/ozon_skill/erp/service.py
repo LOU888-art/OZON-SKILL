@@ -3989,9 +3989,9 @@ class PipelineService:
             )
         except ValueError:
             version_parts = ()
-        if len(version_parts) != 3 or version_parts < (0, 3, 5):
+        if len(version_parts) != 3 or version_parts < (0, 3, 6):
             raise PipelineError(
-                "1688采集插件版本过旧，请重新下载并安装0.3.5或更高版本；旧版无法可靠识别新版1688页面的SKU规格图片",
+                "1688采集插件版本过旧，请重新下载并安装0.3.6或更高版本，并在插件更新后刷新1688详情页",
                 status=409,
             )
         product = value.get("product") if isinstance(value.get("product"), Mapping) else value
