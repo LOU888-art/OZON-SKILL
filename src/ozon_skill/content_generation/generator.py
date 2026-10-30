@@ -482,6 +482,8 @@ def build_final_listing(
                     "long_tail_keywords_ru",
                     "usage_keywords_ru",
                     "excluded_keywords_ru",
+                    "product_facts",
+                    "image_prompts",
                     "product_identification",
                     "short_description_zh",
                     "description_zh",

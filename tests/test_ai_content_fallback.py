@@ -104,13 +104,55 @@ class AiContentFallbackTests(unittest.TestCase):
         self.assertIn("КАДР 1", relay.prompts[0])
         self.assertIn("КАДР 8", relay.prompts[-1])
         self.assertIn("ПАРАМЕТРЫ", relay.prompts[1])
-        self.assertIn("ПРИЗЫВ К ДЕЙСТВИЮ", relay.prompts[2])
-        self.assertIn("СРАВНЕНИЕ ДИЗАЙНА", relay.prompts[3])
-        self.assertIn("ИСПОЛЬЗОВАНИЕ ЧЕЛОВЕКОМ", relay.prompts[4])
-        self.assertIn("КЛЮЧЕВЫЕ ПРЕИМУЩЕСТВА", relay.prompts[5])
-        self.assertIn("СЦЕНАРИИ ИСПОЛЬЗОВАНИЯ", relay.prompts[6])
-        self.assertIn("ДЕТАЛИ И КАЧЕСТВО", relay.prompts[7])
+        self.assertIn("КЛЮЧЕВЫЕ ПРЕИМУЩЕСТВА", relay.prompts[2])
+        self.assertIn("СЦЕНАРИЙ ИСПОЛЬЗОВАНИЯ", relay.prompts[3])
+        self.assertIn("ФУНКЦИОНАЛЬНЫЕ ДЕТАЛИ", relay.prompts[4])
+        self.assertIn("МАТЕРИАЛ И КАЧЕСТВО", relay.prompts[5])
+        self.assertIn("ЧЕСТНОЕ СРАВНЕНИЕ", relay.prompts[6])
+        self.assertIn("ПРИЧИНЫ ПОКУПКИ И ИТОГ", relay.prompts[7])
         self.assertTrue(all("строго 3:4" in prompt for prompt in relay.prompts))
+
+    def test_verified_product_facts_and_text_plan_are_hard_image_constraints(self) -> None:
+        prompt = process_image_plan(
+            [
+                {
+                    "url": "https://supplier.example.com/pet-mat.jpg",
+                    "source_role": "main_image",
+                    "action": "reference_8",
+                }
+            ],
+            relay := _EightImageRelay(),
+            None,
+            {
+                "title_zh": "宠物加热垫",
+                "_ai_product_facts": {
+                    "product_name_ru_generic": "коврик с подогревом для животных",
+                    "product_type": "плоский коврик с подогревом",
+                    "main_function": "место с подогревом для питомца",
+                    "color": "серый",
+                    "appearance_features": ["плоская квадратная форма"],
+                    "specs_detected": {"size": "45 × 45 см"},
+                },
+                "_ai_image_prompts": [
+                    {
+                        "image_no": index,
+                        "module_name": f"Модуль {index}",
+                        "execution_prompt_ru": "Сохранить плоскую форму коврика",
+                        "russian_text_elements": {"title": "45 × 45 см", "bullets": []},
+                    }
+                    for index in range(1, 9)
+                ],
+            },
+        )
+
+        self.assertEqual(len(prompt), 8)
+        for rendered in relay.prompts:
+            self.assertIn("коврик с подогревом для животных", rendered)
+            self.assertIn("45 × 45 см", rendered)
+            self.assertIn("плоская квадратная форма", rendered)
+            self.assertIn("Сохранить плоскую форму коврика", rendered)
+            self.assertIn("ПОДТВЕРЖДЕННЫЕ ФАКТЫ", rendered)
+            self.assertNotRegex(rendered, r"[\u3400-\u9fff]")
 
     def test_translate_action_uses_ai_when_alphashop_is_unavailable(self) -> None:
         relay = _FakeRelay()

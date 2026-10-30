@@ -99,7 +99,7 @@ IMAGE_SELECTION_FILE = "image-selection.json"
 PRODUCT_SETTINGS_FILE = "product-settings.json"
 PRODUCT_VERSIONS_FILE = "product-versions.json"
 IMAGE_ACTIONS = {"exclude", "translate", "reference_8", "sku_main"}
-AI_GALLERY_POLICY_VERSION = "ozon-ai-gallery-8-v7-universal-identity-lock-review"
+AI_GALLERY_POLICY_VERSION = "ozon-ai-gallery-8-v8-facts-first-image-plan-review"
 _PIPELINE_ID = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 _BATCH_JOB_ID = re.compile(r"^[a-f0-9]{32}$")
 _MAX_BATCH_IMPORT_ITEMS = 100
@@ -4602,8 +4602,7 @@ class PipelineService:
             mapped = self.read_artifact(pipeline_id, 2)
             progress_path = self.directory(pipeline_id) / "03_media_progress.json"
             generated_copy = None
-            copy_executor: ThreadPoolExecutor | None = None
-            copy_future = None
+            image_source: Mapping[str, Any] = raw
             try:
                 relay_client = self.ai_provider.client()
                 if media_mode in {"image_plan", "ai_generate", "alphashop_translate"}:
@@ -4620,7 +4619,7 @@ class PipelineService:
                         sku_id = item.get("sku_id")
                         if item.get("source_role") == "sku_image" and sku_id is not None:
                             sku_references.setdefault(str(sku_id), item)
-                    per_sku_gallery = bool(raw_sku_ids) and all(
+                    per_sku_gallery = len(raw_sku_ids) > 1 and all(
                         sku_id in sku_references for sku_id in raw_sku_ids
                     )
                     reference = next(
@@ -4652,12 +4651,32 @@ class PipelineService:
                             }
                             for sku_id in dict.fromkeys(raw_sku_ids)
                         )
+                    if text_mode == "ai_generate":
+                        try:
+                            generated_copy = relay_client.generate_listing_copy(
+                                _source_for_mapper(raw),
+                                mapped,
+                            )
+                        except (AiRelayError, AiProviderConfigurationError) as exc:
+                            raise AiRelayError(
+                                f"AI 商品事实识别与俄语文案生成失败：{exc}"
+                            ) from exc
+                        image_source_value = dict(raw)
+                        image_source_value["_ai_product_facts"] = generated_copy.get(
+                            "product_facts"
+                        ) or generated_copy.get("product_identification")
+                        image_source_value["_ai_image_prompts"] = generated_copy.get(
+                            "image_prompts"
+                        )
+                        image_source = image_source_value
                     plan_sha256 = hashlib.sha256(
                         json.dumps(
                             {
                                 "policy_version": AI_GALLERY_POLICY_VERSION,
                                 "items": planned_items,
                                 "translation_items": translation_items,
+                                "product_facts": image_source.get("_ai_product_facts"),
+                                "image_prompts": image_source.get("_ai_image_prompts"),
                             },
                             ensure_ascii=False,
                             sort_keys=True,
@@ -4692,21 +4711,11 @@ class PipelineService:
                         )
                     except ValueError:
                         ai_image_workers = 4
-                    if text_mode == "ai_generate":
-                        copy_executor = ThreadPoolExecutor(
-                            max_workers=1,
-                            thread_name_prefix="ai-copy",
-                        )
-                        copy_future = copy_executor.submit(
-                            relay_client.generate_listing_copy,
-                            _source_for_mapper(raw),
-                            mapped,
-                        )
                     inspection = process_image_plan(
                         planned_items[:1],
                         relay_client,
                         None,
-                        raw,
+                        image_source,
                         progress=save_progress,
                         existing_results=existing_results,
                         max_workers=max(1, min(ai_image_workers, 6)),
@@ -4725,7 +4734,7 @@ class PipelineService:
                                 [sku_item],
                                 relay_client,
                                 None,
-                                raw,
+                                image_source,
                                 existing_results=existing_results,
                                 max_workers=1,
                             )
@@ -4757,7 +4766,7 @@ class PipelineService:
                                 [translation_item],
                                 relay_client,
                                 None,
-                                raw,
+                                image_source,
                                 existing_results=existing_results,
                                 max_workers=1,
                             )
@@ -4794,7 +4803,7 @@ class PipelineService:
                     source_images = _image_items(raw)
                     if source_images:
                         ai_main = generate_all_images(
-                            source_images[:1], relay_client, raw
+                            source_images[:1], relay_client, image_source
                         )[0]
                         ai_main.update(
                             {
@@ -4804,11 +4813,6 @@ class PipelineService:
                             }
                         )
                         inspection.append(ai_main)
-                if copy_future is not None:
-                    try:
-                        generated_copy = copy_future.result()
-                    except (AiRelayError, AiProviderConfigurationError) as exc:
-                        raise AiRelayError(f"AI 俄语商品文案生成失败：{exc}") from exc
             except (AiRelayError, AiProviderConfigurationError) as exc:
                 progress_note = ""
                 if progress_path.exists():
@@ -4826,11 +4830,8 @@ class PipelineService:
                 failures = [f"{exc}{progress_note}"]
                 self._record(pipeline_id, 3, False, failures)
                 raise PipelineError(failures[0], status=502) from exc
-            finally:
-                if copy_executor is not None:
-                    copy_executor.shutdown(wait=True, cancel_futures=True)
             inspection = self._enforce_generated_image_quality(
-                pipeline_id, inspection, relay_client, raw
+                pipeline_id, inspection, relay_client, image_source
             )
             inspection = self._apply_generated_image_watermarks(
                 pipeline_id, inspection, watermark

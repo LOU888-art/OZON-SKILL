@@ -320,23 +320,35 @@ class AiRelayClient:
             ],
         }
         prompt = (
-            "Ты — старший эксперт по управлению товарами на российском OZON, "
-            "носитель русского языка, SEO-редактор и специалист по конверсии карточек. "
-            "Продавец закупает готовый товар на 1688 и отправляет его из Китая. "
-            "Сначала составь внутренний список подтвержденных фактов и используй только "
-            "их. Не выдумывай бренд, материал, размер, объем, вес, мощность, свойства, "
-            "сертификацию, комплектацию, подарок или обещание результата. Отделяй товар "
-            "от реквизита и рекламного текста поставщика. Пиши естественно для покупателя "
-            "из России, без механического перевода, преувеличений и набивки ключевыми "
-            "словами. Цель — релевантный поиск, понятный выбор и снижение возвратов; не "
-            "обещай позиции или продажи.\n"
-            "Верни строго JSON без Markdown со следующими ключами: "
+            "Ты последовательно выполняешь три роли: эксперт по визуальному распознаванию "
+            "товара, старший оператор российского OZON и русскоязычный SEO-редактор, затем "
+            "планировщик коммерческой фотосъемки. Продавец закупает готовый товар на 1688. "
+            "Главный приоритет — товарная достоверность, а не творческая интерпретация. "
+            "Сначала сформируй product_facts, затем на его основе текст карточки и ровно "
+            "восемь заданий для изображений. Последующие разделы не имеют права противоречить "
+            "product_facts. Используй только входные факты. Не считай сценический реквизит, "
+            "фон и декор товаром, частью комплекта или подарком. Не выдумывай бренд, материал, "
+            "размер, объем, вес, мощность, свойства, сертификацию, комплектацию или результат. "
+            "Если факт не подтвержден, записывай 'не подтверждено'. Пиши естественно для "
+            "покупателя из России, без механического перевода, преувеличений и набивки "
+            "ключевыми словами. Цель — релевантный поиск, понятный выбор и снижение возвратов.\n"
+            "Верни строго один JSON без Markdown со следующими ключами: product_facts, "
             "product_identification, title_ru, title_variants, title_segments, "
             "sku_titles_ru, short_description_ru, short_description_zh, "
             "selling_points, description_ru, description_zh, tags, core_keywords, "
             "long_tail_keywords, usage_keywords, excluded_keywords, "
             "attribute_suggestions, conversion_optimization, review_prevention, "
-            "preflight_check. product_identification содержит китайское и русское "
+            "preflight_check, image_prompts. product_facts имеет стабильную структуру: "
+            "product_name_cn, product_name_ru_generic, product_type, main_function, "
+            "usage_scenarios, material, color, appearance_features, visible_accessories, "
+            "specs_detected {size, capacity, quantity, weight, other}, "
+            "selling_point_candidates, unconfirmed_info_need_user, search_keywords_ru, "
+            "recommended_image_modules. Все значения product_facts, кроме product_name_cn, "
+            "пиши по-русски, чтобы генератор изображения мог использовать их без китайского "
+            "текста. Точный тип товара, плоская/объемная форма, пропорции, цвет, размер, "
+            "видимые части, кабель, контроллер и комплектность являются неизменяемыми фактами. "
+            "Нельзя превращать подтвержденный тип товара в другой, даже близкий по назначению "
+            "предмет. product_identification содержит китайское и русское "
             "стандартное название, категорию, назначение, подтвержденные факты, "
             "неподтвержденные параметры и отличие товара от реквизита. "
             "title_variants содержит A_precision, B_click, C_balanced; каждый вариант "
@@ -364,7 +376,21 @@ class AiRelayClient:
             "review_prevention содержит до пяти реальных рисков и честное пояснение. "
             "preflight_check сверяет название, цвет, размер, количество, материал, "
             "комплектацию и функции и перечисляет вопросы продавцу. В русском товарном "
-            "тексте не должно быть китайских слов.\n"
+            "тексте не должно быть китайских слов. image_prompts — массив ровно из восьми "
+            "объектов с image_no 1..8, module_name, goal, image_prompt_cn, "
+            "execution_prompt_ru, russian_text_elements {title, bullets}, layout_notes и "
+            "negative_constraints. Модули строго: 1 главное изображение, 2 параметры, "
+            "3 ключевые преимущества, 4 сценарий использования, 5 функциональные детали, "
+            "6 материал/качество изготовления, 7 абстрактное честное сравнение, 8 причины "
+            "покупки/итоговый призыв. Каждый кадр — отдельный вертикальный 3:4 файл в единой "
+            "палитре и типографике. execution_prompt_ru должен быть подробным исполняемым "
+            "заданием на русском. Товар во всех восьми кадрах должен дословно следовать "
+            "product_facts: тот же тип, назначение, SKU, силуэт, плоская или объемная форма, "
+            "структура, пропорции, толщина, цвет, рисунок, фактура, количество, видимые детали "
+            "и аксессуары. Разрешено менять только фон, свет, тень и безопасный реквизит. "
+            "Не создавай неподтвержденный ракурс, внутреннее устройство, функцию или контакт "
+            "с человеком. Текст в кадре только краткий естественный русский. Сравнение только "
+            "иконками, таблицей или схемой, без выдуманного товара-конкурента.\n"
             "FACTS:\n"
             + json.dumps(facts, ensure_ascii=False, separators=(",", ":"))
         )
@@ -396,7 +422,34 @@ class AiRelayClient:
             if resolved_model == text_model:
                 raise
             response = request_copy(resolved_model)
-        return _json_object(_message_text(response))
+        result = _json_object(_message_text(response))
+        product_facts = result.get("product_facts")
+        if not isinstance(product_facts, Mapping):
+            raise AiRelayError("AI 商品识别响应缺少 product_facts 对象")
+        required_fact_fields = {
+            "product_name_ru_generic",
+            "product_type",
+            "main_function",
+            "color",
+            "appearance_features",
+            "specs_detected",
+        }
+        missing_fact_fields = sorted(required_fact_fields - set(product_facts))
+        if missing_fact_fields:
+            raise AiRelayError(
+                "AI 商品识别响应缺少真实性字段：" + ", ".join(missing_fact_fields)
+            )
+        image_prompts = result.get("image_prompts")
+        if not isinstance(image_prompts, list) or len(image_prompts) != 8:
+            raise AiRelayError("AI 八图方案必须包含 8 个独立图片模块")
+        module_numbers = {
+            item.get("image_no")
+            for item in image_prompts
+            if isinstance(item, Mapping)
+        }
+        if module_numbers != set(range(1, 9)):
+            raise AiRelayError("AI 八图方案的 image_no 必须完整覆盖 1–8")
+        return result
 
     def translate_attribute_values(
         self, attributes: Sequence[Mapping[str, Any]]
