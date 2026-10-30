@@ -97,19 +97,29 @@ class ImageQualityTests(unittest.TestCase):
         self.assertNotRegex(str(cleaned), r"[\u3400-\u9fff]")
         self.assertIn("green", str(cleaned))
 
-    def test_heated_mouse_pad_prompt_locks_the_desktop_product_identity(self) -> None:
-        prompt = _listing_image_prompt(
-            {
-                "title_zh": "加热鼠标垫90×40cm带控制器",
-                "attributes_zh": {"尺寸": "90×40cm", "颜色": "灰色"},
-            },
-            5,
-        )
-        self.assertIn("настольный коврик для мыши/клавиатуры", prompt)
-        self.assertIn("всегда лежит горизонтально на письменном столе", prompt)
-        self.assertIn("ЗАПРЕЩЕНО превращать товар", prompt)
-        self.assertIn("не касается тела", prompt)
-        self.assertNotRegex(prompt, r"[\u3400-\u9fff]")
+    def test_every_product_uses_the_same_universal_visual_identity_lock(self) -> None:
+        prompts = [
+            _listing_image_prompt(
+                {
+                    "title_zh": title,
+                    "attributes_zh": {"规格": specification},
+                },
+                5,
+            )
+            for title, specification in (
+                ("加热鼠标垫", "90×40cm"),
+                ("化妆品防尘收纳盒", "绿色"),
+                ("宠物慢食碗", "蓝色"),
+            )
+        ]
+        for prompt in prompts:
+            self.assertIn("визуальный паспорт товара", prompt)
+            self.assertIn("Этот паспорт неизменяем во всех восьми кадрах", prompt)
+            self.assertIn("не имеет права переопределять внешний вид товара", prompt)
+            self.assertIn("При конфликте всегда побеждает исходное фото", prompt)
+            self.assertIn("без контакта на нейтральном студийном фоне", prompt)
+            self.assertNotRegex(prompt, r"[\u3400-\u9fff]")
+        self.assertNotIn("коврик для мыши/клавиатуры", " ".join(prompts))
 
     def test_ai_gallery_cannot_pass_before_stable_human_review(self) -> None:
         images = [

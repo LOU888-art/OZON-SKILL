@@ -99,7 +99,7 @@ IMAGE_SELECTION_FILE = "image-selection.json"
 PRODUCT_SETTINGS_FILE = "product-settings.json"
 PRODUCT_VERSIONS_FILE = "product-versions.json"
 IMAGE_ACTIONS = {"exclude", "translate", "reference_8", "sku_main"}
-AI_GALLERY_POLICY_VERSION = "ozon-ai-gallery-8-v6-identity-lock-review"
+AI_GALLERY_POLICY_VERSION = "ozon-ai-gallery-8-v7-universal-identity-lock-review"
 _PIPELINE_ID = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 _BATCH_JOB_ID = re.compile(r"^[a-f0-9]{32}$")
 _MAX_BATCH_IMPORT_ITEMS = 100
@@ -4986,7 +4986,7 @@ class PipelineService:
                     and item.get("final_public_url")
                 ),
                 "generated_at": _now(),
-                "instruction": "逐张确认商品主体、SKU颜色、结构、线缆和控制器均与1688参考图一致",
+                "instruction": "逐张确认商品类别、主体、SKU、结构、颜色、数量、可见部件及配件均与1688参考图一致",
             }
             failures = gate_stage_3(final)
             _atomic_json(self.path(pipeline_id, 3), final)
