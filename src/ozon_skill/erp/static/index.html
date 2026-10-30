@@ -139,6 +139,7 @@
     </div>
     <form id="researchRulesForm" class="research-rules">
       <div class="research-rule-head"><div><span class="eyebrow">AUTOMATION RULE</span><h2>自动选品规则</h2></div><span id="researchRulesState">尚未保存</span></div>
+      <div class="research-presets"><label for="researchProfile">选品方案</label><select id="researchProfile"><option value="default">默认方案</option></select><button id="newResearchProfileBtn" type="button" class="secondary">新建方案</button><small>每套方案拥有独立规则和候选池。</small></div>
       <div class="research-presets"><label for="researchPreset">一键策略</label><select id="researchPreset"><option value="custom">自定义条件</option><option value="blue_ocean">蓝海低竞争</option><option value="high_growth">高增长新品</option><option value="stable_demand">稳定热销</option></select><button id="applyResearchPresetBtn" type="button" class="secondary">应用模板</button><small>模板只填写指标，类目和关键词仍由你决定。</small></div>
       <div class="field-grid four"><div class="field"><label for="researchDateFrom">开始日期</label><input id="researchDateFrom" type="date" required></div><div class="field"><label for="researchDateTo">结束日期</label><input id="researchDateTo" type="date" required></div><div class="field"><label for="researchCategory">类目包含</label><input id="researchCategory" placeholder="可留空"></div><div class="field"><label for="researchBrandMode">品牌条件</label><select id="researchBrandMode"><option value="all">不限品牌</option><option value="unbranded">仅无品牌</option><option value="branded">仅有品牌</option></select></div></div>
       <div class="field-grid"><div class="field"><label for="researchInclude">包含关键词</label><input id="researchInclude" placeholder="多个关键词用逗号分隔；命中任意一个"></div><div class="field"><label for="researchExclude">排除关键词</label><input id="researchExclude" placeholder="侵权词、禁售词等"></div></div>
@@ -384,6 +385,9 @@
       <div class="warning">AlphaShop 以图搜货接口尚未配置时，可先粘贴人工确认的 1688 商品 ID 或链接。确认后会立即调用商品详情 API，并创建现有五阶段上架任务。</div>
       <form id="researchSourceForm"><div class="field"><label for="researchSourceStore">利润测算店铺</label><select id="researchSourceStore" required></select><small>使用该店铺的汇率、佣金、广告、退货和物流配置计算真实利润。</small></div><div class="field"><label for="researchSourceOffer">1688 商品 ID / 链接</label><input id="researchSourceOffer" required placeholder="628680616884 或 https://detail.1688.com/offer/....html"></div><label class="batch-confirm"><input id="researchSourceConfirm" type="checkbox" required> 我确认允许调用 AlphaShop 商品详情 API，该操作可能产生接口费用。</label><div class="dialog-actions"><button type="submit" class="primary">采集货源、测算利润并进入上架</button></div></form>
     </div>
+  </dialog>
+  <dialog id="researchDetailDialog">
+    <div class="dialog-card wide-dialog"><div class="dialog-head"><div><span class="eyebrow">PRODUCT TREND</span><h2 id="researchDetailTitle">候选商品趋势</h2></div><button id="closeResearchDetailBtn" type="button">×</button></div><div id="researchDetailSummary" class="catalog-metrics"></div><div id="researchTrendTable" class="table-wrap"></div></div>
   </dialog>
 
   <dialog id="financeDialog">

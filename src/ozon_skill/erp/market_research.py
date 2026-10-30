@@ -21,6 +21,7 @@ class MarketResearchError(RuntimeError):
 
 DECISIONS = {"NEW", "SHORTLISTED", "APPROVED", "REJECTED", "SOURCED"}
 _PRODUCT_ID = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
+_PROFILE_ID = re.compile(r"^[A-Za-z0-9._-]{1,60}$")
 
 
 def _opportunity_score(candidate: Mapping[str, Any]) -> tuple[str, dict[str, str]]:
@@ -199,13 +200,24 @@ class MarketResearchRegistry:
 
     def _read(self) -> dict[str, Any]:
         if not self.path.exists():
-            return {"schema_version": "1.0", "rules": None, "candidates": {}}
+            return {"schema_version": "1.1", "rules": None, "profiles": {}, "active_profile_id": "default", "candidates": {}}
         try:
             value = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise MarketResearchError("选品候选池无法读取") from exc
         if not isinstance(value, dict) or not isinstance(value.get("candidates"), dict):
             raise MarketResearchError("选品候选池格式无效")
+        profiles = value.get("profiles")
+        if not isinstance(profiles, dict):
+            profiles = {}
+        if isinstance(value.get("rules"), Mapping) and not profiles:
+            profiles["default"] = {
+                **value["rules"],
+                "profile_id": "default",
+                "profile_name": "默认方案",
+            }
+        value["profiles"] = profiles
+        value["active_profile_id"] = str(value.get("active_profile_id") or "default")
         return value
 
     def _write(self, value: Mapping[str, Any]) -> None:
@@ -247,13 +259,25 @@ class MarketResearchRegistry:
                 key = str(row.get("decision") or "NEW").lower()
                 if key in summary:
                     summary[key] += 1
-            return {"schema_version": "1.0", "rules": document.get("rules"), "summary": summary, "candidates": rows, "generated_at": _now()}
+            profiles = sorted(
+                (dict(item) for item in document.get("profiles", {}).values() if isinstance(item, Mapping)),
+                key=lambda item: str(item.get("profile_name") or ""),
+            )
+            return {"schema_version": "1.1", "rules": document.get("rules"), "profiles": profiles, "active_profile_id": document.get("active_profile_id") or "default", "summary": summary, "candidates": rows, "generated_at": _now()}
 
     def save_rules(self, value: Mapping[str, Any], actor: str) -> dict[str, Any]:
         rules = normalize_rules(value)
+        profile_id = str(value.get("profile_id") or "default").strip()
+        if not _PROFILE_ID.fullmatch(profile_id):
+            raise MarketResearchError("选品方案标识格式无效")
+        profile_name = str(value.get("profile_name") or ("默认方案" if profile_id == "default" else profile_id)).strip()[:80]
+        if not profile_name:
+            raise MarketResearchError("选品方案名称不能为空")
         with self._lock:
             document = self._read()
-            document["rules"] = {**rules, "updated_at": _now(), "updated_by": actor or "system"}
+            document["rules"] = {**rules, "profile_id": profile_id, "profile_name": profile_name, "updated_at": _now(), "updated_by": actor or "system"}
+            document["profiles"][profile_id] = dict(document["rules"])
+            document["active_profile_id"] = profile_id
             self._write(document)
             return dict(document["rules"])
 
@@ -281,8 +305,10 @@ class MarketResearchRegistry:
                     product_id = str(item.get("ozon_product_id") or "").strip()
                     if not _PRODUCT_ID.fullmatch(product_id):
                         product_id = hashlib.sha256(url.encode("utf-8")).hexdigest()[:24]
+                    profile_id = str(rules.get("profile_id") or document.get("active_profile_id") or "default")
+                    candidate_id = product_id if profile_id == "default" else f"{profile_id}--{product_id}"
                     normalized = {
-                        "candidate_id": product_id,
+                        "candidate_id": candidate_id,
                         "ozon_product_id": str(item.get("ozon_product_id") or "").strip()[:100],
                         "title": title,
                         "product_url": url,
@@ -322,7 +348,7 @@ class MarketResearchRegistry:
                     if not matches:
                         rejected += 1
                         continue
-                    previous = document["candidates"].get(product_id) or {}
+                    previous = document["candidates"].get(candidate_id) or {}
                     snapshot_fields = (
                         "price_rub", "orders", "revenue_rub", "sellers", "rating",
                         "reviews", "growth_percent", "daily_sales", "ad_share_percent",
@@ -349,13 +375,15 @@ class MarketResearchRegistry:
                         "first_seen_at": previous.get("first_seen_at") or _now(),
                         "updated_at": _now(),
                         "updated_by": actor or "plugin",
+                        "profile_id": profile_id,
+                        "profile_name": str(rules.get("profile_name") or "默认方案"),
                         "metric_history": history,
                         "economics": previous.get("economics"),
                     })
-                    document["candidates"][product_id] = normalized
+                    document["candidates"][candidate_id] = normalized
                     accepted += 1
                     updated += 1 if previous else 0
-                    accepted_ids.append(product_id)
+                    accepted_ids.append(candidate_id)
                     if accepted >= int(rules.get("max_candidates") or 100):
                         break
                 except MarketResearchError:

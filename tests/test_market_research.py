@@ -126,6 +126,33 @@ class MarketResearchTests(unittest.TestCase):
             self.assertEqual(result["accepted"], 0)
             self.assertEqual(result["rejected"], 1)
 
+    def test_named_profiles_keep_independent_candidate_pools(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            registry = MarketResearchRegistry(Path(temporary) / "market.json")
+            registry.save_rules({**RULES, "profile_id": "blue", "profile_name": "蓝海"}, "operator")
+            first = registry.ingest([candidate()], "plugin")
+            self.assertEqual(first["candidate_ids"], ["blue--123"])
+            registry.save_rules({**RULES, "profile_id": "growth", "profile_name": "增长"}, "operator")
+            second = registry.ingest([candidate()], "plugin")
+            self.assertEqual(second["candidate_ids"], ["growth--123"])
+            status = registry.status()
+            self.assertEqual(len(status["profiles"]), 2)
+            self.assertEqual(status["active_profile_id"], "growth")
+            self.assertEqual(len(status["candidates"]), 2)
+
+    def test_metric_history_only_adds_changed_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            registry = MarketResearchRegistry(Path(temporary) / "market.json")
+            registry.save_rules(RULES, "operator")
+            registry.ingest([candidate()], "plugin")
+            registry.ingest([candidate()], "plugin")
+            changed = candidate()
+            changed["orders"] = "50"
+            registry.ingest([changed], "plugin")
+            row = registry.get("123")
+            self.assertEqual(len(row["metric_history"]), 2)
+            self.assertEqual(row["metric_history"][-1]["orders"], "50")
+
     def test_ingest_requires_saved_rules_and_ozon_url(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             registry = MarketResearchRegistry(Path(temporary) / "market.json")
