@@ -99,7 +99,7 @@ IMAGE_SELECTION_FILE = "image-selection.json"
 PRODUCT_SETTINGS_FILE = "product-settings.json"
 PRODUCT_VERSIONS_FILE = "product-versions.json"
 IMAGE_ACTIONS = {"exclude", "translate", "reference_8", "sku_main"}
-AI_GALLERY_POLICY_VERSION = "ozon-ai-gallery-8-v5-3x4-ocr"
+AI_GALLERY_POLICY_VERSION = "ozon-ai-gallery-8-v6-identity-lock-review"
 _PIPELINE_ID = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 _BATCH_JOB_ID = re.compile(r"^[a-f0-9]{32}$")
 _MAX_BATCH_IMPORT_ITEMS = 100
@@ -383,6 +383,16 @@ def gate_stage_3(value: Mapping[str, Any]) -> list[str]:
             "all_skus_have_8"
         ):
             failures.append("Ozon 商品图库必须恰好包含 8 张独立 AI 生成图（1 张主图 + 7 张副图）")
+        if any(
+            isinstance(item, Mapping)
+            and item.get("generation_provider") == "AI_RELAY"
+            for item in localized
+        ):
+            review = value.get("image_review")
+            if not isinstance(review, Mapping) or review.get("status") != "APPROVED":
+                failures.append("AI 八图已生成，等待人工逐张审核商品主体后写入 ERP")
+            elif review.get("approved_fingerprint") != _image_review_fingerprint(value):
+                failures.append("AI 图片在人工审核后发生变化，必须重新审核")
     tags = value.get("tags_ru")
     if not isinstance(tags, list) or not tags or len(tags) > 30:
         failures.append("tags_ru 必须为 1–30 项的数组")
@@ -398,6 +408,29 @@ def gate_stage_3(value: Mapping[str, Any]) -> list[str]:
     elif re.search(r"[\u3400-\u9fff]", value["description_ru"]):
         failures.append("description_ru 不得包含中文")
     return failures
+
+
+def _image_review_fingerprint(value: Mapping[str, Any]) -> str:
+    rows = []
+    for item in value.get("localized_images") or []:
+        if not isinstance(item, Mapping) or not item.get("final_public_url"):
+            continue
+        if item.get("generation_provider") != "AI_RELAY":
+            continue
+        rows.append(
+            {
+                "url": str(item.get("final_public_url")),
+                "sha256": str(item.get("storage_sha256") or ""),
+                "sku_id": str(item.get("sku_id") or ""),
+                "module_number": item.get("module_number"),
+                "image_usage": str(item.get("image_usage") or ""),
+            }
+        )
+    return hashlib.sha256(
+        json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
 
 
 def gate_stage_4(value: Mapping[str, Any]) -> list[str]:
@@ -2940,8 +2973,13 @@ class PipelineService:
             "failures": failures,
         }
         _atomic_json(path, state)
-        if not passed:
-            self._dispatch_failure_alert(pipeline_id, stage, failures)
+        actionable_failures = [
+            item
+            for item in failures
+            if "等待人工逐张审核商品主体" not in str(item)
+        ]
+        if not passed and actionable_failures:
+            self._dispatch_failure_alert(pipeline_id, stage, actionable_failures)
 
     def _record_running(self, pipeline_id: str, stage: int) -> None:
         path = self._state_path(pipeline_id)
@@ -4937,6 +4975,19 @@ class PipelineService:
                 }
                 for item in inspection
             ]
+            final["image_review"] = {
+                "status": "PENDING",
+                "required": True,
+                "candidate_fingerprint": _image_review_fingerprint(final),
+                "image_count": sum(
+                    1
+                    for item in final["localized_images"]
+                    if item.get("generation_provider") == "AI_RELAY"
+                    and item.get("final_public_url")
+                ),
+                "generated_at": _now(),
+                "instruction": "逐张确认商品主体、SKU颜色、结构、线缆和控制器均与1688参考图一致",
+            }
             failures = gate_stage_3(final)
             _atomic_json(self.path(pipeline_id, 3), final)
             self._record(pipeline_id, 3, not failures, failures)
@@ -4950,6 +5001,82 @@ class PipelineService:
                     else []
                 ),
                 "artifact": STAGE_FILES[3],
+            }
+
+    def review_generated_images(
+        self,
+        pipeline_id: Any,
+        *,
+        decision: Any,
+        confirm_subject_unchanged: Any = False,
+        actor: Any = None,
+    ) -> dict[str, Any]:
+        """Approve a stable generated gallery or reject it for full regeneration."""
+
+        pipeline_id = _safe_pipeline_id(pipeline_id)
+        action = str(decision or "").strip().lower()
+        if action not in {"approve", "regenerate"}:
+            raise PipelineError("图片审核决定必须是 approve 或 regenerate")
+        with self._lock:
+            artifact_path = self.path(pipeline_id, 3)
+            if not artifact_path.exists():
+                raise PipelineError("请先运行第三阶段生成 AI 八图", status=409)
+            final = _read_object(artifact_path)
+            fingerprint = _image_review_fingerprint(final)
+            generated = [
+                item
+                for item in final.get("localized_images") or []
+                if isinstance(item, Mapping)
+                and item.get("generation_provider") == "AI_RELAY"
+                and item.get("final_public_url")
+            ]
+            if len(generated) < 8:
+                raise PipelineError("AI 图片不足8张，不能进入人工审核", status=409)
+            if action == "approve":
+                if confirm_subject_unchanged is not True:
+                    raise PipelineError(
+                        "请先确认已逐张核对商品主体、结构、颜色和配件",
+                        status=409,
+                    )
+                final["image_review"] = {
+                    "status": "APPROVED",
+                    "required": True,
+                    "approved_fingerprint": fingerprint,
+                    "image_count": len(generated),
+                    "approved_at": _now(),
+                    "approved_by": str(actor or "operator")[:120],
+                    "confirmation": "商品主体、结构、颜色、配件与1688参考图一致",
+                }
+                failures = gate_stage_3(final)
+                _atomic_json(artifact_path, final)
+                self._record(pipeline_id, 3, not failures, failures)
+                return {
+                    "status": "PASS" if not failures else "FAIL",
+                    "decision": "APPROVED",
+                    "failures": failures,
+                    "image_review": final["image_review"],
+                }
+
+            final["image_review"] = {
+                "status": "REJECTED",
+                "required": True,
+                "rejected_fingerprint": fingerprint,
+                "image_count": len(generated),
+                "rejected_at": _now(),
+                "rejected_by": str(actor or "operator")[:120],
+                "reason": "商品主体或视觉内容未通过人工审核",
+            }
+            _atomic_json(artifact_path, final)
+            (self.directory(pipeline_id) / "03_media_progress.json").unlink(
+                missing_ok=True
+            )
+            failures = ["AI 八图人工审核未通过；再次运行第三阶段将重新生成8张图片"]
+            self._record(pipeline_id, 3, False, failures)
+            return {
+                "status": "FAIL",
+                "decision": "REGENERATE",
+                "failures": failures,
+                "image_review": final["image_review"],
             }
 
     def start_stage_3(

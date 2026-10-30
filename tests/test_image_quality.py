@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import subprocess
 import tempfile
 import unittest
@@ -16,8 +17,12 @@ from ozon_skill.content_generation.image_quality import (
     _run_tesseract,
     normalize_three_by_four,
 )
-from ozon_skill.content_generation.media import _image_safe_facts
-from ozon_skill.erp.service import PipelineService, gate_stage_3
+from ozon_skill.content_generation.media import _image_safe_facts, _listing_image_prompt
+from ozon_skill.erp.service import (
+    PipelineService,
+    _image_review_fingerprint,
+    gate_stage_3,
+)
 
 
 class ImageQualityTests(unittest.TestCase):
@@ -91,6 +96,124 @@ class ImageQualityTests(unittest.TestCase):
         )
         self.assertNotRegex(str(cleaned), r"[\u3400-\u9fff]")
         self.assertIn("green", str(cleaned))
+
+    def test_heated_mouse_pad_prompt_locks_the_desktop_product_identity(self) -> None:
+        prompt = _listing_image_prompt(
+            {
+                "title_zh": "加热鼠标垫90×40cm带控制器",
+                "attributes_zh": {"尺寸": "90×40cm", "颜色": "灰色"},
+            },
+            5,
+        )
+        self.assertIn("настольный коврик для мыши/клавиатуры", prompt)
+        self.assertIn("всегда лежит горизонтально на письменном столе", prompt)
+        self.assertIn("ЗАПРЕЩЕНО превращать товар", prompt)
+        self.assertIn("не касается тела", prompt)
+        self.assertNotRegex(prompt, r"[\u3400-\u9fff]")
+
+    def test_ai_gallery_cannot_pass_before_stable_human_review(self) -> None:
+        images = [
+            {
+                "final_public_url": f"https://example.com/image-{index}.png",
+                "generation_provider": "AI_RELAY",
+                "quality_status": "VERIFIED",
+                "contains_chinese": False,
+                "width": 1200,
+                "height": 1600,
+                "aspect_ratio": "3:4",
+                "module_number": index,
+                "image_usage": "shared_main" if index == 1 else "shared_gallery",
+            }
+            for index in range(1, 9)
+        ]
+        listing = {
+            "title_ru": (
+                "Электрический настольный коврик для мыши и клавиатуры "
+                "с регулятором температуры"
+            ),
+            "title_validation": {"status": "VALID"},
+            "title_segments": {"brand": "без бренда"},
+            "description_ru": "Настольный коврик для рабочего места.",
+            "tags_ru": ["коврик для мыши"],
+            "localized_images": images,
+            "ai_gallery_validation": {"all_skus_have_8": True},
+            "image_review": {"status": "PENDING"},
+        }
+        pending_failures = gate_stage_3(listing)
+        self.assertTrue(any("等待人工" in item for item in pending_failures))
+
+        listing["image_review"] = {
+            "status": "APPROVED",
+            "approved_fingerprint": _image_review_fingerprint(listing),
+        }
+        self.assertEqual(gate_stage_3(listing), [])
+
+        listing["localized_images"][0]["final_public_url"] = (
+            "https://example.com/changed.png"
+        )
+        self.assertTrue(any("发生变化" in item for item in gate_stage_3(listing)))
+
+    def test_human_approval_writes_stable_gallery_into_stage_three(self) -> None:
+        images = [
+            {
+                "final_public_url": f"https://example.com/image-{index}.png",
+                "generation_provider": "AI_RELAY",
+                "quality_status": "VERIFIED",
+                "contains_chinese": False,
+                "width": 1200,
+                "height": 1600,
+                "aspect_ratio": "3:4",
+                "module_number": index,
+                "image_usage": "shared_main" if index == 1 else "shared_gallery",
+            }
+            for index in range(1, 9)
+        ]
+        artifact = {
+            "title_ru": (
+                "Электрический настольный коврик для мыши и клавиатуры "
+                "с регулятором температуры"
+            ),
+            "title_validation": {"status": "VALID"},
+            "title_segments": {"brand": "без бренда"},
+            "description_ru": "Настольный коврик для рабочего места.",
+            "tags_ru": ["коврик для мыши"],
+            "localized_images": images,
+            "ai_gallery_validation": {"all_skus_have_8": True},
+            "image_review": {"status": "PENDING"},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "item"
+            directory.mkdir()
+            (directory / "pipeline.json").write_text(
+                json.dumps(
+                    {
+                        "pipeline_id": "item",
+                        "stages": {
+                            "1": {"status": "PASS"},
+                            "2": {"status": "PASS"},
+                            "3": {"status": "FAIL"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (directory / "03_final.json").write_text(
+                json.dumps(artifact), encoding="utf-8"
+            )
+            service = PipelineService(Path(temporary))
+            result = service.review_generated_images(
+                "item",
+                decision="approve",
+                confirm_subject_unchanged=True,
+                actor="reviewer",
+            )
+            saved = service.read_artifact("item", 3)
+            state = service.get_pipeline("item")
+
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(saved["image_review"]["status"], "APPROVED")
+        self.assertEqual(saved["image_review"]["approved_by"], "reviewer")
+        self.assertEqual(state["stages"]["3"]["status"], "PASS")
 
     def test_ai_image_without_quality_proof_is_blocked(self) -> None:
         listing = {

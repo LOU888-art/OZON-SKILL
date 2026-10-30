@@ -77,6 +77,7 @@ _ASSET_BATCH_DELETE_ROUTE = "/api/assets/batch-delete"
 _ASSET_ROUTE = re.compile(r"^/api/assets/([a-f0-9]{24})$")
 _ASSET_PREVIEW_ROUTE = re.compile(r"^/api/assets/([a-f0-9]{24})/preview$")
 _IMAGES_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/images$")
+_IMAGE_REVIEW_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/images/review$")
 _SKU_ROUTE = re.compile(r"^/api/pipelines/([^/]+)/skus/([^/]+)$")
 _SKU_RESTORE_ROUTE = re.compile(
     r"^/api/pipelines/([^/]+)/skus/([^/]+)/restore$"
@@ -757,6 +758,19 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._json(
                     self.service.save_image_selection(
                         unquote(image_match.group(1)), body.get("image_plan")
+                    )
+                )
+                return
+            if review_match := _IMAGE_REVIEW_ROUTE.fullmatch(path):
+                self._require("images.manage")
+                self._json(
+                    self.service.review_generated_images(
+                        unquote(review_match.group(1)),
+                        decision=body.get("decision"),
+                        confirm_subject_unchanged=body.get(
+                            "confirm_subject_unchanged"
+                        ),
+                        actor=self._username(),
                     )
                 )
                 return
