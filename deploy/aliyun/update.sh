@@ -30,6 +30,7 @@ fi
   --no-deps \
   --force-reinstall \
   "$app_dir"
+bash "$project_root/deploy/aliyun/verify-ocr.sh" "$venv_dir/bin/python"
 
 state_dir=/var/lib/ozon-erp
 auth_file=$state_dir/work/.auth.json

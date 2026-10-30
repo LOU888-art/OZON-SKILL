@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +13,7 @@ from ozon_skill.ai_relay.client import _non_chinese_image_facts
 from ozon_skill.content_generation.image_quality import (
     _confirmed_chinese,
     _parse_tesseract_tsv,
+    _run_tesseract,
     normalize_three_by_four,
 )
 from ozon_skill.content_generation.media import _image_safe_facts
@@ -19,6 +21,18 @@ from ozon_skill.erp.service import PipelineService, gate_stage_3
 
 
 class ImageQualityTests(unittest.TestCase):
+    def test_tesseract_retries_a_transient_nonzero_exit(self) -> None:
+        failed = subprocess.CompletedProcess([], 1, "", "temporary failure")
+        completed = subprocess.CompletedProcess([], 0, "header", "")
+        with patch(
+            "ozon_skill.content_generation.image_quality.subprocess.run",
+            side_effect=[failed, completed],
+        ) as runner:
+            result = _run_tesseract(Path("/tmp/example.png"), ["chi_sim"], 11)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(runner.call_count, 2)
+        self.assertEqual(runner.call_args.kwargs["env"]["OMP_THREAD_LIMIT"], "1")
+
     def test_ocr_requires_two_layouts_to_agree_on_chinese(self) -> None:
         header = (
             "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\t"

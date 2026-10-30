@@ -54,6 +54,7 @@ cp -a "$project_root"/. "$app_dir"/
 python3.11 -m venv "$venv_dir"
 "$venv_dir/bin/python" -m pip install --upgrade pip setuptools
 "$venv_dir/bin/python" -m pip install --no-build-isolation --force-reinstall "$app_dir"
+bash "$project_root/deploy/aliyun/verify-ocr.sh" "$venv_dir/bin/python"
 
 dry_run=true
 erp_plan=business

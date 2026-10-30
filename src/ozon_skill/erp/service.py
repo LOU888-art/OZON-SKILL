@@ -1195,8 +1195,11 @@ class PipelineService:
                 ocr = detect_chinese_text(data)
                 ocr_history.append(dict(ocr))
                 if ocr.get("ocr_status") != "COMPLETED":
+                    status = str(ocr.get("ocr_status") or "UNKNOWN")
+                    detail = str(ocr.get("ocr_error") or "")[:200]
                     raise ValueError(
-                        "服务器中文OCR不可用，已禁止把未经检查的AI图片上传到Ozon"
+                        f"服务器中文OCR执行失败（{status}）"
+                        f"{f'：{detail}' if detail else ''}，已保留图片等待重试"
                     )
                 if ocr.get("contains_chinese") is False:
                     break
@@ -1248,7 +1251,11 @@ class PipelineService:
             }
 
         verified: dict[int, dict[str, Any] | Exception] = {}
-        worker_count = max(1, min(4, len(candidates)))
+        try:
+            configured_workers = int(os.environ.get("ERP_IMAGE_QUALITY_WORKERS", "2"))
+        except ValueError:
+            configured_workers = 2
+        worker_count = max(1, min(configured_workers, 3, len(candidates)))
         with ThreadPoolExecutor(
             max_workers=worker_count, thread_name_prefix="image-quality"
         ) as executor:

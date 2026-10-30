@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -16,6 +19,7 @@ TARGET_WIDTH = 1200
 TARGET_HEIGHT = 1600
 OCR_CONFIDENCE = 60.0
 OCR_SINGLE_CHARACTER_CONFIDENCE = 85.0
+_OCR_PROCESS_SLOTS = threading.BoundedSemaphore(2)
 
 
 def _parse_tesseract_tsv(raw: str) -> list[dict[str, Any]]:
@@ -77,22 +81,38 @@ def _confirmed_chinese(
 def _run_tesseract(
     path: Path, languages: list[str], psm: int
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [
-            "tesseract",
-            str(path),
-            "stdout",
-            "-l",
-            "+".join(languages),
-            "--psm",
-            str(psm),
-            "tsv",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=90,
-    )
+    command = [
+        "tesseract",
+        str(path),
+        "stdout",
+        "-l",
+        "+".join(languages),
+        "--psm",
+        str(psm),
+        "tsv",
+    ]
+    environment = dict(os.environ)
+    # Tesseract may otherwise start several OpenMP workers per image. Combined
+    # with the ERP image pool this can exhaust a small ECS instance and make a
+    # few otherwise valid images fail at random.
+    environment["OMP_THREAD_LIMIT"] = "1"
+    last_result: subprocess.CompletedProcess[str] | None = None
+    for attempt in range(2):
+        with _OCR_PROCESS_SLOTS:
+            last_result = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                env=environment,
+            )
+        if last_result.returncode == 0:
+            return last_result
+        if attempt == 0:
+            time.sleep(0.25)
+    assert last_result is not None
+    return last_result
 
 
 def normalize_three_by_four(image_bytes: bytes) -> tuple[bytes, dict[str, int]]:
@@ -141,8 +161,18 @@ def detect_chinese_text(image_bytes: bytes) -> dict[str, Any]:
             text=True,
             timeout=10,
         )
-    except (OSError, subprocess.SubprocessError):
-        return {"ocr_status": "FAILED", "contains_chinese": None}
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {
+            "ocr_status": "FAILED_LANGUAGE_DISCOVERY",
+            "contains_chinese": None,
+            "ocr_error": str(exc)[:200],
+        }
+    if languages.returncode != 0:
+        return {
+            "ocr_status": "FAILED_LANGUAGE_DISCOVERY",
+            "contains_chinese": None,
+            "ocr_error": (languages.stderr or languages.stdout).strip()[:200],
+        }
     available = {
         line.strip()
         for line in (languages.stdout + languages.stderr).splitlines()
@@ -170,10 +200,30 @@ def detect_chinese_text(image_bytes: bytes) -> dict[str, Any]:
                 _run_tesseract(path, language_set, 11),
                 _run_tesseract(path, language_set, 6),
             ]
-        except (OSError, subprocess.SubprocessError):
-            return {"ocr_status": "FAILED", "contains_chinese": None}
+        except subprocess.TimeoutExpired:
+            return {
+                "ocr_status": "FAILED_EXECUTION_TIMEOUT",
+                "contains_chinese": None,
+                "ocr_error": "Tesseract处理图片超过120秒",
+            }
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {
+                "ocr_status": "FAILED_EXECUTION",
+                "contains_chinese": None,
+                "ocr_error": str(exc)[:200],
+            }
     if any(result.returncode != 0 for result in results):
-        return {"ocr_status": "FAILED", "contains_chinese": None}
+        details = " | ".join(
+            (result.stderr or result.stdout).strip()[:160]
+            for result in results
+            if result.returncode != 0
+        )
+        return {
+            "ocr_status": "FAILED_EXECUTION",
+            "contains_chinese": None,
+            "ocr_error": details[:320] or "Tesseract返回非零状态",
+            "ocr_return_codes": [result.returncode for result in results],
+        }
     passes = [_parse_tesseract_tsv(result.stdout) for result in results]
     confirmed, confirmed_text = _confirmed_chinese(passes[0], passes[1])
     suspected = "".join(
