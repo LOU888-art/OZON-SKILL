@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -216,24 +217,16 @@ class MarketResearchTests(unittest.TestCase):
             self.assertEqual(result["accepted"], 0)
             self.assertEqual(result["rejected"], 1)
 
-    def test_service_binds_confirmed_1688_source_to_candidate(self) -> None:
+    def test_legacy_source_endpoint_requires_saved_preflight(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             service = PipelineService(Path(temporary))
             service.save_market_research_rules(RULES, "operator")
             service.ingest_market_candidates({"items": [candidate()]}, "plugin")
             service.update_market_candidate("123", {"decision": "APPROVED"}, "operator")
-            with self.assertRaisesRegex(PipelineError, "确认允许"):
-                service.source_market_candidate("123", {"offer_id": "628680616884"}, "operator")
-            with patch.object(service, "run_stage_1", return_value={"pipeline_id": "628680616884", "status": "PASS"}):
-                with patch.object(service.stores, "list_public", return_value=[{"store_id": "store-1"}]), patch.object(service, "read_artifact", return_value={"sku_list": []}):
-                    result = service.source_market_candidate(
-                        "123",
-                        {"offer_id": "628680616884", "store_id": "store-1", "confirm_external_request": True},
-                        "operator",
-                    )
-            self.assertEqual(result["candidate"]["decision"], "SOURCED")
-            self.assertEqual(result["candidate"]["pipeline_id"], "628680616884")
-            self.assertEqual(result["candidate"]["economics"]["status"], "NEEDS_INPUT")
+            with patch.object(service, "run_stage_1") as run_stage_1:
+                with self.assertRaisesRegex(PipelineError, "尚未完成利润预审"):
+                    service.source_market_candidate("123", {"offer_id": "628680616884"}, "operator")
+            run_stage_1.assert_not_called()
 
     def test_service_blocks_source_binding_before_approval(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -246,6 +239,55 @@ class MarketResearchTests(unittest.TestCase):
                     {"offer_id": "628680616884", "confirm_external_request": True},
                     "operator",
                 )
+
+    def test_confirmed_profitable_preview_becomes_stage_one_without_second_api_call(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service = PipelineService(Path(temporary))
+            service.save_market_research_rules(RULES, "operator")
+            item = candidate()
+            item.update({"weight_g": "500", "dimensions": "100 x 100 x 100 mm"})
+            service.ingest_market_candidates({"items": [item]}, "plugin")
+            service.update_market_candidate("123", {"decision": "APPROVED"}, "operator")
+            raw = {
+                "source_offer_id": "628680616884",
+                "title_zh": "测试货源",
+                "category_id": "12345",
+                "images": [{"url": "https://cbu01.alicdn.com/main.jpg"}],
+                "sku_list": [{
+                    "sku_id": "sku-1", "purchase_price_cny": "10", "stock": 50,
+                    "image_url": "https://cbu01.alicdn.com/sku.jpg",
+                }],
+                "shipping_info": {"freight_cny": "2"},
+            }
+            economics = service._market_source_economics(service.market_research.get("123"), raw, "store-1")
+            self.assertEqual(economics["status"], "READY")
+            preview_path = service._research_source_preview_path("123", "628680616884")
+            preview_path.parent.mkdir(parents=True)
+            preview_path.write_text(json.dumps({
+                "candidate_id": "123", "store_id": "store-1", "offer_id": "628680616884",
+                "raw": raw,
+                "option": {"offer_id": "628680616884", "status": "READY", "failures": [], "economics": economics},
+            }), encoding="utf-8")
+            result = service.confirm_market_source("123", {"offer_id": "628680616884"}, "operator")
+            self.assertEqual(result["pipeline"]["status"], "PASS")
+            self.assertTrue((Path(temporary) / "628680616884" / "01_raw.json").exists())
+            self.assertEqual(service.market_research.get("123")["decision"], "SOURCED")
+
+    def test_incomplete_preview_cannot_create_pipeline(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service = PipelineService(Path(temporary))
+            service.save_market_research_rules(RULES, "operator")
+            service.ingest_market_candidates({"items": [candidate()]}, "plugin")
+            service.update_market_candidate("123", {"decision": "APPROVED"}, "operator")
+            preview_path = service._research_source_preview_path("123", "628680616884")
+            preview_path.parent.mkdir(parents=True)
+            preview_path.write_text(json.dumps({
+                "candidate_id": "123", "store_id": "store-1", "offer_id": "628680616884",
+                "raw": {}, "option": {"status": "INVALID", "failures": ["SKU缺失"], "economics": {"status": "NEEDS_INPUT"}},
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(PipelineError, "完整性门禁"):
+                service.confirm_market_source("123", {"offer_id": "628680616884"}, "operator")
+            self.assertFalse((Path(temporary) / "628680616884" / "pipeline.json").exists())
 
     def test_missing_candidate_never_calls_paid_source_api(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

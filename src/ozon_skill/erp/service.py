@@ -658,6 +658,7 @@ class PipelineService:
         self._supplier_monitor_threads: dict[str, threading.Thread] = {}
         self._supplier_monitor_job_root = self.work_root / ".supplier-monitor-jobs"
         self._asset_preview_root = self.work_root / ".asset-previews"
+        self._research_source_root = self.work_root / ".research-source-previews"
         self._supplier_schedule_thread: threading.Thread | None = None
         self._supplier_schedule_wake = threading.Event()
         self._reserved_offer_ids_cache: set[str] | None = None
@@ -3307,7 +3308,176 @@ class PipelineService:
             raise PipelineError(str(exc), status=404 if "不存在" in str(exc) else 409) from exc
         return {"updated": len(candidates), "candidates": candidates, "research": self.market_research_status()}
 
-    def source_market_candidate(
+    def _market_source_economics(
+        self, candidate: Mapping[str, Any], raw: Mapping[str, Any], store_id: str
+    ) -> dict[str, Any]:
+        try:
+            settings = self.finance.get(store_id)
+            purchase_prices = [
+                Decimal(str(item.get("purchase_price_cny")))
+                for item in raw.get("sku_list") or []
+                if isinstance(item, Mapping)
+                and item.get("purchase_price_cny") not in (None, "")
+                and Decimal(str(item.get("purchase_price_cny"))) > 0
+            ]
+            price_rub = Decimal(str(candidate.get("price_rub") or "0"))
+            weight_g = Decimal(str(candidate.get("weight_g") or "0"))
+            if not purchase_prices:
+                raise PricingError("1688 SKU 缺少真实采购价")
+            if price_rub <= 0:
+                raise PricingError("Ozon 候选商品缺少真实售价")
+            if weight_g <= 0:
+                raise PricingError("Ozon Seller 页面未提供商品重量")
+            rate = Decimal(str(settings["cny_to_rub_rate"]))
+            dimensions = [Decimal(item) for item in re.findall(r"\d+(?:\.\d+)?", str(candidate.get("dimensions") or ""))[:3]]
+            dimensions_cm = [item / Decimal("10") for item in dimensions] if len(dimensions) == 3 else [Decimal("0")] * 3
+            shipping = raw.get("shipping_info") if isinstance(raw.get("shipping_info"), Mapping) else {}
+            calculation = calculate_pricing({
+                "sale_price_cny": price_rub / rate,
+                "purchase_cost_cny": max(purchase_prices),
+                "domestic_misc_cny": Decimal(str(settings["domestic_misc_cny"])) + Decimal(str(shipping.get("freight_cny") or "0")),
+                "commission_percent": candidate.get("commission_percent") or settings["commission_percent"],
+                "return_loss_percent": candidate.get("return_rate_percent") or settings["return_loss_percent"],
+                "withdrawal_percent": settings["withdrawal_percent"],
+                "advertising_percent": candidate.get("ad_share_percent") or settings["advertising_percent"],
+                "last_mile_percent": settings["last_mile_percent"],
+                "target_margin_percent": settings["target_margin_percent"],
+                "weight_g": weight_g,
+                "length_cm": dimensions_cm[0], "width_cm": dimensions_cm[1], "height_cm": dimensions_cm[2],
+                "cny_to_rub_rate": rate,
+                "logistics_mode": settings["logistics_mode"],
+                "postal_transport": settings["postal_transport"],
+            })
+            return {"status": "READY", "store_id": store_id, "calculated_at": _now(), "purchase_price_basis": "MAX_ACTIVE_SKU", "calculation": calculation}
+        except (PricingError, FinanceSettingsError, InvalidOperation, ValueError) as exc:
+            return {"status": "NEEDS_INPUT", "store_id": store_id, "calculated_at": _now(), "reason": str(exc)}
+
+    def _research_source_preview_path(self, candidate_id: str, offer_id: str) -> Path:
+        candidate = _safe_pipeline_id(candidate_id)
+        offer = _safe_pipeline_id(offer_id)
+        return self._research_source_root / candidate / f"{offer}.json"
+
+    def preview_market_sources(
+        self, candidate_id: Any, value: Mapping[str, Any], actor: Any = ""
+    ) -> dict[str, Any]:
+        normalized = _safe_pipeline_id(candidate_id)
+        try:
+            candidate = self.market_research.get(normalized)
+        except MarketResearchError as exc:
+            raise PipelineError(str(exc), status=404) from exc
+        if candidate.get("decision") != "APPROVED":
+            raise PipelineError("候选商品必须先审核通过，才能采集 1688 货源", status=409)
+        if value.get("confirm_external_request") is not True:
+            raise PipelineError("请确认允许调用 AlphaShop 商品详情 API")
+        store_id = str(value.get("store_id") or "").strip()
+        stores = {str(item.get("store_id")): item for item in self.stores.list_public()}
+        if not store_id or store_id not in stores:
+            raise PipelineError("请选择用于利润预审的已授权 Ozon 店铺")
+        raw_offers = value.get("offer_ids")
+        if isinstance(raw_offers, str):
+            raw_offers = re.split(r"[,，;；\s]+", raw_offers)
+        if not isinstance(raw_offers, list):
+            raise PipelineError("请输入 1688 商品 ID 或链接")
+        offer_ids: list[str] = []
+        for raw_offer in raw_offers:
+            if not str(raw_offer or "").strip():
+                continue
+            try:
+                offer_id = _safe_pipeline_id(extract_offer_id(raw_offer))
+            except ValueError as exc:
+                raise PipelineError(str(exc)) from exc
+            if offer_id not in offer_ids:
+                offer_ids.append(offer_id)
+        if not offer_ids or len(offer_ids) > 5:
+            raise PipelineError("每次请输入 1–5 个不同的 1688 货源")
+        try:
+            client = AlphaShopClient.from_environment()
+        except AlphaShopApiError as exc:
+            raise PipelineError(str(exc), status=409) from exc
+        options: list[dict[str, Any]] = []
+        for offer_id in offer_ids:
+            try:
+                exchange = client.offer_detail_exchange(offer_id)
+                raw = normalize_alphashop_offer(exchange.payload, offer_id)
+                failures = gate_stage_1(raw)
+                economics = self._market_source_economics(candidate, raw, store_id)
+                skus = [item for item in raw.get("sku_list") or [] if isinstance(item, Mapping)]
+                prices = [Decimal(str(item.get("purchase_price_cny"))) for item in skus if item.get("purchase_price_cny") not in (None, "")]
+                stocks = [int(item["stock"]) for item in skus if isinstance(item.get("stock"), int)]
+                images = raw.get("images") or []
+                first_image = images[0] if images else ""
+                if isinstance(first_image, Mapping):
+                    first_image = first_image.get("url") or ""
+                shipping = raw.get("shipping_info") if isinstance(raw.get("shipping_info"), Mapping) else {}
+                option = {
+                    "offer_id": offer_id, "status": "READY" if not failures else "INVALID",
+                    "title": str(raw.get("title_zh") or offer_id)[:300], "image_url": str(first_image or "")[:2000],
+                    "sku_count": len(skus), "sku_image_missing": sum(1 for item in skus if not item.get("image_url")),
+                    "purchase_price_min": str(min(prices)) if prices else None, "purchase_price_max": str(max(prices)) if prices else None,
+                    "stock_total": sum(stocks) if stocks else None, "freight_cny": shipping.get("freight_cny"),
+                    "ship_from": shipping.get("ship_from_zh"), "failures": failures, "economics": economics,
+                    "collected_at": _now(),
+                }
+                _atomic_json(self._research_source_preview_path(normalized, offer_id), {
+                    "schema_version": "1.0", "candidate_id": normalized, "store_id": store_id,
+                    "offer_id": offer_id, "raw": raw, "option": option,
+                })
+            except (AlphaShopApiError, ValueError, InvalidOperation) as exc:
+                option = {"offer_id": offer_id, "status": "ERROR", "title": offer_id, "failures": [str(exc)], "economics": {"status": "NEEDS_INPUT", "reason": str(exc)}, "collected_at": _now()}
+            options.append(option)
+        try:
+            saved = self.market_research.save_source_options(normalized, options, store_id, str(actor or "system"))
+        except MarketResearchError as exc:
+            raise PipelineError(str(exc), status=409) from exc
+        return {"candidate": saved, "options": options}
+
+    def confirm_market_source(
+        self, candidate_id: Any, value: Mapping[str, Any], actor: Any = ""
+    ) -> dict[str, Any]:
+        normalized = _safe_pipeline_id(candidate_id)
+        try:
+            offer_id = _safe_pipeline_id(extract_offer_id(value.get("offer_id")))
+        except ValueError as exc:
+            raise PipelineError(str(exc)) from exc
+        try:
+            candidate = self.market_research.get(normalized)
+        except MarketResearchError as exc:
+            raise PipelineError(str(exc), status=404) from exc
+        if candidate.get("decision") != "APPROVED":
+            raise PipelineError("候选商品必须先审核通过并保持通过状态", status=409)
+        path = self._research_source_preview_path(normalized, offer_id)
+        if not path.exists():
+            raise PipelineError("该货源尚未完成利润预审，请先采集并对比", status=409)
+        preview = _read_object(path)
+        option = preview.get("option") if isinstance(preview.get("option"), Mapping) else {}
+        economics = option.get("economics") if isinstance(option.get("economics"), Mapping) else {}
+        if option.get("status") != "READY" or option.get("failures"):
+            raise PipelineError("该货源资料未通过完整性门禁，不能创建上架任务", status=409)
+        try:
+            margin = Decimal(str((economics.get("calculation") or {}).get("sales_margin_percent")))
+        except (InvalidOperation, TypeError, ValueError):
+            raise PipelineError("该货源利润资料不完整，不能创建上架任务", status=409)
+        if economics.get("status") != "READY" or margin <= 0:
+            raise PipelineError("该货源测算利润不为正，不能创建上架任务", status=409)
+        raw = preview.get("raw")
+        if not isinstance(raw, Mapping):
+            raise PipelineError("货源预审缓存损坏，请重新采集", status=409)
+        pipeline_id = offer_id
+        if not self._state_path(pipeline_id).exists():
+            self.ensure_product_quota()
+        with self._lock:
+            failures = gate_stage_1(raw)
+            _atomic_json(self.path(pipeline_id, 1), raw)
+            self._record(pipeline_id, 1, not failures, failures)
+        if failures:
+            raise PipelineError("货源资料复核失败，未创建可用任务", status=409)
+        try:
+            saved = self.market_research.bind_source(normalized, offer_id, pipeline_id, str(actor or "system"), store_id=str(preview.get("store_id") or ""), economics=economics)
+        except MarketResearchError as exc:
+            raise PipelineError(str(exc), status=409) from exc
+        return {"candidate": saved, "pipeline": {"pipeline_id": pipeline_id, "stage": 1, "status": "PASS", "failures": [], "artifact": STAGE_FILES[1]}}
+
+    def _legacy_source_market_candidate(
         self, candidate_id: Any, value: Mapping[str, Any], actor: Any = ""
     ) -> dict[str, Any]:
         normalized = _safe_pipeline_id(candidate_id)
@@ -3402,6 +3572,17 @@ class PipelineService:
         except MarketResearchError as exc:
             raise PipelineError(str(exc), status=404) from exc
         return {"candidate": candidate, "pipeline": result}
+
+    def source_market_candidate(
+        self, candidate_id: Any, value: Mapping[str, Any], actor: Any = ""
+    ) -> dict[str, Any]:
+        """Compatibility endpoint that now enforces the saved preflight gate."""
+
+        return self.confirm_market_source(
+            candidate_id,
+            {"offer_id": value.get("offer_id") or value.get("offer_url")},
+            actor,
+        )
 
     def delete_market_candidate(self, candidate_id: Any) -> None:
         normalized = _safe_pipeline_id(candidate_id)

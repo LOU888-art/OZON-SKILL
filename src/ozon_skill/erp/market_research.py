@@ -550,6 +550,33 @@ class MarketResearchRegistry:
             self._write(document)
             return dict(row)
 
+    def save_source_options(
+        self, candidate_id: str, options: list[Mapping[str, Any]], store_id: str, actor: str
+    ) -> dict[str, Any]:
+        with self._lock:
+            document = self._read()
+            row = document["candidates"].get(candidate_id)
+            if not isinstance(row, dict):
+                raise MarketResearchError("候选商品不存在")
+            if row.get("decision") != "APPROVED":
+                raise MarketResearchError("候选商品必须先审核通过，才能采集 1688 货源")
+            merged = {
+                str(item.get("offer_id")): dict(item)
+                for item in row.get("source_options") or []
+                if isinstance(item, Mapping) and item.get("offer_id")
+            }
+            for item in options:
+                if item.get("offer_id"):
+                    merged[str(item["offer_id"])] = dict(item)
+            row.update({
+                "source_options": list(merged.values())[-20:],
+                "source_store_id": store_id,
+                "updated_at": _now(),
+                "updated_by": actor or "system",
+            })
+            self._write(document)
+            return dict(row)
+
     def delete(self, candidate_id: str) -> None:
         with self._lock:
             document = self._read()

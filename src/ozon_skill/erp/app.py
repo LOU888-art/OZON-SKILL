@@ -65,6 +65,8 @@ _RESEARCH_RULES_ROUTE = "/api/research/rules"
 _RESEARCH_INGEST_ROUTE = "/api/research/ingest"
 _RESEARCH_CANDIDATE_ROUTE = re.compile(r"^/api/research/candidates/([^/]+)$")
 _RESEARCH_SOURCE_ROUTE = re.compile(r"^/api/research/candidates/([^/]+)/source$")
+_RESEARCH_SOURCE_PREVIEW_ROUTE = re.compile(r"^/api/research/candidates/([^/]+)/sources/preview$")
+_RESEARCH_SOURCE_CONFIRM_ROUTE = re.compile(r"^/api/research/candidates/([^/]+)/sources/confirm$")
 _RESEARCH_PROFILE_ROUTE = re.compile(r"^/api/research/profiles/([^/]+)$")
 _PRODUCT_BATCH_EDIT_ROUTE = "/api/products/batch-edit"
 _PIPELINE_BATCH_DELETE_ROUTE = "/api/pipelines/batch-delete"
@@ -658,6 +660,18 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
             if path == _RESEARCH_INGEST_ROUTE:
                 self._require("pipeline.create")
                 self._json(self.service.ingest_market_candidates(body, self._username()))
+                return
+            if preview_match := _RESEARCH_SOURCE_PREVIEW_ROUTE.fullmatch(path):
+                self._require("pipeline.create")
+                self._json(self.service.preview_market_sources(
+                    unquote(preview_match.group(1)), body, self._username()
+                ))
+                return
+            if confirm_match := _RESEARCH_SOURCE_CONFIRM_ROUTE.fullmatch(path):
+                self._require("pipeline.create")
+                self._json(self.service.confirm_market_source(
+                    unquote(confirm_match.group(1)), body, self._username()
+                ), 201)
                 return
             if source_match := _RESEARCH_SOURCE_ROUTE.fullmatch(path):
                 self._require("pipeline.create")

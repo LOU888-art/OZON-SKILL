@@ -383,8 +383,9 @@
     <div class="dialog-card stores-dialog">
       <div class="dialog-head"><div><span class="eyebrow">SOURCE MATCH</span><h3 id="researchSourceTitle">绑定 1688 货源</h3></div><button id="closeResearchSourceBtn" class="close" type="button">×</button></div>
       <div id="researchSourcePreview" class="research-source-preview"></div>
-      <div class="warning">AlphaShop 以图搜货接口尚未配置时，可先粘贴人工确认的 1688 商品 ID 或链接。确认后会立即调用商品详情 API，并创建现有五阶段上架任务。</div>
-      <form id="researchSourceForm"><div class="field"><label for="researchSourceStore">利润测算店铺</label><select id="researchSourceStore" required></select><small>使用该店铺的汇率、佣金、广告、退货和物流配置计算真实利润。</small></div><div class="field"><label for="researchSourceOffer">1688 商品 ID / 链接</label><input id="researchSourceOffer" required placeholder="628680616884 或 https://detail.1688.com/offer/....html"></div><label class="batch-confirm"><input id="researchSourceConfirm" type="checkbox" required> 我确认允许调用 AlphaShop 商品详情 API，该操作可能产生接口费用。</label><div class="dialog-actions"><button type="submit" class="primary">采集货源、测算利润并进入上架</button></div></form>
+      <div class="warning">输入 1–5 个已人工确认的 1688 货源。系统先采集并进行利润预审，不会立即创建上架任务；选择最佳货源后才进入正式流程。</div>
+      <form id="researchSourceForm"><div class="field"><label for="researchSourceStore">利润测算店铺</label><select id="researchSourceStore" required></select><small>使用该店铺的汇率、佣金、广告、退货和物流配置计算真实利润。</small></div><div class="field"><label for="researchSourceOffer">1688 商品 ID / 链接（每行一个，最多5个）</label><textarea id="researchSourceOffer" required placeholder="628680616884&#10;https://detail.1688.com/offer/628680616885.html"></textarea></div><label class="batch-confirm"><input id="researchSourceConfirm" type="checkbox" required> 我确认允许逐条调用 AlphaShop 商品详情 API，该操作可能产生接口费用。</label><div class="dialog-actions"><button id="previewResearchSourcesBtn" type="submit" class="primary">采集并对比货源</button></div></form>
+      <div id="researchSourceOptions" class="research-source-options"></div>
     </div>
   </dialog>
   <dialog id="researchDetailDialog">
