@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -263,8 +264,8 @@ def generate_all_images(
             "source_url": source_url or None,
             "source_role": item.get("source_role"),
             "download_status": "NOT_REQUIRED_REMOTE_API",
-            "ocr_status": "REVIEWED",
-            "contains_chinese": False,
+            "ocr_status": "NOT_RUN",
+            "contains_chinese": None,
             "translation_status": "FAILED",
             "final_public_url": None,
             "generation_provider": "AI_RELAY",
@@ -327,6 +328,27 @@ _DETAIL_MODULES = (
 )
 
 
+def _image_safe_facts(value: Any) -> Any:
+    """Keep factual structure while removing Chinese copy the image model may echo."""
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): cleaned
+            for key, item in value.items()
+            if (cleaned := _image_safe_facts(item)) not in (None, "", [], {})
+        }
+    if isinstance(value, (list, tuple)):
+        return [
+            cleaned
+            for item in value
+            if (cleaned := _image_safe_facts(item)) not in (None, "", [], {})
+        ]
+    if isinstance(value, str):
+        cleaned = re.sub(r"[\u3400-\u9fff]+", " ", value)
+        return re.sub(r"\s+", " ", cleaned).strip() or None
+    return value
+
+
 def _listing_image_prompt(
     source: Mapping[str, Any], module_number: int, *, sku_main: bool = False
 ) -> str:
@@ -337,13 +359,13 @@ def _listing_image_prompt(
         # structured facts so the model does not blend neighboring variants.
         sku_id = source.get("_active_sku_id")
         sku_specification = source.get("_active_sku_specification")
-    facts = {
+    facts = _image_safe_facts({
         "product_name": source.get("title_zh"),
         "attributes": source.get("attributes_zh"),
         "category": source.get("category_path_zh"),
         "sku_id": sku_id,
         "sku_specification": sku_specification,
-    }
+    })
     module = _DETAIL_MODULES[module_number - 1]
     if sku_main:
         purpose = (
@@ -472,8 +494,8 @@ def process_image_plan(
                     "source_role": item.get("source_role"),
                     "sku_id": item.get("sku_id"),
                     "download_status": "NOT_REQUIRED_REMOTE_API",
-                    "ocr_status": "REVIEWED",
-                    "contains_chinese": False,
+                    "ocr_status": "NOT_RUN",
+                    "contains_chinese": None,
                     "translation_status": "AI_GENERATED",
                     "final_public_url": generated_url,
                     "generation_provider": "AI_RELAY",
@@ -513,8 +535,8 @@ def process_image_plan(
                 "plan_action": action,
                 "module_number": module_number,
                 "download_status": "NOT_REQUIRED_REMOTE_API",
-                "ocr_status": "REVIEWED",
-                "contains_chinese": False,
+                "ocr_status": "NOT_RUN",
+                "contains_chinese": None,
                 "translation_status": "FAILED",
                 "final_public_url": None,
                 "generation_provider": "AI_RELAY",

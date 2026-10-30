@@ -43,7 +43,7 @@ case "$access_key$secret_key" in
     ;;
 esac
 
-dnf install -y python3.11 python3.11-pip nginx openssl curl
+dnf install -y python3.11 python3.11-pip nginx openssl curl tesseract tesseract-langpack-chi_sim tesseract-langpack-rus
 
 if ! id ozon-erp >/dev/null 2>&1; then
   useradd --system --home-dir "$state_dir" --shell /sbin/nologin ozon-erp

@@ -36,6 +36,10 @@ from ozon_skill.category_mapping.mapper import (
 )
 from ozon_skill.category_mapping.provider import LiveMetadataProvider
 from ozon_skill.content_generation.generator import build_final_listing
+from ozon_skill.content_generation.image_quality import (
+    detect_chinese_text,
+    normalize_three_by_four,
+)
 from ozon_skill.content_generation.media import (
     generate_all_images,
     process_image_plan,
@@ -95,7 +99,7 @@ IMAGE_SELECTION_FILE = "image-selection.json"
 PRODUCT_SETTINGS_FILE = "product-settings.json"
 PRODUCT_VERSIONS_FILE = "product-versions.json"
 IMAGE_ACTIONS = {"exclude", "translate", "reference_8", "sku_main"}
-AI_GALLERY_POLICY_VERSION = "ozon-ai-gallery-8-v4-hybrid-sku"
+AI_GALLERY_POLICY_VERSION = "ozon-ai-gallery-8-v5-3x4-ocr"
 _PIPELINE_ID = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 _BATCH_JOB_ID = re.compile(r"^[a-f0-9]{32}$")
 _MAX_BATCH_IMPORT_ITEMS = 100
@@ -358,6 +362,21 @@ def gate_stage_3(value: Mapping[str, Any]) -> list[str]:
                 detail = item.get("error") if isinstance(item, Mapping) else None
                 failures.append(
                     f"localized_images[{index}]：{str(detail)[:240] if detail else exc}"
+                )
+                continue
+            if (
+                isinstance(item, Mapping)
+                and item.get("generation_provider") == "AI_RELAY"
+                and (
+                    item.get("quality_status") != "VERIFIED"
+                    or item.get("contains_chinese") is not False
+                    or item.get("width") != 1200
+                    or item.get("height") != 1600
+                    or item.get("aspect_ratio") != "3:4"
+                )
+            ):
+                failures.append(
+                    f"localized_images[{index}] 未通过1200×1600比例或中文OCR质量门禁"
                 )
         gallery_validation = value.get("ai_gallery_validation")
         if not isinstance(gallery_validation, Mapping) or not gallery_validation.get(
@@ -1139,6 +1158,159 @@ class PipelineService:
                 row["final_public_url"] = None
                 row["storage_status"] = "FAILED"
                 row["error"] = f"图片固化到 OSS 失败：{str(exc)[:400]}"
+        return rows
+
+    def _enforce_generated_image_quality(
+        self,
+        pipeline_id: str,
+        inspection: Any,
+        relay: Any,
+        source: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Hard-gate generated media to exact 3:4 geometry and verified non-Chinese text."""
+
+        rows = [dict(item) for item in inspection if isinstance(item, Mapping)]
+        candidates = [
+            row
+            for row in rows
+            if row.get("final_public_url")
+            and str(row.get("plan_action") or "")
+            in {"reference_8", "sku_main", "translate", "ai_generate", "automatic_ai_main"}
+        ]
+        if not candidates:
+            return rows
+        client = self.object_storage.client()
+        if client is None:
+            raise PipelineError(
+                "AI图片必须在上传前校正为1200×1600并检查中文；请先配置并验证阿里云 OSS 图片存储"
+            )
+
+        def verify(row: Mapping[str, Any]) -> dict[str, Any]:
+            original_url = str(row.get("final_public_url") or "").strip()
+            working_url = original_url
+            data, _ = download_public_image(working_url)
+            ocr = detect_chinese_text(data)
+            cleanup_status = "NOT_REQUIRED"
+            if ocr.get("contains_chinese") is True:
+                cleanup_status = "REQUESTED"
+                working_url = relay.translate_product_image(
+                    working_url,
+                    str(row.get("source_role") or "") or None,
+                    source,
+                )
+                validate_public_image_url(working_url)
+                data, _ = download_public_image(working_url)
+                ocr = detect_chinese_text(data)
+                cleanup_status = "COMPLETED"
+            if ocr.get("ocr_status") != "COMPLETED":
+                raise ValueError(
+                    "服务器中文OCR不可用，已禁止把未经检查的AI图片上传到Ozon"
+                )
+            if ocr.get("contains_chinese") is not False:
+                raise ValueError("AI图片清理后仍检测到中文，已禁止上传")
+
+            normalized, dimensions = normalize_three_by_four(data)
+            digest = hashlib.sha256(normalized).hexdigest()
+            safe_pipeline = re.sub(r"[^A-Za-z0-9._-]", "_", pipeline_id)[:80]
+            key = "/".join(
+                part
+                for part in (
+                    client.prefix,
+                    safe_pipeline,
+                    "quality-checked",
+                    f"{digest}.png",
+                )
+                if part
+            )
+            public_url = client.put(key, normalized, "image/png")
+            return {
+                "public_url": public_url,
+                "object_key": key,
+                "sha256": digest,
+                "size_bytes": len(normalized),
+                "content_type": "image/png",
+                "working_url": working_url,
+                "ocr": ocr,
+                "cleanup_status": cleanup_status,
+                **dimensions,
+            }
+
+        verified: dict[int, dict[str, Any] | Exception] = {}
+        worker_count = max(1, min(4, len(candidates)))
+        with ThreadPoolExecutor(
+            max_workers=worker_count, thread_name_prefix="image-quality"
+        ) as executor:
+            futures = {
+                index: executor.submit(verify, row)
+                for index, row in enumerate(candidates)
+            }
+            for index, future in futures.items():
+                try:
+                    verified[index] = future.result()
+                except (AiRelayError, ObjectStorageError, OSError, ValueError) as exc:
+                    verified[index] = exc
+
+        by_identity = {id(row): index for index, row in enumerate(candidates)}
+        for row in rows:
+            candidate_index = by_identity.get(id(row))
+            if candidate_index is None:
+                # `rows` and `candidates` contain different dict copies only if
+                # a caller supplied a non-list sequence; fall back to URL/module.
+                candidate_index = next(
+                    (
+                        index
+                        for index, candidate in enumerate(candidates)
+                        if candidate.get("final_public_url") == row.get("final_public_url")
+                        and candidate.get("module_number") == row.get("module_number")
+                        and candidate.get("sku_id") == row.get("sku_id")
+                    ),
+                    None,
+                )
+            if candidate_index is None:
+                continue
+            result = verified[candidate_index]
+            if isinstance(result, Exception):
+                row["final_public_url"] = None
+                row["quality_status"] = "FAILED"
+                row["contains_chinese"] = None
+                row["error"] = f"AI图片质量门禁失败：{str(result)[:400]}"
+                continue
+            upstream = str(row.get("final_public_url") or "")
+            row.update(
+                {
+                    "upstream_public_url": upstream,
+                    "final_public_url": result["public_url"],
+                    "quality_status": "VERIFIED",
+                    "aspect_ratio": "3:4",
+                    "width": result["width"],
+                    "height": result["height"],
+                    "source_width": result["source_width"],
+                    "source_height": result["source_height"],
+                    "ocr_status": result["ocr"]["ocr_status"],
+                    "contains_chinese": False,
+                    "chinese_cleanup_status": result["cleanup_status"],
+                    "storage_status": "MIRRORED",
+                    "storage_object_key": result["object_key"],
+                    "storage_sha256": result["sha256"],
+                    "storage_size_bytes": result["size_bytes"],
+                    "storage_bucket": client.bucket,
+                    "storage_endpoint": client.endpoint,
+                }
+            )
+            row.pop("error", None)
+            self.assets.upsert(
+                {
+                    "object_key": result["object_key"],
+                    "public_url": result["public_url"],
+                    "source_url": upstream,
+                    "sha256": result["sha256"],
+                    "content_type": result["content_type"],
+                    "size_bytes": result["size_bytes"],
+                    "asset_type": "ai_generated",
+                    "storage_bucket": client.bucket,
+                    "storage_endpoint": client.endpoint,
+                }
+            )
         return rows
 
     def _apply_generated_image_watermarks(
@@ -4593,6 +4765,9 @@ class PipelineService:
             finally:
                 if copy_executor is not None:
                     copy_executor.shutdown(wait=True, cancel_futures=True)
+            inspection = self._enforce_generated_image_quality(
+                pipeline_id, inspection, relay_client, raw
+            )
             inspection = self._apply_generated_image_watermarks(
                 pipeline_id, inspection, watermark
             )
@@ -4709,6 +4884,14 @@ class PipelineService:
                     "source_url": item.get("source_url"),
                     "final_public_url": item.get("final_public_url"),
                     "contains_chinese": item.get("contains_chinese"),
+                    "ocr_status": item.get("ocr_status"),
+                    "quality_status": item.get("quality_status"),
+                    "aspect_ratio": item.get("aspect_ratio"),
+                    "width": item.get("width"),
+                    "height": item.get("height"),
+                    "source_width": item.get("source_width"),
+                    "source_height": item.get("source_height"),
+                    "chinese_cleanup_status": item.get("chinese_cleanup_status"),
                     "translation_status": item.get("translation_status"),
                     "plan_action": item.get("plan_action"),
                     "module_number": item.get("module_number"),
@@ -5039,6 +5222,14 @@ class PipelineService:
                             "source_url",
                             "final_public_url",
                             "contains_chinese",
+                            "ocr_status",
+                            "quality_status",
+                            "aspect_ratio",
+                            "width",
+                            "height",
+                            "source_width",
+                            "source_height",
+                            "chinese_cleanup_status",
                             "translation_status",
                             "plan_action",
                             "module_number",

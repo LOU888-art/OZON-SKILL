@@ -20,6 +20,11 @@ cp -a "$project_root"/. "$app_dir"/
 if ! "$venv_dir/bin/python" -c 'import PIL' >/dev/null 2>&1; then
   "$venv_dir/bin/python" -m pip install "Pillow>=10,<13"
 fi
+if ! tesseract --list-langs 2>/dev/null | grep -qx 'chi_sim'; then
+  dnf install -y tesseract tesseract-langpack-chi_sim tesseract-langpack-rus
+elif ! tesseract --list-langs 2>/dev/null | grep -qx 'rus'; then
+  dnf install -y tesseract-langpack-rus
+fi
 "$venv_dir/bin/python" -m pip install \
   --no-build-isolation \
   --no-deps \
