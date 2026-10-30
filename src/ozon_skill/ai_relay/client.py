@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
+import time
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 from urllib.error import HTTPError, URLError
@@ -16,6 +18,17 @@ DEFAULT_BASE_URL = "https://gpt.gptzzz.xyz/v1"
 DEFAULT_TEXT_MODEL = "gpt-5.6-sol"
 DEFAULT_IMAGE_MODEL = "gpt-image-2"
 _LEGACY_IMAGE_MODELS = {"GPT-image-2.0": DEFAULT_IMAGE_MODEL}
+
+
+def relay_timeout_seconds() -> float:
+    """Return a bounded relay timeout shared by environment and private config."""
+
+    raw = str(os.environ.get("AI_RELAY_TIMEOUT_SECONDS", "360")).strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 360.0
+    return max(60.0, min(value, 900.0))
 
 
 class AiRelayError(RuntimeError):
@@ -155,7 +168,7 @@ class AiRelayClient:
     text_model: str = DEFAULT_TEXT_MODEL
     image_model: str = DEFAULT_IMAGE_MODEL
     image_translation_model: str = DEFAULT_IMAGE_MODEL
-    timeout_seconds: float = 180.0
+    timeout_seconds: float = 360.0
 
     @classmethod
     def from_environment(cls) -> "AiRelayClient":
@@ -185,6 +198,7 @@ class AiRelayClient:
                 )
                 or DEFAULT_IMAGE_MODEL
             ),
+            timeout_seconds=relay_timeout_seconds(),
         )
 
     def _post(
@@ -198,33 +212,60 @@ class AiRelayClient:
     ) -> dict[str, Any]:
         if not api_key:
             raise AiRelayError("AI 中转站对应的 API Key 尚未配置")
-        request = Request(
-            f"{self.base_url}/{path.lstrip('/')}",
-            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
-            method="POST",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "User-Agent": "ozon-skill-ai-relay/1.0",
-            },
-        )
-        try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
-                raw = response.read().decode("utf-8", errors="replace")
-                status = response.status
-        except HTTPError as exc:
-            raw = exc.read(16 * 1024).decode("utf-8", errors="replace")
-            code, message = _safe_error_detail(raw)
-            detail = f"；code={code}" if code else ""
-            detail += f"；message={message}" if message else ""
-            if exc.code == 503:
-                detail += "；上游暂无可用通道，请核对模型名称或稍后重试"
-            raise AiRelayError(
-                f"AI 中转站{operation}请求失败：HTTP {exc.code}；model={model}{detail}"
-            ) from exc
-        except URLError as exc:
-            raise AiRelayError(f"AI 中转站{operation}连接失败：{exc.reason}") from exc
+        request_url = f"{self.base_url}/{path.lstrip('/')}"
+        request_data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        max_attempts = 3
+        raw = ""
+        status = 0
+        for attempt in range(1, max_attempts + 1):
+            request = Request(
+                request_url,
+                data=request_data,
+                method="POST",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "User-Agent": "ozon-skill-ai-relay/1.0",
+                },
+            )
+            try:
+                with urlopen(request, timeout=self.timeout_seconds) as response:
+                    raw = response.read().decode("utf-8", errors="replace")
+                    status = response.status
+                break
+            except HTTPError as exc:
+                error_raw = exc.read(16 * 1024).decode("utf-8", errors="replace")
+                retryable = exc.code in {408, 409, 425, 429, 500, 502, 503, 504}
+                if retryable and attempt < max_attempts:
+                    time.sleep((2, 6)[attempt - 1])
+                    continue
+                code, message = _safe_error_detail(error_raw)
+                detail = f"；code={code}" if code else ""
+                detail += f"；message={message}" if message else ""
+                if exc.code == 503:
+                    detail += "；上游暂无可用通道，请核对模型名称或稍后重试"
+                raise AiRelayError(
+                    f"AI 中转站{operation}请求失败：HTTP {exc.code}；model={model}；"
+                    f"attempts={attempt}{detail}"
+                ) from exc
+            except (TimeoutError, socket.timeout) as exc:
+                if attempt < max_attempts:
+                    time.sleep((2, 6)[attempt - 1])
+                    continue
+                raise AiRelayError(
+                    f"AI 中转站{operation}读取超时：单次等待 {self.timeout_seconds:g} 秒，"
+                    f"已自动重试 {max_attempts} 次；model={model}。重新运行阶段时会复用"
+                    "已经保存的图片进度"
+                ) from exc
+            except URLError as exc:
+                if attempt < max_attempts:
+                    time.sleep((2, 6)[attempt - 1])
+                    continue
+                raise AiRelayError(
+                    f"AI 中转站{operation}连接失败，已自动重试 {max_attempts} 次："
+                    f"{exc.reason}；model={model}"
+                ) from exc
         if status != 200:
             raise AiRelayError(
                 f"AI 中转站{operation}请求失败：HTTP {status}；model={model}"

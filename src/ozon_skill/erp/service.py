@@ -5132,6 +5132,16 @@ class PipelineService:
                     )
                 except PipelineError as exc:
                     self._record(pipeline_id, 3, False, [str(exc)[:500]])
+                except TimeoutError:
+                    self._record(
+                        pipeline_id,
+                        3,
+                        False,
+                        [
+                            "阶段 3 外部服务读取超时；系统已保留成功进度，"
+                            "请重新运行第三阶段继续处理"
+                        ],
+                    )
                 except Exception as exc:  # keep unexpected worker failures auditable
                     self._record(
                         pipeline_id,

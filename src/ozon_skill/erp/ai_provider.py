@@ -18,6 +18,7 @@ from ozon_skill.ai_relay.client import (
     _https_base_url,
     normalize_image_model,
     normalize_text_model,
+    relay_timeout_seconds,
 )
 
 
@@ -162,6 +163,7 @@ class AiProviderRegistry:
                 text_model=text_model,
                 image_model=image_model,
                 image_translation_model=image_translation_model,
+                timeout_seconds=relay_timeout_seconds(),
             )
         except (KeyError, AiRelayError) as exc:
             raise AiProviderConfigurationError("AI 服务私有配置不完整") from exc
