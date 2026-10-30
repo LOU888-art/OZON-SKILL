@@ -235,13 +235,34 @@ function collectStructuredSkus(roots, axisValues) {
     return score(right) - score(left);
   });
   const skus = groups[0] || [];
+  const allById = new Map();
+  for (const group of groups) {
+    for (const sku of group) {
+      const key = cleanText(sku.sku_id);
+      if (!key) continue;
+      if (!allById.has(key)) allById.set(key, []);
+      allById.get(key).push(sku);
+    }
+  }
   const merged = new Map();
   for (const sku of skus) {
     const key = cleanText(sku.sku_id) || sku.specification_text_zh;
     if (!key) continue;
-    const existing = merged.get(key);
-    const score = item => item.specification_zh.length + Number(item.purchase_price_cny !== null) + Number(item.stock !== null);
-    if (!existing || score(sku) > score(existing)) merged.set(key, sku);
+    const fragments = allById.get(cleanText(sku.sku_id)) || [sku];
+    const specificationSource = [...fragments].sort((left, right) => right.specification_zh.length - left.specification_zh.length)[0] || sku;
+    const imageSource = [...fragments].sort((left, right) => {
+      const score = item => 10 * Number(Boolean(item.image_url)) + item.specification_zh.length;
+      return score(right) - score(left);
+    })[0] || sku;
+    const combined = {
+      ...sku,
+      specification_zh: specificationSource.specification_zh,
+      specification_text_zh: specificationSource.specification_text_zh,
+      purchase_price_cny: fragments.find(item => item.purchase_price_cny !== null && item.purchase_price_cny !== undefined)?.purchase_price_cny ?? sku.purchase_price_cny,
+      stock: fragments.find(item => item.stock !== null && item.stock !== undefined)?.stock ?? sku.stock,
+      image_url: imageSource.image_url || sku.image_url,
+    };
+    merged.set(key, combined);
   }
   return [...merged.values()].slice(0, 500);
 }
@@ -516,6 +537,16 @@ function smallestVisibleExactText(value) {
     })[0] || null;
 }
 
+function optionControl(element) {
+  return element?.closest?.("button,label,li,[role='button'],[role='option'],[class*='item'],[class*='Item']") || element;
+}
+
+function unavailableOption(element) {
+  const control = optionControl(element);
+  const state = `${control?.className || ""} ${control?.getAttribute?.("data-status") || ""}`;
+  return !control || control.matches?.(":disabled,[aria-disabled='true'],[data-disabled='true']") || /(?:^|[\s_-])(disabled|disable|unavailable|soldout)(?:$|[\s_-])/i.test(state);
+}
+
 function imageElementUrl(image) {
   if (!image) return "";
   const srcset = cleanText(image.getAttribute?.("srcset") || image.getAttribute?.("data-srcset")).split(",")[0]?.trim().split(/\s+/)[0];
@@ -606,8 +637,8 @@ async function enrichSkuImages(skuList, mainImage, groups = domSkuGroups(), axis
     for (const part of sku.specification_zh || []) {
       optionUrl = optionUrl || visibleImages.get(`${part.name}\u0000${part.value}`) || visibleImages.get(part.value) || axisValueImage(axisValues, part.value) || "";
       const element = smallestVisibleExactText(part.value);
-      if (!element) continue;
-      element.click();
+      if (!element || unavailableOption(element)) continue;
+      optionControl(element).click();
       optionUrl = optionUrl || optionImage(element, part.value);
       await delay(360);
     }
@@ -638,8 +669,8 @@ async function enrichSkuCommerce(skuList, priceRanges) {
     let clicked = false;
     for (const part of sku.specification_zh || []) {
       const element = smallestVisibleExactText(part.value);
-      if (!element) continue;
-      element.click(); clicked = true;
+      if (!element || unavailableOption(element)) continue;
+      optionControl(element).click(); clicked = true;
       await delay(320);
     }
     if (clicked) await delay(180);
@@ -670,8 +701,8 @@ async function collectDomSkus(mainImage, groups = domSkuGroups(), axisValues = n
     for (const part of combination) {
       if ((groups.find(group => group.name === part.name)?.labels.length || 0) === 1) continue;
       const element = smallestVisibleExactText(part.value);
-      if (!element) { valid = false; break; }
-      element.click();
+      if (!element || unavailableOption(element)) { valid = false; break; }
+      optionControl(element).click();
       image = image || optionImage(element, part.value) || axisValueImage(axisValues, part.value);
       await delay(260);
     }
@@ -680,6 +711,7 @@ async function collectDomSkus(mainImage, groups = domSkuGroups(), axisValues = n
     const structured = alignedStructured[combinationIndex] || null;
     const price = current.price !== null && current.price > 0 ? current.price : structured?.purchase_price_cny ?? null;
     const stock = current.stock !== null ? current.stock : structured?.stock ?? null;
+    if (groups.length > 1 && alignedStructured.length === 0 && (price === null || price <= 0)) continue;
     const dynamicImage = currentGalleryImage();
     result.push({ sku_id: structured?.sku_id || stableSkuId(combination), specification_zh: combination, specification_text_zh: combination.map(item => `${item.name}:${item.value}`).join("; "), purchase_price_cny: price, stock, image_url: highResolutionImageUrl(image || axisValueImage(axisValues, combination[0]?.value) || dynamicImage || mainImage) || null });
   }
@@ -689,10 +721,10 @@ async function collectDomSkus(mainImage, groups = domSkuGroups(), axisValues = n
 async function scan() {
   const mainData = await requestMainCandidates(); const scriptRoots = parsedJsonRoots(); const roots = [...mainData.candidates, ...scriptRoots];
   if (!roots.length) throw new Error("没有捕获到1688商品接口数据。请刷新当前详情页，等待价格和规格显示后重新采集");
-  const axisValues = collectAxisValues(roots); let skuList = collectStructuredSkus(roots, axisValues); const images = collectImages(roots); const shipping = collectShipping(roots); const priceRanges = collectPriceRanges(roots); const warnings = []; const pageGroups = domSkuGroups(); const visibleOptions = Math.max(visibleSkuOptionCount(), pageGroups.reduce((total, group) => total + group.labels.length, 0)); const expectedSkuCount = pageGroups.length ? pageGroups.reduce((total, group) => total * group.labels.length, 1) : null;
+  const axisValues = collectAxisValues(roots); let skuList = collectStructuredSkus(roots, axisValues); const images = collectImages(roots); const shipping = collectShipping(roots); const priceRanges = collectPriceRanges(roots); const warnings = []; const pageGroups = domSkuGroups(); const visibleOptions = Math.max(visibleSkuOptionCount(), pageGroups.reduce((total, group) => total + group.labels.length, 0)); const theoreticalSkuCount = pageGroups.length ? pageGroups.reduce((total, group) => total * group.labels.length, 1) : null; const expectedSkuCount = pageGroups.length === 1 ? pageGroups[0].labels.length : null;
   const structuredSpecificationsValid = skuSpecificationsMatchGroups(skuList, pageGroups);
-  const mustRebuildFromPage = expectedSkuCount && (
-    skuList.length !== expectedSkuCount || !structuredSpecificationsValid || pageGroups.length === 1
+  const mustRebuildFromPage = pageGroups.length === 1 || (
+    pageGroups.length > 1 && (!skuList.length || !structuredSpecificationsValid)
   );
   if (mustRebuildFromPage) {
     const pageSkuList = await collectDomSkus(images.main[0]?.url, pageGroups, axisValues, skuList);
@@ -704,7 +736,7 @@ async function scan() {
     }
   }
   if (!skuList.length && visibleOptions > 1) { const fallbackGroups = domSkuGroups(); skuList = await collectDomSkus(images.main[0]?.url, fallbackGroups, axisValues, skuList); if (skuList.length) warnings.push("完整SKU由页面规格逐项校验生成"); }
-  if (expectedSkuCount && skuList.length !== expectedSkuCount) throw new Error(`页面规格应有 ${expectedSkuCount} 个SKU，但实际只校验到 ${skuList.length} 个，已阻止发送`);
+  if (expectedSkuCount && skuList.length !== expectedSkuCount) throw new Error(`页面显示 ${expectedSkuCount} 个SKU选项，但实际只校验到 ${skuList.length} 个，已阻止发送`);
   if (!expectedSkuCount && skuList.length > 30) throw new Error(`页面没有确认到有效规格组，却生成了 ${skuList.length} 个SKU，已阻止发送，请更新采集规则`);
   if (!skuList.length && visibleOptions <= 1) { const priceText = cleanText(document.querySelector("[class*='price']")); skuList = [{ sku_id: `${offerId()}-default`, specification_zh: [], specification_text_zh: "默认规格", purchase_price_cny: priceRanges[0]?.price_cny ?? numberValue(priceText), stock: null, image_url: images.main[0]?.url || null }]; }
   if (!skuList.length || (skuList.length === 1 && visibleOptions > 1)) throw new Error(`页面显示多个规格，但只读取到 ${skuList.length} 个SKU。请刷新详情页，等待规格和价格加载完成后重新采集`);
@@ -721,7 +753,7 @@ async function scan() {
   const attributes = collectAttributes(roots); let categoryId = ""; let supplierName = "";
   walk(roots, object => { if (!categoryId) { const value = cleanText(firstValue(object, ["thirdCategoryId", "categoryId", "categoryID", "leafCategoryId"])); if (/^\d+$/.test(value)) categoryId = value; } if (!supplierName) supplierName = cleanText(firstValue(object, ["companyName", "supplierName", "shopName"])); });
   const breadcrumbs = [...document.querySelectorAll("[class*='breadcrumb'] a,[class*='crumb'] a")].map(cleanText).filter(Boolean).slice(0, 20);
-  return { source_offer_id: offerId(), product_url: location.href, title_zh: title, images: images.main, detail_images: images.detail, sku_list: skuList, price_ranges: priceRanges, attributes_zh: attributes, category_id: categoryId, category_path_zh: breadcrumbs, supplier_info: { name: supplierName || null, min_order: priceRanges.find(item => item.minimum_quantity !== null)?.minimum_quantity ?? null, ship_from: shipping.ship_from_zh }, shipping_info: shipping, capture_diagnostics: { collector_version: "0.3.6", main_candidate_count: mainData.candidates.length, intercepted_response_count: mainData.response_urls.length, visible_sku_option_count: visibleOptions, expected_sku_count: expectedSkuCount, structured_specifications_valid: structuredSpecificationsValid, enriched_sku_price_count: commerceEnrichment.filledPrices, enriched_sku_stock_count: commerceEnrichment.filledStocks, enriched_sku_image_count: imageEnrichment.captured, overridden_sku_image_count: imageEnrichment.overridden, visible_option_image_count: imageEnrichment.visibleOptionImageCount, sku_image_count: skuList.filter(sku => Boolean(sku.image_url)).length, unique_sku_image_count: imageEnrichment.uniqueSkuImageCount, spec_groups: pageGroups.map(group => ({ name: group.name, count: group.labels.length })), warnings }, captured_at: new Date().toISOString() };
+  return { source_offer_id: offerId(), product_url: location.href, title_zh: title, images: images.main, detail_images: images.detail, sku_list: skuList, price_ranges: priceRanges, attributes_zh: attributes, category_id: categoryId, category_path_zh: breadcrumbs, supplier_info: { name: supplierName || null, min_order: priceRanges.find(item => item.minimum_quantity !== null)?.minimum_quantity ?? null, ship_from: shipping.ship_from_zh }, shipping_info: shipping, capture_diagnostics: { collector_version: "0.3.7", main_candidate_count: mainData.candidates.length, intercepted_response_count: mainData.response_urls.length, visible_sku_option_count: visibleOptions, expected_sku_count: expectedSkuCount, theoretical_sku_count: theoreticalSkuCount, structured_specifications_valid: structuredSpecificationsValid, enriched_sku_price_count: commerceEnrichment.filledPrices, enriched_sku_stock_count: commerceEnrichment.filledStocks, enriched_sku_image_count: imageEnrichment.captured, overridden_sku_image_count: imageEnrichment.overridden, visible_option_image_count: imageEnrichment.visibleOptionImageCount, sku_image_count: skuList.filter(sku => Boolean(sku.image_url)).length, unique_sku_image_count: imageEnrichment.uniqueSkuImageCount, spec_groups: pageGroups.map(group => ({ name: group.name, count: group.labels.length })), warnings }, captured_at: new Date().toISOString() };
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
