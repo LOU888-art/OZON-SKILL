@@ -3264,6 +3264,17 @@ class PipelineService:
         except (MarketResearchError, ValueError) as exc:
             raise PipelineError(str(exc)) from exc
 
+    def delete_market_research_profile(self, profile_id: Any, value: Mapping[str, Any]) -> dict[str, Any]:
+        normalized = _safe_pipeline_id(profile_id)
+        try:
+            result = self.market_research.delete_profile(
+                normalized,
+                delete_candidates=value.get("delete_candidates") is True,
+            )
+        except MarketResearchError as exc:
+            raise PipelineError(str(exc), status=404 if "不存在" in str(exc) else 409) from exc
+        return {**result, "research": self.market_research_status()}
+
     def ingest_market_candidates(
         self, value: Mapping[str, Any], actor: Any = ""
     ) -> dict[str, Any]:

@@ -65,6 +65,7 @@ _RESEARCH_RULES_ROUTE = "/api/research/rules"
 _RESEARCH_INGEST_ROUTE = "/api/research/ingest"
 _RESEARCH_CANDIDATE_ROUTE = re.compile(r"^/api/research/candidates/([^/]+)$")
 _RESEARCH_SOURCE_ROUTE = re.compile(r"^/api/research/candidates/([^/]+)/source$")
+_RESEARCH_PROFILE_ROUTE = re.compile(r"^/api/research/profiles/([^/]+)$")
 _PRODUCT_BATCH_EDIT_ROUTE = "/api/products/batch-edit"
 _PIPELINE_BATCH_DELETE_ROUTE = "/api/pipelines/batch-delete"
 _RESEARCH_BATCH_DELETE_ROUTE = "/api/research/candidates/batch-delete"
@@ -827,6 +828,7 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
         self._begin_activity(path)
         try:
             self._require_authenticated()
+            body = self._body()
             if registration_match := _REGISTRATION_ROUTE.fullmatch(path):
                 self._require("team.manage")
                 self._json(
@@ -854,6 +856,12 @@ class ERPRequestHandler(BaseHTTPRequestHandler):
                 self._require("stage.run")
                 self.service.delete_market_candidate(unquote(candidate_match.group(1)))
                 self._json({"status": "deleted"})
+                return
+            if profile_match := _RESEARCH_PROFILE_ROUTE.fullmatch(path):
+                self._require("stage.run")
+                self._json(self.service.delete_market_research_profile(
+                    unquote(profile_match.group(1)), body
+                ))
                 return
             if asset_match := _ASSET_ROUTE.fullmatch(path):
                 self._require("storage.manage")

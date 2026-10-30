@@ -59,6 +59,64 @@ def _opportunity_score(candidate: Mapping[str, Any]) -> tuple[str, dict[str, str
     return str(total.quantize(Decimal("0.1"))), components
 
 
+def _candidate_risk(candidate: Mapping[str, Any]) -> tuple[str, list[dict[str, str]]]:
+    """Return explainable risks based only on observed data and saved economics."""
+
+    def number(name: str) -> Decimal | None:
+        try:
+            value = candidate.get(name)
+            return Decimal(str(value)) if value not in (None, "") else None
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+
+    flags: list[dict[str, str]] = []
+
+    def add(level: str, code: str, message: str) -> None:
+        flags.append({"level": level, "code": code, "message": message})
+
+    missing = [name for name in ("price_rub", "orders", "sellers") if number(name) is None]
+    if missing:
+        add("MEDIUM", "CORE_DATA_MISSING", f"缺少核心指标：{', '.join(missing)}")
+    return_rate = number("return_rate_percent")
+    if return_rate is not None and return_rate >= 20:
+        add("HIGH", "HIGH_RETURN_RATE", f"退货取消率 {return_rate}% 偏高")
+    elif return_rate is not None and return_rate >= 10:
+        add("MEDIUM", "RETURN_RATE", f"退货取消率 {return_rate}% 需关注")
+    ad_share = number("ad_share_percent")
+    if ad_share is not None and ad_share >= 25:
+        add("HIGH", "HIGH_AD_SHARE", f"广告费占比 {ad_share}% 偏高")
+    elif ad_share is not None and ad_share >= 15:
+        add("MEDIUM", "AD_SHARE", f"广告费占比 {ad_share}% 需关注")
+    sellers = number("sellers")
+    if sellers is not None and sellers >= 100:
+        add("MEDIUM", "SELLER_SATURATION", f"跟卖卖家 {sellers} 家，竞争拥挤")
+    conversion = number("conversion_rate_percent")
+    if conversion is not None and conversion < Decimal("0.5"):
+        add("MEDIUM", "LOW_CONVERSION", f"展示转化率仅 {conversion}%")
+    rating = number("rating")
+    if rating is not None and rating < 4:
+        add("MEDIUM", "LOW_RATING", f"评分仅 {rating}")
+    brand = str(candidate.get("brand") or "").strip().casefold()
+    if brand and brand not in {"без бренда", "no brand", "无品牌"}:
+        add("MEDIUM", "BRAND_REVIEW", "有品牌商品，上架前需核验商标与销售授权")
+    economics = candidate.get("economics")
+    if isinstance(economics, Mapping):
+        if economics.get("status") == "NEEDS_INPUT":
+            add("MEDIUM", "ECONOMICS_INCOMPLETE", str(economics.get("reason") or "利润测算资料不完整"))
+        calculation = economics.get("calculation")
+        if economics.get("status") == "READY" and isinstance(calculation, Mapping):
+            try:
+                margin = Decimal(str(calculation.get("sales_margin_percent")))
+                if margin <= 0:
+                    add("HIGH", "NEGATIVE_MARGIN", f"测算毛利率 {margin}%，不建议通过")
+                elif margin < 15:
+                    add("MEDIUM", "LOW_MARGIN", f"测算毛利率 {margin}% 偏低")
+            except (InvalidOperation, TypeError, ValueError):
+                add("MEDIUM", "ECONOMICS_INCOMPLETE", "利润测算结果缺少毛利率")
+    level = "HIGH" if any(item["level"] == "HIGH" for item in flags) else "MEDIUM" if flags else "LOW"
+    return level, flags
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -246,6 +304,10 @@ class MarketResearchRegistry:
                     row["opportunity_score"] = score
                     row["score_breakdown"] = breakdown
                     row["score_version"] = "observable-v1"
+                if isinstance(row, dict):
+                    risk_level, risk_flags = _candidate_risk(row)
+                    row["risk_level"] = risk_level
+                    row["risk_flags"] = risk_flags
             rows = sorted(
                 document["candidates"].values(),
                 key=lambda row: (
@@ -280,6 +342,31 @@ class MarketResearchRegistry:
             document["active_profile_id"] = profile_id
             self._write(document)
             return dict(document["rules"])
+
+    def delete_profile(self, profile_id: str, *, delete_candidates: bool = False) -> dict[str, Any]:
+        if not _PROFILE_ID.fullmatch(profile_id):
+            raise MarketResearchError("选品方案标识格式无效")
+        with self._lock:
+            document = self._read()
+            if profile_id not in document["profiles"]:
+                raise MarketResearchError("选品方案不存在")
+            if len(document["profiles"]) <= 1:
+                raise MarketResearchError("至少需要保留一个选品方案")
+            candidate_ids = [
+                candidate_id for candidate_id, row in document["candidates"].items()
+                if isinstance(row, Mapping) and str(row.get("profile_id") or "default") == profile_id
+            ]
+            if candidate_ids and not delete_candidates:
+                raise MarketResearchError(f"该方案仍有 {len(candidate_ids)} 个候选商品，请确认同时删除候选池")
+            for candidate_id in candidate_ids:
+                document["candidates"].pop(candidate_id, None)
+            document["profiles"].pop(profile_id)
+            if document.get("active_profile_id") == profile_id:
+                next_id = sorted(document["profiles"])[0]
+                document["active_profile_id"] = next_id
+                document["rules"] = dict(document["profiles"][next_id])
+            self._write(document)
+            return {"deleted_profile_id": profile_id, "deleted_candidates": candidate_ids}
 
     def ingest(self, items: Any, actor: str) -> dict[str, Any]:
         if not isinstance(items, list) or not items:
@@ -344,6 +431,9 @@ class MarketResearchRegistry:
                     normalized["opportunity_score"] = score
                     normalized["score_breakdown"] = score_breakdown
                     normalized["score_version"] = "observable-v1"
+                    risk_level, risk_flags = _candidate_risk(normalized)
+                    normalized["risk_level"] = risk_level
+                    normalized["risk_flags"] = risk_flags
                     matches, reasons = _matches(normalized, rules)
                     if not matches:
                         rejected += 1

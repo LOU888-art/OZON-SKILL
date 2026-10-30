@@ -153,6 +153,31 @@ class MarketResearchTests(unittest.TestCase):
             self.assertEqual(len(row["metric_history"]), 2)
             self.assertEqual(row["metric_history"][-1]["orders"], "50")
 
+    def test_candidate_risk_uses_observed_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            registry = MarketResearchRegistry(Path(temporary) / "market.json")
+            registry.save_rules(RULES, "operator")
+            risky = candidate()
+            risky["return_rate_percent"] = "24"
+            risky["ad_share_percent"] = "28"
+            registry.ingest([risky], "plugin")
+            row = registry.status()["candidates"][0]
+            self.assertEqual(row["risk_level"], "HIGH")
+            self.assertIn("HIGH_RETURN_RATE", {item["code"] for item in row["risk_flags"]})
+            self.assertIn("HIGH_AD_SHARE", {item["code"] for item in row["risk_flags"]})
+
+    def test_profile_deletion_requires_explicit_candidate_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            registry = MarketResearchRegistry(Path(temporary) / "market.json")
+            registry.save_rules({**RULES, "profile_id": "blue", "profile_name": "蓝海"}, "operator")
+            registry.ingest([candidate()], "plugin")
+            registry.save_rules({**RULES, "profile_id": "growth", "profile_name": "增长"}, "operator")
+            with self.assertRaisesRegex(MarketResearchError, "同时删除候选池"):
+                registry.delete_profile("blue")
+            result = registry.delete_profile("blue", delete_candidates=True)
+            self.assertEqual(result["deleted_candidates"], ["blue--123"])
+            self.assertEqual([item["profile_id"] for item in registry.status()["profiles"]], ["growth"])
+
     def test_ingest_requires_saved_rules_and_ozon_url(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             registry = MarketResearchRegistry(Path(temporary) / "market.json")
