@@ -3297,12 +3297,79 @@ class PipelineService:
             offer_id = extract_offer_id(value.get("offer_id") or value.get("offer_url"))
         except (TypeError, ValueError) as exc:
             raise PipelineError(str(exc)) from exc
+        store_id = str(value.get("store_id") or "").strip()
+        stores = {str(item.get("store_id")): item for item in self.stores.list_public()}
+        if not store_id or store_id not in stores:
+            raise PipelineError("请选择用于利润测算的已授权 Ozon 店铺")
         result = self.run_stage_1(offer_id)
         if result.get("status") != "PASS":
             raise PipelineError("1688 商品采集失败，候选品尚未绑定", status=409)
+        economics: dict[str, Any]
+        try:
+            settings = self.finance.get(store_id)
+            raw = self.read_artifact(offer_id, 1)
+            purchase_prices = [
+                Decimal(str(item.get("purchase_price_cny")))
+                for item in raw.get("sku_list") or []
+                if isinstance(item, Mapping)
+                and item.get("purchase_price_cny") not in (None, "")
+                and Decimal(str(item.get("purchase_price_cny"))) > 0
+            ]
+            price_rub = Decimal(str(existing.get("price_rub") or "0"))
+            weight_g = Decimal(str(existing.get("weight_g") or "0"))
+            if not purchase_prices:
+                raise PricingError("1688 SKU 缺少真实采购价")
+            if price_rub <= 0:
+                raise PricingError("Ozon 候选商品缺少真实售价")
+            if weight_g <= 0:
+                raise PricingError("Ozon Seller 页面未提供商品重量")
+            rate = Decimal(str(settings["cny_to_rub_rate"]))
+            dimensions = [Decimal(item) for item in re.findall(r"\d+(?:\.\d+)?", str(existing.get("dimensions") or ""))[:3]]
+            dimensions_cm = [item / Decimal("10") for item in dimensions] if len(dimensions) == 3 else [Decimal("0")] * 3
+            shipping = raw.get("shipping_info") if isinstance(raw.get("shipping_info"), Mapping) else {}
+            domestic_misc = Decimal(str(settings["domestic_misc_cny"])) + Decimal(str(shipping.get("freight_cny") or "0"))
+            calculation = calculate_pricing(
+                {
+                    "sale_price_cny": price_rub / rate,
+                    "purchase_cost_cny": max(purchase_prices),
+                    "domestic_misc_cny": domestic_misc,
+                    "commission_percent": existing.get("commission_percent") or settings["commission_percent"],
+                    "return_loss_percent": existing.get("return_rate_percent") or settings["return_loss_percent"],
+                    "withdrawal_percent": settings["withdrawal_percent"],
+                    "advertising_percent": existing.get("ad_share_percent") or settings["advertising_percent"],
+                    "last_mile_percent": settings["last_mile_percent"],
+                    "target_margin_percent": settings["target_margin_percent"],
+                    "weight_g": weight_g,
+                    "length_cm": dimensions_cm[0],
+                    "width_cm": dimensions_cm[1],
+                    "height_cm": dimensions_cm[2],
+                    "cny_to_rub_rate": rate,
+                    "logistics_mode": settings["logistics_mode"],
+                    "postal_transport": settings["postal_transport"],
+                }
+            )
+            economics = {
+                "status": "READY",
+                "store_id": store_id,
+                "calculated_at": _now(),
+                "purchase_price_basis": "MAX_ACTIVE_SKU",
+                "calculation": calculation,
+            }
+        except (PricingError, FinanceSettingsError, InvalidOperation, ValueError) as exc:
+            economics = {
+                "status": "NEEDS_INPUT",
+                "store_id": store_id,
+                "calculated_at": _now(),
+                "reason": str(exc),
+            }
         try:
             candidate = self.market_research.bind_source(
-                normalized, offer_id, offer_id, str(actor or "system")
+                normalized,
+                offer_id,
+                offer_id,
+                str(actor or "system"),
+                store_id=store_id,
+                economics=economics,
             )
         except MarketResearchError as exc:
             raise PipelineError(str(exc), status=404) from exc

@@ -323,6 +323,23 @@ class MarketResearchRegistry:
                         rejected += 1
                         continue
                     previous = document["candidates"].get(product_id) or {}
+                    snapshot_fields = (
+                        "price_rub", "orders", "revenue_rub", "sellers", "rating",
+                        "reviews", "growth_percent", "daily_sales", "ad_share_percent",
+                        "card_views", "conversion_rate_percent", "return_rate_percent",
+                        "opportunity_score",
+                    )
+                    snapshot = {key: normalized.get(key) for key in snapshot_fields}
+                    snapshot["captured_at"] = _now()
+                    history = [
+                        item for item in (previous.get("metric_history") or [])
+                        if isinstance(item, Mapping)
+                    ][-89:]
+                    if not history or any(
+                        history[-1].get(key) != snapshot.get(key)
+                        for key in snapshot_fields
+                    ):
+                        history.append(snapshot)
                     normalized.update({
                         "decision": previous.get("decision") or "NEW",
                         "source_offer_id": previous.get("source_offer_id"),
@@ -332,6 +349,8 @@ class MarketResearchRegistry:
                         "first_seen_at": previous.get("first_seen_at") or _now(),
                         "updated_at": _now(),
                         "updated_by": actor or "plugin",
+                        "metric_history": history,
+                        "economics": previous.get("economics"),
                     })
                     document["candidates"][product_id] = normalized
                     accepted += 1
@@ -364,13 +383,13 @@ class MarketResearchRegistry:
                 raise MarketResearchError("候选商品不存在")
             return dict(row)
 
-    def bind_source(self, candidate_id: str, offer_id: str, pipeline_id: str, actor: str) -> dict[str, Any]:
+    def bind_source(self, candidate_id: str, offer_id: str, pipeline_id: str, actor: str, *, store_id: str | None = None, economics: Mapping[str, Any] | None = None) -> dict[str, Any]:
         with self._lock:
             document = self._read()
             row = document["candidates"].get(candidate_id)
             if not isinstance(row, dict):
                 raise MarketResearchError("候选商品不存在")
-            row.update({"decision": "SOURCED", "source_offer_id": offer_id, "pipeline_id": pipeline_id, "updated_at": _now(), "updated_by": actor or "system"})
+            row.update({"decision": "SOURCED", "source_offer_id": offer_id, "pipeline_id": pipeline_id, "store_id": store_id, "economics": dict(economics or {}), "updated_at": _now(), "updated_by": actor or "system"})
             self._write(document)
             return dict(row)
 

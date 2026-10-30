@@ -146,13 +146,15 @@ class MarketResearchTests(unittest.TestCase):
             with self.assertRaisesRegex(PipelineError, "确认允许"):
                 service.source_market_candidate("123", {"offer_id": "628680616884"}, "operator")
             with patch.object(service, "run_stage_1", return_value={"pipeline_id": "628680616884", "status": "PASS"}):
-                result = service.source_market_candidate(
-                    "123",
-                    {"offer_id": "628680616884", "confirm_external_request": True},
-                    "operator",
-                )
+                with patch.object(service.stores, "list_public", return_value=[{"store_id": "store-1"}]), patch.object(service, "read_artifact", return_value={"sku_list": []}):
+                    result = service.source_market_candidate(
+                        "123",
+                        {"offer_id": "628680616884", "store_id": "store-1", "confirm_external_request": True},
+                        "operator",
+                    )
             self.assertEqual(result["candidate"]["decision"], "SOURCED")
             self.assertEqual(result["candidate"]["pipeline_id"], "628680616884")
+            self.assertEqual(result["candidate"]["economics"]["status"], "NEEDS_INPUT")
 
     def test_missing_candidate_never_calls_paid_source_api(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
