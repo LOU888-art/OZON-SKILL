@@ -99,7 +99,7 @@ IMAGE_SELECTION_FILE = "image-selection.json"
 PRODUCT_SETTINGS_FILE = "product-settings.json"
 PRODUCT_VERSIONS_FILE = "product-versions.json"
 IMAGE_ACTIONS = {"exclude", "translate", "reference_8", "sku_main"}
-AI_GALLERY_POLICY_VERSION = "ozon-ai-gallery-8-v5-3x4-ocr"
+AI_GALLERY_POLICY_VERSION = "ozon-ai-gallery-8-v6-3x4-ocr-consensus"
 _PIPELINE_ID = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 _BATCH_JOB_ID = re.compile(r"^[a-f0-9]{32}$")
 _MAX_BATCH_IMPORT_ITEMS = 100
@@ -1189,10 +1189,27 @@ class PipelineService:
             original_url = str(row.get("final_public_url") or "").strip()
             working_url = original_url
             data, _ = download_public_image(working_url)
-            ocr = detect_chinese_text(data)
-            cleanup_status = "NOT_REQUIRED"
-            if ocr.get("contains_chinese") is True:
-                cleanup_status = "REQUESTED"
+            ocr_history: list[dict[str, Any]] = []
+            cleanup_attempts = 0
+            while True:
+                ocr = detect_chinese_text(data)
+                ocr_history.append(dict(ocr))
+                if ocr.get("ocr_status") != "COMPLETED":
+                    raise ValueError(
+                        "服务器中文OCR不可用，已禁止把未经检查的AI图片上传到Ozon"
+                    )
+                if ocr.get("contains_chinese") is False:
+                    break
+                if cleanup_attempts >= 2:
+                    evidence = str(
+                        ocr.get("ocr_text_preview")
+                        or ocr.get("suspected_chinese_preview")
+                        or "未知字符"
+                    )[:80]
+                    raise ValueError(
+                        f"AI图片经过2次清理仍确认含中文（OCR：{evidence}），已禁止上传"
+                    )
+                cleanup_attempts += 1
                 working_url = relay.translate_product_image(
                     working_url,
                     str(row.get("source_role") or "") or None,
@@ -1200,14 +1217,7 @@ class PipelineService:
                 )
                 validate_public_image_url(working_url)
                 data, _ = download_public_image(working_url)
-                ocr = detect_chinese_text(data)
-                cleanup_status = "COMPLETED"
-            if ocr.get("ocr_status") != "COMPLETED":
-                raise ValueError(
-                    "服务器中文OCR不可用，已禁止把未经检查的AI图片上传到Ozon"
-                )
-            if ocr.get("contains_chinese") is not False:
-                raise ValueError("AI图片清理后仍检测到中文，已禁止上传")
+            cleanup_status = "COMPLETED" if cleanup_attempts else "NOT_REQUIRED"
 
             normalized, dimensions = normalize_three_by_four(data)
             digest = hashlib.sha256(normalized).hexdigest()
@@ -1231,6 +1241,8 @@ class PipelineService:
                 "content_type": "image/png",
                 "working_url": working_url,
                 "ocr": ocr,
+                "ocr_history": ocr_history,
+                "cleanup_attempts": cleanup_attempts,
                 "cleanup_status": cleanup_status,
                 **dimensions,
             }
@@ -1287,7 +1299,14 @@ class PipelineService:
                     "source_width": result["source_width"],
                     "source_height": result["source_height"],
                     "ocr_status": result["ocr"]["ocr_status"],
+                    "ocr_detection_method": result["ocr"].get("ocr_detection_method"),
+                    "ocr_text_preview": result["ocr"].get("ocr_text_preview"),
+                    "suspected_chinese_preview": result["ocr"].get(
+                        "suspected_chinese_preview"
+                    ),
+                    "ocr_history": result["ocr_history"],
                     "contains_chinese": False,
+                    "chinese_cleanup_attempts": result["cleanup_attempts"],
                     "chinese_cleanup_status": result["cleanup_status"],
                     "storage_status": "MIRRORED",
                     "storage_object_key": result["object_key"],

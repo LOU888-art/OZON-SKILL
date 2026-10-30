@@ -17,7 +17,11 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from ozon_skill.ai_relay.client import AiRelayClient, AiRelayError
+from ozon_skill.ai_relay.client import (
+    AiRelayClient,
+    AiRelayError,
+    _non_chinese_image_facts,
+)
 from ozon_skill.alphashop.client import (
     AlphaShopApiError,
     AlphaShopClient,
@@ -331,22 +335,7 @@ _DETAIL_MODULES = (
 def _image_safe_facts(value: Any) -> Any:
     """Keep factual structure while removing Chinese copy the image model may echo."""
 
-    if isinstance(value, Mapping):
-        return {
-            str(key): cleaned
-            for key, item in value.items()
-            if (cleaned := _image_safe_facts(item)) not in (None, "", [], {})
-        }
-    if isinstance(value, (list, tuple)):
-        return [
-            cleaned
-            for item in value
-            if (cleaned := _image_safe_facts(item)) not in (None, "", [], {})
-        ]
-    if isinstance(value, str):
-        cleaned = re.sub(r"[\u3400-\u9fff]+", " ", value)
-        return re.sub(r"\s+", " ", cleaned).strip() or None
-    return value
+    return _non_chinese_image_facts(value)
 
 
 def _listing_image_prompt(

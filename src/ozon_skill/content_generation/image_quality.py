@@ -14,6 +14,85 @@ from PIL import Image, ImageFilter, ImageOps
 
 TARGET_WIDTH = 1200
 TARGET_HEIGHT = 1600
+OCR_CONFIDENCE = 60.0
+OCR_SINGLE_CHARACTER_CONFIDENCE = 85.0
+
+
+def _parse_tesseract_tsv(raw: str) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    for line in raw.splitlines()[1:]:
+        columns = line.split("\t", 11)
+        if len(columns) != 12:
+            continue
+        try:
+            confidence = float(columns[10])
+        except ValueError:
+            continue
+        text = columns[11].strip()
+        chinese = "".join(
+            character for character in text if "\u3400" <= character <= "\u9fff"
+        )
+        if confidence < OCR_CONFIDENCE or not chinese:
+            continue
+        findings.append(
+            {
+                "text": text,
+                "chinese": chinese,
+                "confidence": confidence,
+            }
+        )
+    return findings
+
+
+def _confirmed_chinese(
+    first: list[dict[str, Any]], second: list[dict[str, Any]]
+) -> tuple[bool, str]:
+    """Require agreement between two layout modes instead of trusting one OCR guess."""
+
+    first_text = "".join(str(item["chinese"]) for item in first)
+    second_text = "".join(str(item["chinese"]) for item in second)
+    if not first_text or not second_text:
+        return False, ""
+    common = set(first_text) & set(second_text)
+    if len(first_text) >= 2 and len(second_text) >= 2 and (
+        common or (len(first_text) >= 3 and len(second_text) >= 3)
+    ):
+        return True, "".join(sorted(common)) or first_text[:8]
+    first_strong = {
+        character
+        for item in first
+        if float(item["confidence"]) >= OCR_SINGLE_CHARACTER_CONFIDENCE
+        for character in str(item["chinese"])
+    }
+    second_strong = {
+        character
+        for item in second
+        if float(item["confidence"]) >= OCR_SINGLE_CHARACTER_CONFIDENCE
+        for character in str(item["chinese"])
+    }
+    strong_common = first_strong & second_strong
+    return bool(strong_common), "".join(sorted(strong_common))
+
+
+def _run_tesseract(
+    path: Path, languages: list[str], psm: int
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "tesseract",
+            str(path),
+            "stdout",
+            "-l",
+            "+".join(languages),
+            "--psm",
+            str(psm),
+            "tsv",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
 
 
 def normalize_three_by_four(image_bytes: bytes) -> tuple[bytes, dict[str, int]]:
@@ -83,46 +162,31 @@ def detect_chinese_text(image_bytes: bytes) -> dict[str, Any]:
         path = Path(directory) / "image.png"
         path.write_bytes(image_bytes)
         try:
-            result = subprocess.run(
-                [
-                    "tesseract",
-                    str(path),
-                    "stdout",
-                    "-l",
-                    "+".join(language_set),
-                    "--psm",
-                    "11",
-                    "tsv",
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=90,
-            )
+            # Sparse and uniform-block layouts make different mistakes. Chinese
+            # is considered real only when both independently agree, which
+            # avoids treating stylised Cyrillic, icons or product texture as a
+            # Chinese character.
+            results = [
+                _run_tesseract(path, language_set, 11),
+                _run_tesseract(path, language_set, 6),
+            ]
         except (OSError, subprocess.SubprocessError):
             return {"ocr_status": "FAILED", "contains_chinese": None}
-    if result.returncode != 0:
+    if any(result.returncode != 0 for result in results):
         return {"ocr_status": "FAILED", "contains_chinese": None}
-    recognized: list[str] = []
-    chinese: list[str] = []
-    for line in result.stdout.splitlines()[1:]:
-        columns = line.split("\t", 11)
-        if len(columns) != 12:
-            continue
-        try:
-            confidence = float(columns[10])
-        except ValueError:
-            continue
-        text = columns[11].strip()
-        if confidence < 35 or not text:
-            continue
-        recognized.append(text)
-        chinese.extend(
-            character for character in text if "\u3400" <= character <= "\u9fff"
-        )
+    passes = [_parse_tesseract_tsv(result.stdout) for result in results]
+    confirmed, confirmed_text = _confirmed_chinese(passes[0], passes[1])
+    suspected = "".join(
+        str(item["chinese"]) for findings in passes for item in findings
+    )
     return {
         "ocr_status": "COMPLETED",
-        "contains_chinese": bool(chinese),
-        "ocr_text_preview": " ".join(recognized)[:500],
-        "chinese_character_count": len(chinese),
+        "contains_chinese": confirmed,
+        "ocr_detection_method": "dual_layout_consensus_v2",
+        "ocr_text_preview": confirmed_text[:100],
+        "chinese_character_count": len(confirmed_text),
+        "suspected_chinese_preview": suspected[:100],
+        "ocr_pass_character_counts": [
+            sum(len(str(item["chinese"])) for item in findings) for findings in passes
+        ],
     }

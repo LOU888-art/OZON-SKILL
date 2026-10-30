@@ -33,6 +33,32 @@ def _model_key(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", value.lower())
 
 
+def _non_chinese_image_facts(value: Any) -> Any:
+    """Keep verified facts while preventing Chinese prompt copy from being redrawn."""
+
+    if isinstance(value, Mapping):
+        cleaned: dict[str, Any] = {}
+        for index, (key, item) in enumerate(value.items(), start=1):
+            if str(key) == "reference_image_url":
+                continue
+            safe_key = str(_non_chinese_image_facts(str(key))).strip()
+            safe_item = _non_chinese_image_facts(item)
+            if safe_item not in (None, "", [], {}):
+                cleaned[safe_key or f"verified_field_{index}"] = safe_item
+        return {
+            key: item
+            for key, item in cleaned.items()
+            if item not in (None, "", [], {})
+        }
+    if isinstance(value, (list, tuple)):
+        cleaned_items = [_non_chinese_image_facts(item) for item in value]
+        return [item for item in cleaned_items if item not in (None, "", [], {})]
+    if isinstance(value, str):
+        cleaned_text = re.sub(r"[\u3400-\u9fff]+", " ", value)
+        return re.sub(r"\s+", " ", cleaned_text).strip()
+    return value
+
+
 def normalize_text_model(value: str) -> str:
     """Normalize historical display names to the relay's canonical model ID."""
 
@@ -450,12 +476,14 @@ class AiRelayClient:
         *,
         prompt_override: str | None = None,
     ) -> str:
-        facts = {
-            "title_zh": source.get("title_zh"),
-            "attributes_zh": source.get("attributes_zh"),
-            "source_role": source_role,
-            "reference_image_url": source_image_url,
-        }
+        facts = _non_chinese_image_facts(
+            {
+                "product_title": source.get("title_ru") or source.get("title_zh"),
+                "verified_attributes": source.get("attributes")
+                or source.get("attributes_zh"),
+                "source_role": source_role,
+            }
+        )
         prompt = prompt_override or (
             "Создай реалистичное товарное изображение для OZON на основе фактов и "
             "референса ниже. Сохрани форму, цвет, комплектацию и конструкцию товара. "
@@ -489,12 +517,14 @@ class AiRelayClient:
     ) -> str:
         """Replace Chinese copy with Russian while preserving the source layout."""
 
-        facts = {
-            "title_zh": source.get("title_zh"),
-            "attributes_zh": source.get("attributes_zh"),
-            "source_role": source_role,
-            "reference_image_url": source_image_url,
-        }
+        facts = _non_chinese_image_facts(
+            {
+                "product_title": source.get("title_ru") or source.get("title_zh"),
+                "verified_attributes": source.get("attributes")
+                or source.get("attributes_zh"),
+                "source_role": source_role,
+            }
+        )
         prompt = (
             "Переведи текст на исходном товарном изображении с китайского на краткий, "
             "естественный русский язык. Максимально сохрани исходный товар, композицию, "
@@ -502,7 +532,9 @@ class AiRelayClient:
             "китайский текст и не оставляй иероглифы. Не меняй модель товара, не добавляй "
             "новые характеристики, цену, скидку, логотип, бренд, сертификат или водяной "
             "знак. Если текст не удается надежно понять, удали его вместо выдуманного "
-            "перевода. Вертикальный формат 3:4, один отдельный файл. ФАКТЫ: "
+            "перевода. На итоговом изображении не должно быть ни одного китайского "
+            "иероглифа. Вертикальный формат 3:4, один отдельный файл. ФАКТЫ БЕЗ "
+            "КИТАЙСКОГО ТЕКСТА: "
             + json.dumps(facts, ensure_ascii=False, separators=(",", ":"))
         )
         model = normalize_image_model(self.image_translation_model) or self.image_model
