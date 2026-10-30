@@ -40,6 +40,12 @@ def candidate(*, product_id: str = "123", title: str = "LED lamp") -> dict:
         "rating": "4.8",
         "reviews": "19",
         "growth_percent": "18.2",
+        "daily_sales": "1.4",
+        "ad_share_percent": "12.5",
+        "card_views": "6400",
+        "conversion_rate_percent": "2.4",
+        "return_rate_percent": "7.5",
+        "days_on_sale": "95",
     }
 
 
@@ -83,6 +89,42 @@ class MarketResearchTests(unittest.TestCase):
             self.assertEqual(status["summary"]["total"], 1)
             self.assertEqual(status["summary"]["shortlisted"], 1)
             self.assertEqual(status["candidates"][0]["decision"], "SHORTLISTED")
+            self.assertGreater(float(status["candidates"][0]["opportunity_score"]), 0)
+            self.assertEqual(status["candidates"][0]["score_version"], "observable-v1")
+
+    def test_advanced_metrics_are_strict_filters(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            registry = MarketResearchRegistry(Path(temporary) / "market.json")
+            registry.save_rules(
+                {
+                    **RULES,
+                    "daily_sales_min": 1,
+                    "card_views_min": 5000,
+                    "conversion_rate_min": 2,
+                    "ad_share_max_percent": 15,
+                    "return_rate_max_percent": 10,
+                    "days_on_sale_max": 120,
+                    "opportunity_score_min": 40,
+                },
+                "operator",
+            )
+            accepted = registry.ingest([candidate()], "plugin")
+            self.assertEqual(accepted["accepted"], 1)
+            weak = candidate(product_id="weak")
+            weak["conversion_rate_percent"] = "0.5"
+            rejected = registry.ingest([weak], "plugin")
+            self.assertEqual(rejected["accepted"], 0)
+            self.assertEqual(rejected["rejected"], 1)
+
+    def test_required_advanced_metric_is_never_estimated(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            registry = MarketResearchRegistry(Path(temporary) / "market.json")
+            registry.save_rules({**RULES, "card_views_min": 1}, "operator")
+            missing = candidate()
+            missing.pop("card_views")
+            result = registry.ingest([missing], "plugin")
+            self.assertEqual(result["accepted"], 0)
+            self.assertEqual(result["rejected"], 1)
 
     def test_ingest_requires_saved_rules_and_ozon_url(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

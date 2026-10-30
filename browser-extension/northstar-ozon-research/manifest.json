@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Northstar Ozon 自动选品",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "在 Ozon 商品列表和详情页显示可验证数据，并将 Seller 分析结果同步到 Northstar ERP。",
   "permissions": ["activeTab", "storage", "scripting"],
   "optional_host_permissions": ["https://*/*"],

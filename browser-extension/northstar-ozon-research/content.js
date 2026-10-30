@@ -32,7 +32,23 @@ function parseRows(){
         sellers:numberFrom(cell(['卖家数量','sellers','продавц'])),
         rating:numberFrom(cell(['评分','rating','рейтинг'])),
         reviews:numberFrom(cell(['评论','reviews','отзыв'])),
-        growth_percent:numberFrom(cell(['动态','增长','growth','динамик']))
+        growth_percent:numberFrom(cell(['动态','增长','growth','динамик'])),
+        daily_sales:numberFrom(cell(['日销量','daily sales','продаж в день','среднесуточ'])),
+        ad_share_percent:numberFrom(cell(['广告费占比','доля рекламных расходов','ad cost share','ддр'])),
+        promotion_days:numberFrom(cell(['参与促销天数','дней в акции','promotion days'])),
+        promotion_discount_percent:numberFrom(cell(['参与促销的折扣','скидка в акции','promotion discount'])),
+        paid_promotion_days:numberFrom(cell(['付费推广天数','дней платного продвижения','paid promotion days'])),
+        card_views:numberFrom(cell(['商品卡浏览量','просмотры карточки','product card views','qtyviewpdp'])),
+        card_add_to_cart_rate_percent:numberFrom(cell(['商品卡加购率','добавление в корзину из карточки','card add-to-cart'])),
+        search_views:numberFrom(cell(['搜索目录浏览量','просмотры в поиске','search views','catalog views'])),
+        search_add_to_cart_rate_percent:numberFrom(cell(['搜索目录加购率','добавление в корзину из поиска','search add-to-cart'])),
+        conversion_rate_percent:numberFrom(cell(['展示转化率','конверсия показов','display conversion','конверсия в заказ'])),
+        return_rate_percent:numberFrom(cell(['退货取消率','возвраты и отмены','return rate','cancel rate'])),
+        commission_percent:numberFrom(cell(['类目佣金','комиссия категории','category commission'])),
+        days_on_sale:numberFrom(cell(['上架天数','дней на площадке','days on sale'])),
+        weight_g:numberFrom(cell(['重量','вес','weight'])),
+        delivery_mode:cell(['发货模式','схема работы','delivery mode','fbo','fbs']),
+        dimensions:cell(['长宽高','габариты','dimensions','размер упаковки'])
       });
     }
   }

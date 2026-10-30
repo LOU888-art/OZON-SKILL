@@ -23,6 +23,41 @@ DECISIONS = {"NEW", "SHORTLISTED", "APPROVED", "REJECTED", "SOURCED"}
 _PRODUCT_ID = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 
 
+def _opportunity_score(candidate: Mapping[str, Any]) -> tuple[str, dict[str, str]]:
+    """Score only observed metrics; never synthesize missing marketplace data."""
+
+    def number(name: str) -> Decimal | None:
+        try:
+            value = candidate.get(name)
+            return Decimal(str(value)) if value not in (None, "") else None
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+
+    orders = number("orders")
+    growth = number("growth_percent")
+    sellers = number("sellers")
+    rating = number("rating")
+    reviews = number("reviews")
+    demand = min(Decimal("30"), (orders or Decimal("0")) / Decimal("20"))
+    momentum = min(Decimal("20"), max(Decimal("0"), (growth or Decimal("0")) / Decimal("2")))
+    competition = (
+        max(Decimal("0"), Decimal("25") - sellers / Decimal("4"))
+        if sellers is not None
+        else Decimal("0")
+    )
+    quality = min(Decimal("15"), max(Decimal("0"), (rating or Decimal("0")) * Decimal("3")))
+    proof = min(Decimal("10"), (reviews or Decimal("0")) / Decimal("20"))
+    total = min(Decimal("100"), demand + momentum + competition + quality + proof)
+    components = {
+        "demand": str(demand.quantize(Decimal("0.1"))),
+        "momentum": str(momentum.quantize(Decimal("0.1"))),
+        "competition": str(competition.quantize(Decimal("0.1"))),
+        "quality": str(quality.quantize(Decimal("0.1"))),
+        "proof": str(proof.quantize(Decimal("0.1"))),
+    }
+    return str(total.quantize(Decimal("0.1"))), components
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -84,6 +119,13 @@ def normalize_rules(value: Mapping[str, Any]) -> dict[str, Any]:
         "rating_min": _number(value.get("rating_min"), "最低评分", minimum=Decimal("0")),
         "reviews_min": _number(value.get("reviews_min"), "最低评论数", minimum=Decimal("0")),
         "growth_min_percent": _number(value.get("growth_min_percent"), "最低增长率"),
+        "opportunity_score_min": _number(value.get("opportunity_score_min"), "最低机会分", minimum=Decimal("0")),
+        "daily_sales_min": _number(value.get("daily_sales_min"), "最低日销量", minimum=Decimal("0")),
+        "card_views_min": _number(value.get("card_views_min"), "最低商品卡浏览量", minimum=Decimal("0")),
+        "conversion_rate_min": _number(value.get("conversion_rate_min"), "最低展示转化率", minimum=Decimal("0")),
+        "ad_share_max_percent": _number(value.get("ad_share_max_percent"), "最高广告费占比", minimum=Decimal("0")),
+        "return_rate_max_percent": _number(value.get("return_rate_max_percent"), "最高退货取消率", minimum=Decimal("0")),
+        "days_on_sale_max": _number(value.get("days_on_sale_max"), "最长上架天数", minimum=Decimal("0")),
         "max_candidates": max(1, min(500, max_candidates)),
     }
     if rules["price_min_rub"] is not None and rules["price_max_rub"] is not None:
@@ -91,6 +133,11 @@ def normalize_rules(value: Mapping[str, Any]) -> dict[str, Any]:
             raise MarketResearchError("最低价格不能高于最高价格")
     if rules["rating_min"] is not None and Decimal(rules["rating_min"]) > Decimal("5"):
         raise MarketResearchError("最低评分不能高于 5")
+    if rules["opportunity_score_min"] is not None and Decimal(rules["opportunity_score_min"]) > Decimal("100"):
+        raise MarketResearchError("最低机会分不能高于 100")
+    for field, label in (("conversion_rate_min", "最低展示转化率"), ("ad_share_max_percent", "最高广告费占比"), ("return_rate_max_percent", "最高退货取消率")):
+        if rules[field] is not None and Decimal(rules[field]) > Decimal("100"):
+            raise MarketResearchError(f"{label}不能高于 100%")
     return rules
 
 
@@ -123,6 +170,13 @@ def _matches(candidate: Mapping[str, Any], rules: Mapping[str, Any]) -> tuple[bo
         ("rating", "rating_min", lambda actual, limit: actual >= limit, "评分达到下限"),
         ("reviews", "reviews_min", lambda actual, limit: actual >= limit, "评论数达到下限"),
         ("growth_percent", "growth_min_percent", lambda actual, limit: actual >= limit, "增长率达到下限"),
+        ("opportunity_score", "opportunity_score_min", lambda actual, limit: actual >= limit, "机会分达到下限"),
+        ("daily_sales", "daily_sales_min", lambda actual, limit: actual >= limit, "日销量达到下限"),
+        ("card_views", "card_views_min", lambda actual, limit: actual >= limit, "商品卡浏览量达到下限"),
+        ("conversion_rate_percent", "conversion_rate_min", lambda actual, limit: actual >= limit, "展示转化率达到下限"),
+        ("ad_share_percent", "ad_share_max_percent", lambda actual, limit: actual <= limit, "广告费占比未超过上限"),
+        ("return_rate_percent", "return_rate_max_percent", lambda actual, limit: actual <= limit, "退货取消率未超过上限"),
+        ("days_on_sale", "days_on_sale_max", lambda actual, limit: actual <= limit, "上架天数未超过上限"),
     )
     for field, rule, compare, reason in checks:
         if rules.get(rule) is None:
@@ -174,7 +228,20 @@ class MarketResearchRegistry:
     def status(self) -> dict[str, Any]:
         with self._lock:
             document = self._read()
-            rows = sorted(document["candidates"].values(), key=lambda row: str(row.get("updated_at") or ""), reverse=True)
+            for row in document["candidates"].values():
+                if isinstance(row, dict) and row.get("opportunity_score") in (None, ""):
+                    score, breakdown = _opportunity_score(row)
+                    row["opportunity_score"] = score
+                    row["score_breakdown"] = breakdown
+                    row["score_version"] = "observable-v1"
+            rows = sorted(
+                document["candidates"].values(),
+                key=lambda row: (
+                    Decimal(str(row.get("opportunity_score") or "0")),
+                    str(row.get("updated_at") or ""),
+                ),
+                reverse=True,
+            )
             summary = {"total": len(rows), "new": 0, "shortlisted": 0, "approved": 0, "rejected": 0, "sourced": 0}
             for row in rows:
                 key = str(row.get("decision") or "NEW").lower()
@@ -230,7 +297,27 @@ class MarketResearchRegistry:
                         "rating": _number(item.get("rating"), "评分", minimum=Decimal("0")),
                         "reviews": _number(item.get("reviews"), "评论数", minimum=Decimal("0")),
                         "growth_percent": _number(item.get("growth_percent"), "增长率"),
+                        "daily_sales": _number(item.get("daily_sales"), "日销量", minimum=Decimal("0")),
+                        "ad_share_percent": _number(item.get("ad_share_percent"), "广告费占比", minimum=Decimal("0")),
+                        "promotion_days": _number(item.get("promotion_days"), "参与促销天数", minimum=Decimal("0")),
+                        "promotion_discount_percent": _number(item.get("promotion_discount_percent"), "促销折扣", minimum=Decimal("0")),
+                        "paid_promotion_days": _number(item.get("paid_promotion_days"), "付费推广天数", minimum=Decimal("0")),
+                        "card_views": _number(item.get("card_views"), "商品卡浏览量", minimum=Decimal("0")),
+                        "card_add_to_cart_rate_percent": _number(item.get("card_add_to_cart_rate_percent"), "商品卡加购率", minimum=Decimal("0")),
+                        "search_views": _number(item.get("search_views"), "搜索目录浏览量", minimum=Decimal("0")),
+                        "search_add_to_cart_rate_percent": _number(item.get("search_add_to_cart_rate_percent"), "搜索目录加购率", minimum=Decimal("0")),
+                        "conversion_rate_percent": _number(item.get("conversion_rate_percent"), "展示转化率", minimum=Decimal("0")),
+                        "return_rate_percent": _number(item.get("return_rate_percent"), "退货取消率", minimum=Decimal("0")),
+                        "commission_percent": _number(item.get("commission_percent"), "类目佣金", minimum=Decimal("0")),
+                        "days_on_sale": _number(item.get("days_on_sale"), "上架天数", minimum=Decimal("0")),
+                        "weight_g": _number(item.get("weight_g"), "重量", minimum=Decimal("0")),
+                        "delivery_mode": str(item.get("delivery_mode") or "").strip()[:100],
+                        "dimensions": str(item.get("dimensions") or "").strip()[:100],
                     }
+                    score, score_breakdown = _opportunity_score(normalized)
+                    normalized["opportunity_score"] = score
+                    normalized["score_breakdown"] = score_breakdown
+                    normalized["score_version"] = "observable-v1"
                     matches, reasons = _matches(normalized, rules)
                     if not matches:
                         rejected += 1
