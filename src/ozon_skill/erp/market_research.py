@@ -490,9 +490,48 @@ class MarketResearchRegistry:
             row = document["candidates"].get(candidate_id)
             if not isinstance(row, dict):
                 raise MarketResearchError("候选商品不存在")
+            if row.get("decision") == "SOURCED" and decision != "SOURCED":
+                raise MarketResearchError("已绑定货源的候选商品不能回退审核状态")
+            risk_level, risk_flags = _candidate_risk(row)
+            if decision == "APPROVED" and risk_level == "HIGH" and value.get("confirm_high_risk") is not True:
+                raise MarketResearchError("该商品存在高风险，请确认风险后再审核通过")
             row.update({"decision": decision, "updated_at": _now(), "updated_by": actor or "system"})
+            row.update({"risk_level": risk_level, "risk_flags": risk_flags})
             self._write(document)
             return dict(row)
+
+    def update_many(self, candidate_ids: Any, value: Mapping[str, Any], actor: str) -> list[dict[str, Any]]:
+        if not isinstance(candidate_ids, list) or not candidate_ids:
+            raise MarketResearchError("请至少选择一个候选商品")
+        if len(candidate_ids) > 500:
+            raise MarketResearchError("单次最多更新 500 个候选商品")
+        decision = str(value.get("decision") or "").strip().upper()
+        if decision not in {"NEW", "SHORTLISTED", "APPROVED", "REJECTED"}:
+            raise MarketResearchError("批量候选品状态无效")
+        unique_ids = list(dict.fromkeys(str(item) for item in candidate_ids))
+        with self._lock:
+            document = self._read()
+            rows: list[dict[str, Any]] = []
+            high_risk: list[str] = []
+            for candidate_id in unique_ids:
+                row = document["candidates"].get(candidate_id)
+                if not isinstance(row, dict):
+                    raise MarketResearchError(f"候选商品不存在：{candidate_id}")
+                if row.get("decision") == "SOURCED":
+                    raise MarketResearchError("已绑定货源的候选商品不能批量更改状态")
+                risk_level, risk_flags = _candidate_risk(row)
+                row["risk_level"] = risk_level
+                row["risk_flags"] = risk_flags
+                if decision == "APPROVED" and risk_level == "HIGH":
+                    high_risk.append(candidate_id)
+                rows.append(row)
+            if high_risk and value.get("confirm_high_risk") is not True:
+                raise MarketResearchError(f"选中商品中有 {len(high_risk)} 个高风险商品，请确认风险后再审核通过")
+            changed_at = _now()
+            for row in rows:
+                row.update({"decision": decision, "updated_at": changed_at, "updated_by": actor or "system"})
+            self._write(document)
+            return [dict(row) for row in rows]
 
     def get(self, candidate_id: str) -> dict[str, Any]:
         with self._lock:

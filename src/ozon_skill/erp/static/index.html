@@ -150,7 +150,8 @@
       <div class="research-rule-actions"><small>日期可任意选择。只有同时满足硬性条件的商品才进入候选池；缺少被筛选指标的商品不会被误收。</small><button type="submit" class="primary">保存选品规则</button></div>
     </form>
     <section id="researchMetrics" class="catalog-metrics"></section>
-    <div class="research-toolbar"><input id="researchSearch" type="search" placeholder="搜索商品、Ozon ID、卖家或类目"><select id="researchDecisionFilter"><option value="all">全部状态</option><option value="NEW">待审核</option><option value="SHORTLISTED">已收藏</option><option value="APPROVED">已通过</option><option value="REJECTED">已淘汰</option><option value="SOURCED">已找到货源</option></select><select id="researchSort"><option value="score_desc">机会分从高到低</option><option value="orders_desc">销量从高到低</option><option value="growth_desc">增长率从高到低</option><option value="sellers_asc">卖家数从少到多</option><option value="updated_desc">最近同步</option></select><button id="deleteSelectedResearchBtn" class="danger-link" type="button" disabled>删除（0）</button></div>
+    <div class="research-toolbar"><input id="researchSearch" type="search" placeholder="搜索商品、Ozon ID、卖家或类目"><select id="researchDecisionFilter"><option value="all">全部状态</option><option value="NEW">待审核</option><option value="SHORTLISTED">已收藏</option><option value="APPROVED">已通过</option><option value="REJECTED">已淘汰</option><option value="SOURCED">已找到货源</option></select><select id="researchRiskFilter"><option value="all">全部风险</option><option value="LOW">低风险</option><option value="MEDIUM">需复核</option><option value="HIGH">高风险</option></select><select id="researchEconomicsFilter"><option value="all">全部利润状态</option><option value="READY">已完成测算</option><option value="PROFITABLE">毛利率 ≥ 15%</option><option value="LOW_MARGIN">毛利率低于 15%</option><option value="NEEDS_INPUT">利润资料待补充</option></select><select id="researchSort"><option value="score_desc">机会分从高到低</option><option value="margin_desc">毛利率从高到低</option><option value="orders_desc">销量从高到低</option><option value="growth_desc">增长率从高到低</option><option value="sellers_asc">卖家数从少到多</option><option value="updated_desc">最近同步</option></select></div>
+    <div class="research-batch-actions"><span id="researchSelectionLabel">已选 0 个</span><button id="compareResearchBtn" class="secondary" type="button" disabled>对比（0）</button><button id="approveSelectedResearchBtn" class="secondary" type="button" disabled>批量通过</button><button id="rejectSelectedResearchBtn" class="secondary" type="button" disabled>批量淘汰</button><button id="deleteSelectedResearchBtn" class="danger-link" type="button" disabled>删除（0）</button></div>
     <section class="catalog-card"><div class="table-wrap"><table><thead><tr><th><input id="researchSelectAll" type="checkbox" aria-label="选择当前候选品"></th><th>Ozon 商品</th><th>机会分</th><th>市场指标</th><th>竞争 / 转化</th><th>命中原因</th><th>状态</th><th>同步时间</th><th></th></tr></thead><tbody id="researchTable"></tbody></table></div></section>
   </section>
 
@@ -388,6 +389,10 @@
   </dialog>
   <dialog id="researchDetailDialog">
     <div class="dialog-card wide-dialog"><div class="dialog-head"><div><span class="eyebrow">PRODUCT TREND</span><h2 id="researchDetailTitle">候选商品趋势</h2></div><button id="closeResearchDetailBtn" type="button">×</button></div><div id="researchDetailSummary" class="catalog-metrics"></div><div id="researchTrendTable" class="table-wrap"></div></div>
+  </dialog>
+
+  <dialog id="researchCompareDialog">
+    <div class="dialog-card wide-dialog"><div class="dialog-head"><div><span class="eyebrow">CANDIDATE COMPARISON</span><h2>候选商品横向对比</h2></div><button id="closeResearchCompareBtn" type="button">×</button></div><p class="dialog-note">所有数值均来自 Ozon 页面或已保存的真实利润测算，不补造缺失指标。</p><div id="researchCompareTable" class="table-wrap research-compare-table"></div></div>
   </dialog>
 
   <dialog id="financeDialog">

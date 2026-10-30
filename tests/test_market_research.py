@@ -178,6 +178,32 @@ class MarketResearchTests(unittest.TestCase):
             self.assertEqual(result["deleted_candidates"], ["blue--123"])
             self.assertEqual([item["profile_id"] for item in registry.status()["profiles"]], ["growth"])
 
+    def test_high_risk_approval_requires_explicit_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            registry = MarketResearchRegistry(Path(temporary) / "market.json")
+            registry.save_rules(RULES, "operator")
+            risky = candidate()
+            risky["return_rate_percent"] = "30"
+            registry.ingest([risky], "plugin")
+            with self.assertRaisesRegex(MarketResearchError, "确认风险"):
+                registry.update("123", {"decision": "APPROVED"}, "operator")
+            approved = registry.update(
+                "123", {"decision": "APPROVED", "confirm_high_risk": True}, "operator"
+            )
+            self.assertEqual(approved["decision"], "APPROVED")
+
+    def test_batch_decision_is_atomic_and_protects_sourced_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            registry = MarketResearchRegistry(Path(temporary) / "market.json")
+            registry.save_rules(RULES, "operator")
+            registry.ingest([candidate(), candidate(product_id="456")], "plugin")
+            rows = registry.update_many(["123", "456"], {"decision": "SHORTLISTED"}, "operator")
+            self.assertEqual({row["decision"] for row in rows}, {"SHORTLISTED"})
+            registry.bind_source("123", "1688", "pipeline", "operator")
+            with self.assertRaisesRegex(MarketResearchError, "不能批量"):
+                registry.update_many(["123", "456"], {"decision": "REJECTED"}, "operator")
+            self.assertEqual(registry.get("456")["decision"], "SHORTLISTED")
+
     def test_ingest_requires_saved_rules_and_ozon_url(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             registry = MarketResearchRegistry(Path(temporary) / "market.json")
@@ -195,6 +221,7 @@ class MarketResearchTests(unittest.TestCase):
             service = PipelineService(Path(temporary))
             service.save_market_research_rules(RULES, "operator")
             service.ingest_market_candidates({"items": [candidate()]}, "plugin")
+            service.update_market_candidate("123", {"decision": "APPROVED"}, "operator")
             with self.assertRaisesRegex(PipelineError, "确认允许"):
                 service.source_market_candidate("123", {"offer_id": "628680616884"}, "operator")
             with patch.object(service, "run_stage_1", return_value={"pipeline_id": "628680616884", "status": "PASS"}):
@@ -207,6 +234,18 @@ class MarketResearchTests(unittest.TestCase):
             self.assertEqual(result["candidate"]["decision"], "SOURCED")
             self.assertEqual(result["candidate"]["pipeline_id"], "628680616884")
             self.assertEqual(result["candidate"]["economics"]["status"], "NEEDS_INPUT")
+
+    def test_service_blocks_source_binding_before_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service = PipelineService(Path(temporary))
+            service.save_market_research_rules(RULES, "operator")
+            service.ingest_market_candidates({"items": [candidate()]}, "plugin")
+            with self.assertRaisesRegex(PipelineError, "先审核通过"):
+                service.source_market_candidate(
+                    "123",
+                    {"offer_id": "628680616884", "confirm_external_request": True},
+                    "operator",
+                )
 
     def test_missing_candidate_never_calls_paid_source_api(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

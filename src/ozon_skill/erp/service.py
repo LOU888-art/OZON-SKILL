@@ -3292,6 +3292,21 @@ class PipelineService:
         except MarketResearchError as exc:
             raise PipelineError(str(exc), status=404 if "不存在" in str(exc) else 400) from exc
 
+    def update_market_candidates(
+        self, value: Mapping[str, Any], actor: Any = ""
+    ) -> dict[str, Any]:
+        raw_ids = value.get("candidate_ids")
+        if not isinstance(raw_ids, list):
+            raise PipelineError("请至少选择一个候选商品")
+        candidate_ids = [_safe_pipeline_id(item) for item in raw_ids]
+        try:
+            candidates = self.market_research.update_many(
+                candidate_ids, value, str(actor or "system")
+            )
+        except MarketResearchError as exc:
+            raise PipelineError(str(exc), status=404 if "不存在" in str(exc) else 409) from exc
+        return {"updated": len(candidates), "candidates": candidates, "research": self.market_research_status()}
+
     def source_market_candidate(
         self, candidate_id: Any, value: Mapping[str, Any], actor: Any = ""
     ) -> dict[str, Any]:
@@ -3302,6 +3317,8 @@ class PipelineService:
             raise PipelineError(str(exc), status=404) from exc
         if existing.get("pipeline_id"):
             raise PipelineError("候选商品已经绑定 1688 货源，请直接打开已有任务", status=409)
+        if existing.get("decision") != "APPROVED":
+            raise PipelineError("候选商品必须先审核通过，才能绑定 1688 货源", status=409)
         if value.get("confirm_external_request") is not True:
             raise PipelineError("请确认允许调用 AlphaShop 商品详情 API")
         try:
