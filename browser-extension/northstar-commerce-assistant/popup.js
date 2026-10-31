@@ -96,7 +96,7 @@ async function scan1688() {
     const response = await scan1688Page(tab.id);
     if (!response?.ok) throw new Error(response?.error || "页面采集失败");
     captured = response.product;
-    if (captured?.capture_diagnostics?.collector_version !== "0.3.8") throw new Error("插件已更新，请刷新1688商品页后重新读取");
+    if (captured?.capture_diagnostics?.collector_version !== "0.3.9") throw new Error("插件已更新，请刷新1688商品页后重新读取");
     render1688();
     setStatus("采集完成。核对SKU后发送到ERP。", "success");
   } catch (error) { setStatus(error.message || String(error), "error"); }
@@ -114,7 +114,7 @@ async function send1688() {
     if (!selected.length) throw new Error("至少保留一个SKU");
     const product = { ...captured, sku_list: selected, capture_diagnostics: { ...(captured.capture_diagnostics || {}), captured_sku_count: captured.sku_list.length, selected_sku_count: selected.length } };
     setStatus("正在发送到ERP第一阶段…");
-    const result = await erpCall(origin, "/api/collector/1688", { method: "POST", body: JSON.stringify({ collector_version: "0.3.8", product }) });
+    const result = await erpCall(origin, "/api/collector/1688", { method: "POST", body: JSON.stringify({ collector_version: "0.3.9", product }) });
     setStatus(`采集成功：商品 ${result.pipeline_id}，保留 ${result.sku_count} 个SKU。`, "success");
   } catch (error) { setStatus(error.message || String(error), "error"); }
   finally { button.disabled = false; }

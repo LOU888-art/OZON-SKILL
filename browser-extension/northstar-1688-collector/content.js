@@ -625,6 +625,26 @@ function axisValueImage(axisValues, value) {
   return highResolutionImageUrl(axisValues?.get?.(cleanText(value))?.image || "");
 }
 
+function comparableSpecValue(value) {
+  return cleanText(value)
+    .replace(/&gt;|&#62;/gi, ">")
+    .replace(/&lt;|&#60;/gi, "<")
+    .replace(/&amp;/gi, "&")
+    .replace(/[\s\[\]【】()（）:：;,，|/\\<>]/g, "")
+    .toLocaleLowerCase();
+}
+
+function sameSpecValue(left, right) {
+  const a = comparableSpecValue(left);
+  const b = comparableSpecValue(right);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  // API values are sometimes the short colour/model name while the visible
+  // card also contains marketing text.  Two characters avoids matching
+  // unrelated one-letter size codes.
+  return Math.min(a.length, b.length) >= 2 && (a.includes(b) || b.includes(a));
+}
+
 function visibleSkuOptionImages(groups = domSkuGroups(), axisValues = new Map()) {
   const bySpec = new Map();
   for (const group of groups) {
@@ -637,6 +657,46 @@ function visibleSkuOptionImages(groups = domSkuGroups(), axisValues = new Map())
     }
   }
   return bySpec;
+}
+
+function imageForSkuPart(visibleImages, groups, axisValues, part) {
+  const exact = visibleImages.get(`${part?.name}\u0000${part?.value}`)
+    || visibleImages.get(part?.value)
+    || axisValueImage(axisValues, part?.value);
+  if (exact) return exact;
+  const namedGroups = groups.filter(group => cleanText(group.name) === cleanText(part?.name));
+  for (const group of namedGroups.length ? namedGroups : groups) {
+    const label = (group.labels || []).find(value => sameSpecValue(value, part?.value));
+    if (!label) continue;
+    const matched = visibleImages.get(`${group.name}\u0000${label}`) || visibleImages.get(label);
+    if (matched) return matched;
+  }
+  return "";
+}
+
+function repairSkuImagesByVisualAxes(skuList, groups, visibleImages) {
+  const visualGroups = groups.map(group => ({
+    group,
+    ordered: (group.labels || []).map(value => visibleImages.get(`${group.name}\u0000${value}`) || visibleImages.get(value) || ""),
+  })).filter(item => item.group.labels.length > 1 && item.ordered.every(Boolean) && new Set(item.ordered.map(imageIdentity)).size > 1);
+  for (const { group, ordered } of visualGroups) {
+    let matched = 0;
+    for (const sku of skuList) {
+      const part = (sku.specification_zh || []).find(candidate =>
+        group.labels.some(label => sameSpecValue(label, candidate?.value))
+      );
+      const labelIndex = part ? group.labels.findIndex(label => sameSpecValue(label, part.value)) : -1;
+      if (labelIndex < 0) continue;
+      sku.image_url = highResolutionImageUrl(ordered[labelIndex]);
+      matched += 1;
+    }
+    if (matched === skuList.length) continue;
+    // With exactly one changing visual axis, the page option order is the
+    // only reliable join key when 1688's API returns numeric or escaped names.
+    if (visualGroups.length === 1 && ordered.length === skuList.length) {
+      skuList.forEach((sku, index) => { sku.image_url = highResolutionImageUrl(ordered[index]); });
+    }
+  }
 }
 
 function currentGalleryImage() {
@@ -661,7 +721,7 @@ async function enrichSkuImages(skuList, mainImage, groups = domSkuGroups(), axis
   for (const sku of skuList) {
     let optionUrl = "";
     for (const part of sku.specification_zh || []) {
-      optionUrl = optionUrl || visibleImages.get(`${part.name}\u0000${part.value}`) || visibleImages.get(part.value) || axisValueImage(axisValues, part.value) || "";
+      optionUrl = optionUrl || imageForSkuPart(visibleImages, groups, axisValues, part);
       const element = skuPartElement(groups, part);
       if (!element || unavailableOption(element)) continue;
       optionControl(element).click();
@@ -679,15 +739,7 @@ async function enrichSkuImages(skuList, mainImage, groups = domSkuGroups(), axis
       if (previous && imageIdentity(previous) !== imageIdentity(resolved)) overridden += 1;
     }
   }
-  // A single visual axis is deterministic: DOM option order and the rebuilt
-  // SKU order are the same.  Use this only as a final repair when text aliases
-  // differ between the React selector and intercepted API payload.
-  if (groups.length === 1 && groups[0].labels.length === skuList.length) {
-    const ordered = groups[0].labels.map(value => visibleImages.get(`${groups[0].name}\u0000${value}`) || visibleImages.get(value) || "");
-    if (ordered.every(Boolean) && new Set(ordered.map(imageIdentity)).size > 1) {
-      skuList.forEach((sku, index) => { sku.image_url = highResolutionImageUrl(ordered[index]); });
-    }
-  }
+  repairSkuImagesByVisualAxes(skuList, groups, visibleImages);
   return {
     captured,
     overridden,
@@ -790,7 +842,7 @@ async function scan() {
   const attributes = collectAttributes(roots); let categoryId = ""; let supplierName = "";
   walk(roots, object => { if (!categoryId) { const value = cleanText(firstValue(object, ["thirdCategoryId", "categoryId", "categoryID", "leafCategoryId"])); if (/^\d+$/.test(value)) categoryId = value; } if (!supplierName) supplierName = cleanText(firstValue(object, ["companyName", "supplierName", "shopName"])); });
   const breadcrumbs = [...document.querySelectorAll("[class*='breadcrumb'] a,[class*='crumb'] a")].map(cleanText).filter(Boolean).slice(0, 20);
-  return { source_offer_id: offerId(), product_url: location.href, title_zh: title, images: images.main, detail_images: images.detail, sku_list: skuList, price_ranges: priceRanges, attributes_zh: attributes, category_id: categoryId, category_path_zh: breadcrumbs, supplier_info: { name: supplierName || null, min_order: priceRanges.find(item => item.minimum_quantity !== null)?.minimum_quantity ?? null, ship_from: shipping.ship_from_zh }, shipping_info: shipping, capture_diagnostics: { collector_version: "0.3.8", sku_image_binding_strategy: "group-container-v2", main_candidate_count: mainData.candidates.length, intercepted_response_count: mainData.response_urls.length, visible_sku_option_count: visibleOptions, expected_sku_count: expectedSkuCount, theoretical_sku_count: theoreticalSkuCount, structured_specifications_valid: structuredSpecificationsValid, enriched_sku_price_count: commerceEnrichment.filledPrices, enriched_sku_stock_count: commerceEnrichment.filledStocks, enriched_sku_image_count: imageEnrichment.captured, overridden_sku_image_count: imageEnrichment.overridden, visible_option_image_count: imageEnrichment.visibleOptionImageCount, sku_image_count: skuList.filter(sku => Boolean(sku.image_url)).length, unique_sku_image_count: imageEnrichment.uniqueSkuImageCount, spec_groups: pageGroups.map(group => ({ name: group.name, count: group.labels.length })), warnings }, captured_at: new Date().toISOString() };
+  return { source_offer_id: offerId(), product_url: location.href, title_zh: title, images: images.main, detail_images: images.detail, sku_list: skuList, price_ranges: priceRanges, attributes_zh: attributes, category_id: categoryId, category_path_zh: breadcrumbs, supplier_info: { name: supplierName || null, min_order: priceRanges.find(item => item.minimum_quantity !== null)?.minimum_quantity ?? null, ship_from: shipping.ship_from_zh }, shipping_info: shipping, capture_diagnostics: { collector_version: "0.3.9", sku_image_binding_strategy: "visual-axis-v3", main_candidate_count: mainData.candidates.length, intercepted_response_count: mainData.response_urls.length, visible_sku_option_count: visibleOptions, expected_sku_count: expectedSkuCount, theoretical_sku_count: theoreticalSkuCount, structured_specifications_valid: structuredSpecificationsValid, enriched_sku_price_count: commerceEnrichment.filledPrices, enriched_sku_stock_count: commerceEnrichment.filledStocks, enriched_sku_image_count: imageEnrichment.captured, overridden_sku_image_count: imageEnrichment.overridden, visible_option_image_count: imageEnrichment.visibleOptionImageCount, sku_image_count: skuList.filter(sku => Boolean(sku.image_url)).length, unique_sku_image_count: imageEnrichment.uniqueSkuImageCount, spec_groups: pageGroups.map(group => ({ name: group.name, count: group.labels.length })), warnings }, captured_at: new Date().toISOString() };
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

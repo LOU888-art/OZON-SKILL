@@ -41,7 +41,7 @@ class ResearchPluginDownloadTests(unittest.TestCase):
                 "northstar-commerce-assistant/collector-main-probe.js"
             ).decode("utf-8")
         self.assertIn('"manifest_version": 3', manifest)
-        self.assertIn('"version": "1.6.1"', manifest)
+        self.assertIn('"version": "1.6.2"', manifest)
         self.assertIn('"cookies"', manifest)
         self.assertIn('"https://*.1688.com/*"', manifest)
         self.assertIn('"https://www.ozon.ru/*"', manifest)
@@ -50,7 +50,7 @@ class ResearchPluginDownloadTests(unittest.TestCase):
         self.assertIn('"context", "__INIT_DATA__"', probe)
         self.assertIn("mapKeyPattern.test(key) && Array.isArray(value)", content)
         self.assertIn("enrichSkuCommerce(skuList, priceRanges, pageGroups)", content)
-        self.assertIn('collector_version: "0.3.8"', content)
+        self.assertIn('collector_version: "0.3.9"', content)
         self.assertIn("highResolutionImageUrl", content)
         self.assertIn("axisValueImage", content)
         self.assertIn("const pageGroups = domSkuGroups()", content)
@@ -68,7 +68,9 @@ class ResearchPluginDownloadTests(unittest.TestCase):
         self.assertIn("groupOptionElement", content)
         self.assertIn("skuPartElement", content)
         self.assertNotIn("smallestVisibleExactText", content)
-        self.assertIn('sku_image_binding_strategy: "group-container-v2"', content)
+        self.assertIn("sameSpecValue", content)
+        self.assertIn("repairSkuImagesByVisualAxes", content)
+        self.assertIn('sku_image_binding_strategy: "visual-axis-v3"', content)
         self.assertIn("optionUrl || previous || dynamicChanged", content)
         self.assertNotIn("stock_quantity: 999", content)
 
@@ -87,7 +89,7 @@ class ResearchPluginDownloadTests(unittest.TestCase):
                 "northstar-commerce-assistant/manifest.json"
             ).decode("utf-8")
         self.assertIn('"manifest_version": 3', manifest)
-        self.assertIn('"version": "1.6.1"', manifest)
+        self.assertIn('"version": "1.6.2"', manifest)
         self.assertIn('"https://www.ozon.ru/*"', manifest)
         self.assertIn(
             "northstar-commerce-assistant/ozon-overlay.js", archive.namelist()

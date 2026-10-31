@@ -14,7 +14,7 @@ class BrowserCollectorTests(unittest.TestCase):
             service = PipelineService(Path(temporary))
             result = service.ingest_1688_browser_capture(
                 {
-                    "collector_version": "0.3.8",
+                    "collector_version": "0.3.9",
                     "product": {
                         "source_offer_id": "628680616884",
                         "product_url": "https://detail.1688.com/offer/628680616884.html",
@@ -92,7 +92,7 @@ class BrowserCollectorTests(unittest.TestCase):
             with self.assertRaisesRegex(PipelineError, "主图"):
                 service.ingest_1688_browser_capture(
                     {
-                        "collector_version": "0.3.8",
+                        "collector_version": "0.3.9",
                         "source_offer_id": "628680616884",
                         "title_zh": "测试商品",
                         "images": [],
@@ -106,7 +106,7 @@ class BrowserCollectorTests(unittest.TestCase):
             with self.assertRaisesRegex(PipelineError, "1个SKU缺少采购价"):
                 service.ingest_1688_browser_capture(
                     {
-                        "collector_version": "0.3.8",
+                        "collector_version": "0.3.9",
                         "source_offer_id": "628680616884",
                         "title_zh": "测试商品",
                         "images": [{"url": "https://cbu01.alicdn.com/main.jpg"}],
@@ -142,14 +142,14 @@ class BrowserCollectorTests(unittest.TestCase):
             }
             with self.assertRaisesRegex(PipelineError, "1个SKU缺少规格图片"):
                 service.ingest_1688_browser_capture(
-                    {"collector_version": "0.3.8", "product": product}
+                    {"collector_version": "0.3.9", "product": product}
                 )
 
             product["sku_list"][1]["image_url"] = (
                 "https://cbu01.alicdn.com/shared.jpg"
             )
             result = service.ingest_1688_browser_capture(
-                {"collector_version": "0.3.8", "product": product}
+                {"collector_version": "0.3.9", "product": product}
             )
             self.assertEqual(result["status"], "PASS")
             self.assertEqual(result["sku_count"], 2)
@@ -184,7 +184,7 @@ class BrowserCollectorTests(unittest.TestCase):
                 )
             with self.assertRaisesRegex(PipelineError, "应有1个SKU"):
                 service.ingest_1688_browser_capture(
-                    {"collector_version": "0.3.8", "product": product}
+                    {"collector_version": "0.3.9", "product": product}
                 )
 
 
