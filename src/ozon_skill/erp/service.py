@@ -4329,9 +4329,9 @@ class PipelineService:
             )
         except ValueError:
             version_parts = ()
-        if len(version_parts) != 3 or version_parts < (0, 3, 7):
+        if len(version_parts) != 3 or version_parts < (0, 3, 8):
             raise PipelineError(
-                "1688采集插件版本过旧，请重新下载并安装0.3.7或更高版本；新版不再按固定SKU数量推断商品组合",
+                "1688采集插件版本过旧，请重新下载并安装0.3.8或更高版本；新版按规格组容器精确绑定SKU原图",
                 status=409,
             )
         product = value.get("product") if isinstance(value.get("product"), Mapping) else value
@@ -4433,6 +4433,14 @@ class PipelineService:
         if missing_prices:
             raise PipelineError(
                 f"浏览器采集结果中有{missing_prices}个SKU缺少采购价，请刷新1688详情页后重新采集"
+            )
+        missing_sku_images = sum(
+            1 for item in sku_rows if not item.get("image_url")
+        )
+        if len(sku_rows) > 1 and missing_sku_images:
+            raise PipelineError(
+                f"浏览器采集结果中有{missing_sku_images}个SKU缺少规格图片，"
+                "已阻止使用商品主图代替；请更新插件并刷新1688详情页后重新采集"
             )
 
         raw_attributes = product.get("attributes_zh") or {}

@@ -14,7 +14,7 @@ class BrowserCollectorTests(unittest.TestCase):
             service = PipelineService(Path(temporary))
             result = service.ingest_1688_browser_capture(
                 {
-                    "collector_version": "0.3.7",
+                    "collector_version": "0.3.8",
                     "product": {
                         "source_offer_id": "628680616884",
                         "product_url": "https://detail.1688.com/offer/628680616884.html",
@@ -92,7 +92,7 @@ class BrowserCollectorTests(unittest.TestCase):
             with self.assertRaisesRegex(PipelineError, "主图"):
                 service.ingest_1688_browser_capture(
                     {
-                        "collector_version": "0.3.7",
+                        "collector_version": "0.3.8",
                         "source_offer_id": "628680616884",
                         "title_zh": "测试商品",
                         "images": [],
@@ -106,13 +106,53 @@ class BrowserCollectorTests(unittest.TestCase):
             with self.assertRaisesRegex(PipelineError, "1个SKU缺少采购价"):
                 service.ingest_1688_browser_capture(
                     {
-                        "collector_version": "0.3.7",
+                        "collector_version": "0.3.8",
                         "source_offer_id": "628680616884",
                         "title_zh": "测试商品",
                         "images": [{"url": "https://cbu01.alicdn.com/main.jpg"}],
                         "sku_list": [{"sku_id": "one", "purchase_price_cny": None}],
                     }
                 )
+
+    def test_capture_rejects_missing_variant_image_but_allows_shared_image(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            service = PipelineService(Path(temporary))
+            product = {
+                "source_offer_id": "628680616884",
+                "title_zh": "测试商品",
+                "images": [{"url": "https://cbu01.alicdn.com/main.jpg"}],
+                "sku_list": [
+                    {
+                        "sku_id": "small",
+                        "specification_zh": [{"name": "尺寸", "value": "小"}],
+                        "purchase_price_cny": "10",
+                        "image_url": "https://cbu01.alicdn.com/shared.jpg",
+                    },
+                    {
+                        "sku_id": "large",
+                        "specification_zh": [{"name": "尺寸", "value": "大"}],
+                        "purchase_price_cny": "12",
+                        "image_url": None,
+                    },
+                ],
+                "capture_diagnostics": {
+                    "expected_sku_count": 2,
+                    "captured_sku_count": 2,
+                },
+            }
+            with self.assertRaisesRegex(PipelineError, "1个SKU缺少规格图片"):
+                service.ingest_1688_browser_capture(
+                    {"collector_version": "0.3.8", "product": product}
+                )
+
+            product["sku_list"][1]["image_url"] = (
+                "https://cbu01.alicdn.com/shared.jpg"
+            )
+            result = service.ingest_1688_browser_capture(
+                {"collector_version": "0.3.8", "product": product}
+            )
+            self.assertEqual(result["status"], "PASS")
+            self.assertEqual(result["sku_count"], 2)
 
     def test_capture_rejects_outdated_plugin_and_sku_count_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -122,8 +162,16 @@ class BrowserCollectorTests(unittest.TestCase):
                 "title_zh": "测试商品",
                 "images": [{"url": "https://cbu01.alicdn.com/main.jpg"}],
                 "sku_list": [
-                    {"sku_id": "one", "purchase_price_cny": "10"},
-                    {"sku_id": "two", "purchase_price_cny": "10"},
+                    {
+                        "sku_id": "one",
+                        "purchase_price_cny": "10",
+                        "image_url": "https://cbu01.alicdn.com/one.jpg",
+                    },
+                    {
+                        "sku_id": "two",
+                        "purchase_price_cny": "10",
+                        "image_url": "https://cbu01.alicdn.com/two.jpg",
+                    },
                 ],
                 "capture_diagnostics": {
                     "expected_sku_count": 1,
@@ -136,7 +184,7 @@ class BrowserCollectorTests(unittest.TestCase):
                 )
             with self.assertRaisesRegex(PipelineError, "应有1个SKU"):
                 service.ingest_1688_browser_capture(
-                    {"collector_version": "0.3.7", "product": product}
+                    {"collector_version": "0.3.8", "product": product}
                 )
 
 

@@ -428,15 +428,16 @@ function semanticSkuGroups() {
   for (const header of nodes) {
     const name = cleanText(header);
     let best = [];
+    let bestContainer = null;
     for (const container of axisContainerCandidates(header)) {
       const labels = directOptionLabels(container, name);
-      if (labels.length) { best = labels; break; }
+      if (labels.length) { best = labels; bestContainer = container; break; }
     }
     if (!best.length) continue;
     const existing = groups.find(group => group.name === name);
     if (!existing || best.length > existing.labels.length) {
-      if (existing) existing.labels = best;
-      else groups.push({ name, labels: best });
+      if (existing) { existing.labels = best; existing.container = bestContainer; }
+      else groups.push({ name, labels: best, container: bestContainer });
     }
   }
   return groups.filter(group => group.labels.length <= 20).slice(0, 4);
@@ -466,7 +467,7 @@ function genericSkuGroups() {
       const index = parentChildren.indexOf(container);
       name = index > 0 ? cleanText(parentChildren[index - 1]) : "";
     }
-    unique.push({ name: name && name.length <= 30 ? name : `规格${unique.length + 1}`, labels });
+    unique.push({ name: name && name.length <= 30 ? name : `规格${unique.length + 1}`, labels, container });
   }
   return unique.filter(group => group.labels.every(label => validOptionLabel(label, group.name))).slice(0, 3);
 }
@@ -528,13 +529,37 @@ function currentPriceAndStock() {
   return { price: priceMatch ? Number(priceMatch[1]) : null, stock: selectedStock ? Number(selectedStock[1]) : (stockMatch ? Number(stockMatch[1]) : null) };
 }
 
-function smallestVisibleExactText(value) {
-  return [...document.querySelectorAll("button,[role='button'],label,li,div,span")]
-    .filter(element => isVisibleElement(element) && cleanText(element) === value)
+function groupOptionElement(group, value) {
+  const normalized = cleanText(value);
+  const root = group?.container;
+  // Never fall back to a document-wide text match here.  Current 1688 pages
+  // render duplicate labels in hidden React trees and floating assistants;
+  // clicking one of those copies is what previously bound every SKU to the
+  // same gallery image.
+  if (!root || !normalized) return null;
+  const candidates = [...root.querySelectorAll("button,[role='button'],[role='option'],label,li,div,span,img")]
+    .filter(element => {
+      if (!isVisibleElement(element)) return false;
+      const own = cleanText(element.getAttribute?.("title") || element.getAttribute?.("aria-label") || element.getAttribute?.("alt"));
+      return own === normalized || cleanText(element) === normalized;
+    })
     .sort((left, right) => {
+      const leftControl = optionControl(left); const rightControl = optionControl(right);
+      const leftImage = leftControl?.matches?.("img") || leftControl?.querySelector?.("img") ? 1 : 0;
+      const rightImage = rightControl?.matches?.("img") || rightControl?.querySelector?.("img") ? 1 : 0;
+      if (leftImage !== rightImage) return rightImage - leftImage;
       const leftRect = left.getBoundingClientRect(); const rightRect = right.getBoundingClientRect();
       return leftRect.width * leftRect.height - rightRect.width * rightRect.height;
-    })[0] || null;
+    });
+  return candidates[0] || null;
+}
+
+function skuPartElement(groups, part) {
+  const value = cleanText(part?.value);
+  const name = cleanText(part?.name);
+  const group = groups.find(item => cleanText(item.name) === name && item.labels.includes(value))
+    || groups.find(item => item.labels.includes(value));
+  return groupOptionElement(group, value);
 }
 
 function optionControl(element) {
@@ -558,13 +583,13 @@ function imageElementUrl(image) {
   return absoluteUrl(image.currentSrc || image.src || lazy || srcset);
 }
 
-function optionImage(element, value) {
+function optionImage(element, value, boundary = null) {
   const candidates = [];
   const add = candidate => { if (candidate && !candidates.includes(candidate)) candidates.push(candidate); };
   add(element);
   add(element?.closest?.("button,label,li,[role='button'],[role='option'],[class*='item'],[class*='Item']"));
   let current = element?.parentElement;
-  for (let depth = 0; current && depth < 5; depth += 1, current = current.parentElement) add(current);
+  for (let depth = 0; current && depth < 3 && current && current !== boundary; depth += 1, current = current.parentElement) add(current);
   for (const candidate of candidates) {
     const ownLabel = cleanText(candidate.getAttribute?.("title") || candidate.getAttribute?.("aria-label"));
     const candidateText = cleanText(candidate);
@@ -573,6 +598,7 @@ function optionImage(element, value) {
     );
     if (!matches) continue;
     const images = candidate.matches?.("img") ? [candidate] : [...(candidate.querySelectorAll?.("img") || [])];
+    if (images.length > 1 && candidateText !== value && ownLabel !== value) continue;
     for (const image of images) {
       const url = imageElementUrl(image);
       if (url) return highResolutionImageUrl(url);
@@ -603,8 +629,8 @@ function visibleSkuOptionImages(groups = domSkuGroups(), axisValues = new Map())
   const bySpec = new Map();
   for (const group of groups) {
     for (const value of group.labels || []) {
-      const element = smallestVisibleExactText(value);
-      const url = optionImage(element, value) || axisValueImage(axisValues, value);
+      const element = groupOptionElement(group, value);
+      const url = optionImage(element, value, group.container) || axisValueImage(axisValues, value);
       if (!url) continue;
       bySpec.set(`${group.name}\u0000${value}`, url);
       if (!bySpec.has(value)) bySpec.set(value, url);
@@ -636,20 +662,30 @@ async function enrichSkuImages(skuList, mainImage, groups = domSkuGroups(), axis
     let optionUrl = "";
     for (const part of sku.specification_zh || []) {
       optionUrl = optionUrl || visibleImages.get(`${part.name}\u0000${part.value}`) || visibleImages.get(part.value) || axisValueImage(axisValues, part.value) || "";
-      const element = smallestVisibleExactText(part.value);
+      const element = skuPartElement(groups, part);
       if (!element || unavailableOption(element)) continue;
       optionControl(element).click();
-      optionUrl = optionUrl || optionImage(element, part.value);
+      optionUrl = optionUrl || optionImage(element, part.value, groups.find(group => group.container?.contains(element))?.container);
       await delay(360);
     }
     if (optionUrl) await delay(120);
     const dynamicUrl = currentGalleryImage();
     const previous = sku.image_url || "";
-    const resolved = highResolutionImageUrl(optionUrl || dynamicUrl || previous || mainImage || "");
+    const dynamicChanged = dynamicUrl && imageIdentity(dynamicUrl) !== imageIdentity(mainImage) ? dynamicUrl : "";
+    const resolved = highResolutionImageUrl(optionUrl || previous || dynamicChanged || mainImage || "");
     if (resolved) {
       sku.image_url = resolved;
       if (resolved !== mainImage) captured += 1;
       if (previous && imageIdentity(previous) !== imageIdentity(resolved)) overridden += 1;
+    }
+  }
+  // A single visual axis is deterministic: DOM option order and the rebuilt
+  // SKU order are the same.  Use this only as a final repair when text aliases
+  // differ between the React selector and intercepted API payload.
+  if (groups.length === 1 && groups[0].labels.length === skuList.length) {
+    const ordered = groups[0].labels.map(value => visibleImages.get(`${groups[0].name}\u0000${value}`) || visibleImages.get(value) || "");
+    if (ordered.every(Boolean) && new Set(ordered.map(imageIdentity)).size > 1) {
+      skuList.forEach((sku, index) => { sku.image_url = highResolutionImageUrl(ordered[index]); });
     }
   }
   return {
@@ -660,7 +696,7 @@ async function enrichSkuImages(skuList, mainImage, groups = domSkuGroups(), axis
   };
 }
 
-async function enrichSkuCommerce(skuList, priceRanges) {
+async function enrichSkuCommerce(skuList, priceRanges, groups = domSkuGroups()) {
   const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
   let filledPrices = 0;
   let filledStocks = 0;
@@ -668,7 +704,7 @@ async function enrichSkuCommerce(skuList, priceRanges) {
     if (sku.purchase_price_cny !== null && sku.purchase_price_cny !== undefined && sku.stock !== null && sku.stock !== undefined) continue;
     let clicked = false;
     for (const part of sku.specification_zh || []) {
-      const element = smallestVisibleExactText(part.value);
+      const element = skuPartElement(groups, part);
       if (!element || unavailableOption(element)) continue;
       optionControl(element).click(); clicked = true;
       await delay(320);
@@ -700,10 +736,11 @@ async function collectDomSkus(mainImage, groups = domSkuGroups(), axisValues = n
     let image = "";
     for (const part of combination) {
       if ((groups.find(group => group.name === part.name)?.labels.length || 0) === 1) continue;
-      const element = smallestVisibleExactText(part.value);
+      const group = groups.find(item => cleanText(item.name) === cleanText(part.name) && item.labels.includes(part.value)) || groups.find(item => item.labels.includes(part.value));
+      const element = groupOptionElement(group, part.value);
       if (!element || unavailableOption(element)) { valid = false; break; }
       optionControl(element).click();
-      image = image || optionImage(element, part.value) || axisValueImage(axisValues, part.value);
+      image = image || optionImage(element, part.value, group?.container) || axisValueImage(axisValues, part.value);
       await delay(260);
     }
     if (!valid) continue;
@@ -741,7 +778,7 @@ async function scan() {
   if (!skuList.length && visibleOptions <= 1) { const priceText = cleanText(document.querySelector("[class*='price']")); skuList = [{ sku_id: `${offerId()}-default`, specification_zh: [], specification_text_zh: "默认规格", purchase_price_cny: priceRanges[0]?.price_cny ?? numberValue(priceText), stock: null, image_url: images.main[0]?.url || null }]; }
   if (!skuList.length || (skuList.length === 1 && visibleOptions > 1)) throw new Error(`页面显示多个规格，但只读取到 ${skuList.length} 个SKU。请刷新详情页，等待规格和价格加载完成后重新采集`);
   if (skuList.length > 1 && skuList.every(sku => !(sku.specification_zh || []).length)) throw new Error("读取到了多个SKU编号，但没有绑定页面规格名称和规格图片。已阻止复用同一张主图，请更新插件并刷新详情页后重试");
-  const commerceEnrichment = await enrichSkuCommerce(skuList, priceRanges);
+  const commerceEnrichment = await enrichSkuCommerce(skuList, priceRanges, pageGroups);
   const imageEnrichment = await enrichSkuImages(skuList, images.main[0]?.url || "", pageGroups, axisValues);
   if (imageEnrichment.visibleOptionImageCount > 1 && imageEnrichment.uniqueSkuImageCount < Math.min(imageEnrichment.visibleOptionImageCount, skuList.length)) {
     throw new Error(`页面有 ${imageEnrichment.visibleOptionImageCount} 张不同SKU规格图，但只绑定到 ${imageEnrichment.uniqueSkuImageCount} 张。已阻止发送错误图片，请刷新详情页后重试`);
@@ -753,7 +790,7 @@ async function scan() {
   const attributes = collectAttributes(roots); let categoryId = ""; let supplierName = "";
   walk(roots, object => { if (!categoryId) { const value = cleanText(firstValue(object, ["thirdCategoryId", "categoryId", "categoryID", "leafCategoryId"])); if (/^\d+$/.test(value)) categoryId = value; } if (!supplierName) supplierName = cleanText(firstValue(object, ["companyName", "supplierName", "shopName"])); });
   const breadcrumbs = [...document.querySelectorAll("[class*='breadcrumb'] a,[class*='crumb'] a")].map(cleanText).filter(Boolean).slice(0, 20);
-  return { source_offer_id: offerId(), product_url: location.href, title_zh: title, images: images.main, detail_images: images.detail, sku_list: skuList, price_ranges: priceRanges, attributes_zh: attributes, category_id: categoryId, category_path_zh: breadcrumbs, supplier_info: { name: supplierName || null, min_order: priceRanges.find(item => item.minimum_quantity !== null)?.minimum_quantity ?? null, ship_from: shipping.ship_from_zh }, shipping_info: shipping, capture_diagnostics: { collector_version: "0.3.7", main_candidate_count: mainData.candidates.length, intercepted_response_count: mainData.response_urls.length, visible_sku_option_count: visibleOptions, expected_sku_count: expectedSkuCount, theoretical_sku_count: theoreticalSkuCount, structured_specifications_valid: structuredSpecificationsValid, enriched_sku_price_count: commerceEnrichment.filledPrices, enriched_sku_stock_count: commerceEnrichment.filledStocks, enriched_sku_image_count: imageEnrichment.captured, overridden_sku_image_count: imageEnrichment.overridden, visible_option_image_count: imageEnrichment.visibleOptionImageCount, sku_image_count: skuList.filter(sku => Boolean(sku.image_url)).length, unique_sku_image_count: imageEnrichment.uniqueSkuImageCount, spec_groups: pageGroups.map(group => ({ name: group.name, count: group.labels.length })), warnings }, captured_at: new Date().toISOString() };
+  return { source_offer_id: offerId(), product_url: location.href, title_zh: title, images: images.main, detail_images: images.detail, sku_list: skuList, price_ranges: priceRanges, attributes_zh: attributes, category_id: categoryId, category_path_zh: breadcrumbs, supplier_info: { name: supplierName || null, min_order: priceRanges.find(item => item.minimum_quantity !== null)?.minimum_quantity ?? null, ship_from: shipping.ship_from_zh }, shipping_info: shipping, capture_diagnostics: { collector_version: "0.3.8", sku_image_binding_strategy: "group-container-v2", main_candidate_count: mainData.candidates.length, intercepted_response_count: mainData.response_urls.length, visible_sku_option_count: visibleOptions, expected_sku_count: expectedSkuCount, theoretical_sku_count: theoreticalSkuCount, structured_specifications_valid: structuredSpecificationsValid, enriched_sku_price_count: commerceEnrichment.filledPrices, enriched_sku_stock_count: commerceEnrichment.filledStocks, enriched_sku_image_count: imageEnrichment.captured, overridden_sku_image_count: imageEnrichment.overridden, visible_option_image_count: imageEnrichment.visibleOptionImageCount, sku_image_count: skuList.filter(sku => Boolean(sku.image_url)).length, unique_sku_image_count: imageEnrichment.uniqueSkuImageCount, spec_groups: pageGroups.map(group => ({ name: group.name, count: group.labels.length })), warnings }, captured_at: new Date().toISOString() };
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

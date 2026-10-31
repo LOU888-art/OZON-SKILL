@@ -170,7 +170,7 @@ async function send1688ToErp(product) {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ collector_version: "0.3.7", product: payload }),
+        body: JSON.stringify({ collector_version: "0.3.8", product: payload }),
       });
       const contentType = response.headers.get("content-type") || "";
       if (!contentType.includes("application/json")) return { ok: false, error: "ERP 登录已失效，请重新登录" };
